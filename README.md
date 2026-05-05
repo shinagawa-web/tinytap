@@ -18,6 +18,38 @@ The goal is **not** to compete with these. The goal is to learn by building.
 
 ---
 
+## 0.5. The Dream
+
+While the immediate goal is learning, the long-term vision keeps me oriented while I write the small early versions. I'm allowed to dream.
+
+> **tinytap is the "DevTools Network tab" for everything happening on a local development machine — across processes, across containers, across protocols, across time.**
+
+The browser DevTools Network tab is loved because it makes the otherwise invisible visible: every request, response, header, body, timing, all in one place. But it only sees what the browser does. Once a request leaves the browser, lands at a server, calls another service, hits a DB, comes back — the developer is blind.
+
+`tinytap` aims to be that view, for the **server-side and service-mesh-side** of local development.
+
+### The Four Flagship Capabilities
+
+Of all the directions this could go, these four are what I most want to build:
+
+1. **Cross-container observability** — see traffic flowing in and out of every Docker container on the machine, attributed to the right service. No more "is the request making it into the pod?" guessing.
+
+2. **Cross-service request chains** — when service A calls service B which calls service C, see the whole chain as one trace, not three disconnected captures. Automatic correlation by request ID where possible.
+
+3. **History and replay** — every captured session is recorded to disk in a `.tinytap` file. Open it later. Search it. Filter it. "What was that bug last Thursday?" — not gone forever.
+
+4. **One pane of glass** — HTTP, gRPC, PostgreSQL, MySQL, Redis, WebSocket, all in a single timeline. The current state of local debugging requires a different tool per protocol. tinytap unifies them.
+
+These four together describe the same fundamental thing: **the developer should not be blind to what their machine is doing.** Today they are.
+
+### Why this is allowed to be a fantasy
+
+I may never get past v0.1.0. That's fine. But while I'm writing v0.0.1, I want to know what landscape the code is climbing toward. The design choices of "how do I structure events?" or "how big is the ringbuf?" are different when you're aware that someday this might carry PostgreSQL wire protocol bytes for a 10-service compose stack.
+
+Architecture should be modest. Ambition should be honest.
+
+---
+
 ## 1. What I Want to Learn
 
 This drives every scoping decision. If a feature doesn't help me learn something I want to learn, it gets cut.
@@ -212,18 +244,102 @@ These are the failure modes I want to actively avoid:
 - **Comparing to kyanos at every step**: kyanos is C, has a team, and does many things. tinytap is a hobbyist Go project. Different categories.
 - **Trying to support every kernel version**: I'll target what my Lima VM has. If it works, ship. If someone else's kernel is older, "PR welcome" or "doesn't matter".
 
-## 10. Roadmap (Loose, Subject to Boredom)
+## 10. Roadmap
 
-| Version | Goal | Status |
-|---|---|---|
-| v0.0.1 | Hooks fire, events make it to userspace | TBD |
-| v0.1.0 | HTTP req/res visible from `curl` to local server | TBD |
-| v0.2.0 | Filtering by PID / port | TBD |
-| v0.3.0 | Pretty TUI with Bubble Tea | TBD |
-| v0.4.0 | TLS plaintext (uprobe on libssl) | TBD, requires real motivation |
-| ...    | ...whatever I'm curious about | |
+The roadmap is split into two layers:
+
+- **Foundation** (v0.x – v1.0): the parts I'm committing to — these are achievable, scoped, and grounded.
+- **Vision** (v2.0+): the dream — what tinytap could become if I keep going. These versions have no deadline, no commitment, and no shame in never being built.
+
+The point of writing the Vision down is not to schedule it. It's to make sure that when I'm laying foundations in v0.0.1, I know what they're foundations *for*.
+
+### Foundation — Concrete Steps
+
+| Version | Goal |
+|---|---|
+| v0.0.1 | Hooks fire, events make it to userspace as raw syscall traces |
+| v0.1.0 | HTTP req/res visible from `curl` to local server |
+| v0.2.0 | Filtering by PID / port |
+| v0.3.0 | Bubble Tea TUI (replaces stdout) |
+| v1.0.0 | First public release: stable HTTP/1.1 capture, scrollable history, Wireshark-style detail view, Homebrew formula |
 
 If I lose interest at v0.0.1, that's also fine. v0.0.1 alone is enough to learn what I came to learn.
+
+### Vision — The Four Flagships
+
+The four directions matter most. Numbers are loose; some may swap order based on curiosity. Each flagship is described here with the *experience* it should produce, not just the feature list.
+
+#### v2.x — **Cross-service request chains**
+
+> When service A calls service B which calls service C, see the whole chain as one trace.
+
+- HTTP/2 + gRPC support
+- Automatic request correlation by `X-Request-ID` / `traceparent` headers
+- Service map: nodes are processes, edges are observed traffic, updated live
+- Click a request, see the entire downstream call chain
+- "Why is this slow?" answered in one view: which hop dominated, where errors started
+
+The local-development equivalent of distributed tracing — except no instrumentation, no sidecars, no SDKs. Just observation.
+
+#### v3.x — **Database-aware**
+
+> See the SQL queries fired by each request. Catch N+1 in the act.
+
+- PostgreSQL wire protocol parser
+- MySQL parser
+- Redis RESP parser
+- Per-request SQL summary: "this HTTP request issued 47 SELECTs to the same table"
+- Automatic N+1 detection (visual highlight, not just a warning)
+- Slow query threshold rendering inline with the request that issued it
+
+This makes tinytap stop being a "network tool" and start being a "request lifecycle tool."
+
+#### v4.x — **History and replay**
+
+> Every session is recorded. Open it next week. Search it. Replay it.
+
+- `.tinytap` capture file format (probably extended pcapng or custom)
+- `tinytap open old-session.tinytap` — load a past capture
+- Full-text search across captured payloads
+- Filter by time window, PID, service, status, latency
+- Export individual requests as `curl` commands
+- Export sessions as Postman / Insomnia / Bruno collections
+- Diff two captures: "what changed between yesterday's run and today's"
+
+The shift from "observation tool" to "memory of the development environment."
+
+#### v7.x — **Cross-container observability**
+
+> See what's happening *inside* and *between* containers, attributed to the right service.
+
+- Docker / containerd integration
+- Container ID / name appears in every event
+- Compose-aware: `tinytap --compose-project myapp` watches all services
+- Network namespace traversal: see traffic crossing container boundaries
+- "This request entered nginx, was forwarded to app, which queried db" — visible end to end
+
+Container-aware observability without deploying anything inside containers.
+
+### v10.0 — The synthesis
+
+> tinytap becomes "the DevTools Network tab for everything on this machine."
+
+When all four flagships exist together, tinytap is no longer a collection of features — it's a single integrated view:
+
+- One timeline, every protocol
+- Every container, every process
+- Live now, replayable later
+- Search any past session, diff any two
+- The local development environment becomes legible
+
+This is the version where a developer no longer has to ask "what's happening?" — they just look.
+
+### What's not on the list (yet)
+
+- TLS plaintext via uprobe on libssl / Go crypto/tls — interesting but huge, slot somewhere between v3 and v7 if motivated
+- Production deployment — never. tinytap is for the developer's machine, not their cluster.
+- Web UI — possibly as a sibling tool, but the TUI stays primary
+- Plugin system — only if the core stabilizes enough to deserve one
 
 ## 11. License
 
