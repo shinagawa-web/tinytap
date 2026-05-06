@@ -86,10 +86,9 @@ What v0.0.1 does:
 3. Each hook fires an event into a ringbuf containing: PID, syscall name, fd, timestamp, byte count
 4. A Go userspace process reads from the ringbuf and prints lines like:
    ```
-   [12:34:56.789] pid=12345 (python3) accept4 fd=4
-   [12:34:56.790] pid=12345 (python3) read    fd=4 bytes=78
-   [12:34:56.790] pid=12345 (python3) write   fd=4 bytes=156
-   [12:34:56.791] pid=12345 (python3) close   fd=4
+   accept4 pid=12345  tid=12345  fd=3   bytes=0    comm=python3
+   write   pid=12345  tid=12346  fd=2   bytes=60   comm=python3
+   close   pid=12345  tid=12346  fd=5   bytes=0    comm=python3
    ```
 
 What v0.0.1 does **not** do:
@@ -98,6 +97,8 @@ What v0.0.1 does **not** do:
 - Pretty TUI (just stdout)
 - Match req/res pairs
 - Anything about TLS
+- Capture HTTP payload syscalls for socket-using code (Python, curl, etc.).
+  Their `read`/`write` go through `recvfrom`/`sendto` which are not yet hooked. See #8.
 
 This is intentionally less than `strace`. The point is to feel eBPF working end to end.
 
@@ -294,6 +295,7 @@ These are the moments I expect to learn the most. They're **listed here precisel
 | OQ-4 | How big should the ringbuf be | Empirically, start at 256KB |
 | OQ-5 | How to handle short reads / partial events at userspace | When events start arriving |
 | OQ-6 | Whether comm[16] is enough, or I need to follow up with /proc reads | When PIDs collide in interesting ways |
+| OQ-7 | Which syscalls cover all socket I/O? `read`/`write` miss Python (recvfrom/sendto). Add more kprobes (Pixie) or hook at TCP layer (tcp_recvmsg)? | While running v0.0.1 against real python3+curl traffic — see #8 |
 
 I'm explicitly **not** going to design these in advance. I'll figure them out by writing code and being wrong.
 
