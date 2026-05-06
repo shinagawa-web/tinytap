@@ -54,18 +54,24 @@ type TinytapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type TinytapProgramSpecs struct {
+	HandleAccept4 *ebpf.ProgramSpec `ebpf:"handle_accept4"`
+	HandleClose   *ebpf.ProgramSpec `ebpf:"handle_close"`
+	HandleRead    *ebpf.ProgramSpec `ebpf:"handle_read"`
+	HandleWrite   *ebpf.ProgramSpec `ebpf:"handle_write"`
 }
 
 // TinytapMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type TinytapMapSpecs struct {
+	Events *ebpf.MapSpec `ebpf:"events"`
 }
 
 // TinytapVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type TinytapVariableSpecs struct {
+	OwnPid *ebpf.VariableSpec `ebpf:"own_pid"`
 }
 
 // TinytapObjects contains all objects after they have been loaded into the kernel.
@@ -88,26 +94,39 @@ func (o *TinytapObjects) Close() error {
 //
 // It can be passed to LoadTinytapObjects or ebpf.CollectionSpec.LoadAndAssign.
 type TinytapMaps struct {
+	Events *ebpf.Map `ebpf:"events"`
 }
 
 func (m *TinytapMaps) Close() error {
-	return _TinytapClose()
+	return _TinytapClose(
+		m.Events,
+	)
 }
 
 // TinytapVariables contains all global variables after they have been loaded into the kernel.
 //
 // It can be passed to LoadTinytapObjects or ebpf.CollectionSpec.LoadAndAssign.
 type TinytapVariables struct {
+	OwnPid *ebpf.Variable `ebpf:"own_pid"`
 }
 
 // TinytapPrograms contains all programs after they have been loaded into the kernel.
 //
 // It can be passed to LoadTinytapObjects or ebpf.CollectionSpec.LoadAndAssign.
 type TinytapPrograms struct {
+	HandleAccept4 *ebpf.Program `ebpf:"handle_accept4"`
+	HandleClose   *ebpf.Program `ebpf:"handle_close"`
+	HandleRead    *ebpf.Program `ebpf:"handle_read"`
+	HandleWrite   *ebpf.Program `ebpf:"handle_write"`
 }
 
 func (p *TinytapPrograms) Close() error {
-	return _TinytapClose()
+	return _TinytapClose(
+		p.HandleAccept4,
+		p.HandleClose,
+		p.HandleRead,
+		p.HandleWrite,
+	)
 }
 
 func _TinytapClose(closers ...io.Closer) error {
