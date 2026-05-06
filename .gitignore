@@ -1,5 +1,8 @@
 # Build artifacts
 /tinytap
 
+# Generated from running kernel BTF (run `make generate` to (re)create)
+bpf/vmlinux.h
+
 # Claude Code local settings
 .claude/
