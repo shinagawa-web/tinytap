@@ -1,14 +1,10 @@
-BIN     := tinytap
-VMLINUX := bpf/vmlinux.h
+BIN := tinytap
 
 .PHONY: all generate build run clean
 
 all: generate build
 
-$(VMLINUX):
-	bpftool btf dump file /sys/kernel/btf/vmlinux format c > $(VMLINUX)
-
-generate: $(VMLINUX)
+generate:
 	cd cmd/tinytap && go generate
 
 build:
@@ -18,4 +14,4 @@ run:
 	sudo ./$(BIN)
 
 clean:
-	rm -f $(BIN) cmd/tinytap/tinytap_bpf*.go cmd/tinytap/tinytap_bpf*.o $(VMLINUX)
+	rm -f $(BIN) cmd/tinytap/tinytap_bpf*.go cmd/tinytap/tinytap_bpf*.o

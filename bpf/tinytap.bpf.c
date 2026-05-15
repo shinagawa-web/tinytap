@@ -1,11 +1,7 @@
 //go:build ignore
 
-#define __TARGET_ARCH_arm64
-
-#include "vmlinux.h"
+#include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
-#include <bpf/bpf_core_read.h>
 
 enum syscall_id {
     SYS_ACCEPT4 = 1,
@@ -31,8 +27,20 @@ struct {
 } events SEC(".maps");
 
 // Set by userspace before load. Events from this PID are skipped to avoid
-// the feedback loop where logging an event triggers a write kprobe.
+// the feedback loop where logging an event triggers a write tracepoint.
 volatile const __u32 own_pid = 0;
+
+// Layout of /sys/kernel/tracing/events/syscalls/sys_enter_*/format.
+// Same shape for every syscall enter tracepoint — only args[] meaning differs.
+struct sys_enter_ctx {
+    unsigned short common_type;
+    unsigned char  common_flags;
+    unsigned char  common_preempt_count;
+    int            common_pid;
+    int            syscall_nr;
+    int            _pad;
+    unsigned long  args[6];
+};
 
 static __always_inline void submit_event(__u32 syscall, __s32 fd, __u32 bytes)
 {
@@ -56,37 +64,31 @@ static __always_inline void submit_event(__u32 syscall, __s32 fd, __u32 bytes)
     bpf_ringbuf_submit(e, 0);
 }
 
-SEC("kprobe/__arm64_sys_accept4")
-int BPF_KPROBE(handle_accept4, struct pt_regs *regs)
+SEC("tracepoint/syscalls/sys_enter_accept4")
+int handle_accept4(struct sys_enter_ctx *ctx)
 {
-    int sockfd = (int)PT_REGS_PARM1_CORE(regs);
-    submit_event(SYS_ACCEPT4, sockfd, 0);
+    submit_event(SYS_ACCEPT4, (__s32)ctx->args[0], 0);
     return 0;
 }
 
-SEC("kprobe/__arm64_sys_read")
-int BPF_KPROBE(handle_read, struct pt_regs *regs)
+SEC("tracepoint/syscalls/sys_enter_read")
+int handle_read(struct sys_enter_ctx *ctx)
 {
-    int fd = (int)PT_REGS_PARM1_CORE(regs);
-    __u32 count = (__u32)PT_REGS_PARM3_CORE(regs);
-    submit_event(SYS_READ, fd, count);
+    submit_event(SYS_READ, (__s32)ctx->args[0], (__u32)ctx->args[2]);
     return 0;
 }
 
-SEC("kprobe/__arm64_sys_write")
-int BPF_KPROBE(handle_write, struct pt_regs *regs)
+SEC("tracepoint/syscalls/sys_enter_write")
+int handle_write(struct sys_enter_ctx *ctx)
 {
-    int fd = (int)PT_REGS_PARM1_CORE(regs);
-    __u32 count = (__u32)PT_REGS_PARM3_CORE(regs);
-    submit_event(SYS_WRITE, fd, count);
+    submit_event(SYS_WRITE, (__s32)ctx->args[0], (__u32)ctx->args[2]);
     return 0;
 }
 
-SEC("kprobe/__arm64_sys_close")
-int BPF_KPROBE(handle_close, struct pt_regs *regs)
+SEC("tracepoint/syscalls/sys_enter_close")
+int handle_close(struct sys_enter_ctx *ctx)
 {
-    int fd = (int)PT_REGS_PARM1_CORE(regs);
-    submit_event(SYS_CLOSE, fd, 0);
+    submit_event(SYS_CLOSE, (__s32)ctx->args[0], 0);
     return 0;
 }
 

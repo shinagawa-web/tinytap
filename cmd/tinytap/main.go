@@ -58,20 +58,20 @@ func main() {
 	defer objs.Close()
 
 	attaches := []struct {
-		sym  string
+		name string
 		prog *ebpf.Program
 	}{
-		{"__arm64_sys_accept4", objs.HandleAccept4},
-		{"__arm64_sys_read", objs.HandleRead},
-		{"__arm64_sys_write", objs.HandleWrite},
-		{"__arm64_sys_close", objs.HandleClose},
+		{"sys_enter_accept4", objs.HandleAccept4},
+		{"sys_enter_read", objs.HandleRead},
+		{"sys_enter_write", objs.HandleWrite},
+		{"sys_enter_close", objs.HandleClose},
 	}
 	for _, a := range attaches {
-		kp, err := link.Kprobe(a.sym, a.prog, nil)
+		tp, err := link.Tracepoint("syscalls", a.name, a.prog, nil)
 		if err != nil {
-			log.Fatalf("attach %s: %v", a.sym, err)
+			log.Fatalf("attach %s: %v", a.name, err)
 		}
-		defer kp.Close()
+		defer tp.Close()
 	}
 
 	rd, err := ringbuf.NewReader(objs.Events)
