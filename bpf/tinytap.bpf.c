@@ -4,10 +4,14 @@
 #include <bpf/bpf_helpers.h>
 
 enum syscall_id {
-    SYS_ACCEPT4 = 1,
-    SYS_READ    = 2,
-    SYS_WRITE   = 3,
-    SYS_CLOSE   = 4,
+    SYS_ACCEPT4  = 1,
+    SYS_READ     = 2,
+    SYS_WRITE    = 3,
+    SYS_CLOSE    = 4,
+    SYS_RECVFROM = 5,
+    SYS_SENDTO   = 6,
+    SYS_RECVMSG  = 7,
+    SYS_SENDMSG  = 8,
 };
 
 struct event {
@@ -41,6 +45,50 @@ struct sys_enter_ctx {
     int            _pad;
     unsigned long  args[6];
 };
+
+// Mirror of glibc/Linux 64-bit userspace struct iovec (sys/uio.h).
+struct iovec_user {
+    void  *iov_base;
+    __u64  iov_len;
+};
+
+// Mirror of glibc/Linux 64-bit userspace struct msghdr (sys/socket.h).
+// Matches the kernel's `struct user_msghdr` byte-for-byte.
+struct msghdr_user {
+    void              *msg_name;
+    __u32              msg_namelen;
+    __u32              _pad1;
+    struct iovec_user *msg_iov;
+    __u64              msg_iovlen;
+    void              *msg_control;
+    __u64              msg_controllen;
+    __s32              msg_flags;
+    __u32              _pad2;
+};
+
+#define MAX_IOV 8
+
+// Sum iov_len across the iovec array of a userspace msghdr.
+// Capped at MAX_IOV iterations for the BPF verifier; typical socket
+// I/O uses msg_iovlen=1, occasional scatter/gather may use a few.
+static __always_inline __u32 sum_msghdr_bytes(const void *user_msghdr_ptr)
+{
+    struct msghdr_user msg;
+    if (bpf_probe_read_user(&msg, sizeof(msg), user_msghdr_ptr) < 0)
+        return 0;
+
+    __u32 total = 0;
+    #pragma unroll
+    for (int i = 0; i < MAX_IOV; i++) {
+        if ((__u64)i >= msg.msg_iovlen)
+            break;
+        struct iovec_user iov;
+        if (bpf_probe_read_user(&iov, sizeof(iov), &msg.msg_iov[i]) < 0)
+            break;
+        total += (__u32)iov.iov_len;
+    }
+    return total;
+}
 
 static __always_inline void submit_event(__u32 syscall, __s32 fd, __u32 bytes)
 {
@@ -89,6 +137,36 @@ SEC("tracepoint/syscalls/sys_enter_close")
 int handle_close(struct sys_enter_ctx *ctx)
 {
     submit_event(SYS_CLOSE, (__s32)ctx->args[0], 0);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_recvfrom")
+int handle_recvfrom(struct sys_enter_ctx *ctx)
+{
+    submit_event(SYS_RECVFROM, (__s32)ctx->args[0], (__u32)ctx->args[2]);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_sendto")
+int handle_sendto(struct sys_enter_ctx *ctx)
+{
+    submit_event(SYS_SENDTO, (__s32)ctx->args[0], (__u32)ctx->args[2]);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_recvmsg")
+int handle_recvmsg(struct sys_enter_ctx *ctx)
+{
+    __u32 bytes = sum_msghdr_bytes((const void *)ctx->args[1]);
+    submit_event(SYS_RECVMSG, (__s32)ctx->args[0], bytes);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_sendmsg")
+int handle_sendmsg(struct sys_enter_ctx *ctx)
+{
+    __u32 bytes = sum_msghdr_bytes((const void *)ctx->args[1]);
+    submit_event(SYS_SENDMSG, (__s32)ctx->args[0], bytes);
     return 0;
 }
 

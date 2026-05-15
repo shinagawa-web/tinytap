@@ -14,10 +14,14 @@ import (
 )
 
 const (
-	syscallAccept4 = 1
-	syscallRead    = 2
-	syscallWrite   = 3
-	syscallClose   = 4
+	syscallAccept4  = 1
+	syscallRead     = 2
+	syscallWrite    = 3
+	syscallClose    = 4
+	syscallRecvfrom = 5
+	syscallSendto   = 6
+	syscallRecvmsg  = 7
+	syscallSendmsg  = 8
 )
 
 type Event struct {
@@ -32,10 +36,14 @@ type Event struct {
 }
 
 var syscallNames = map[uint32]string{
-	syscallAccept4: "accept4",
-	syscallRead:    "read",
-	syscallWrite:   "write",
-	syscallClose:   "close",
+	syscallAccept4:  "accept4",
+	syscallRead:     "read",
+	syscallWrite:    "write",
+	syscallClose:    "close",
+	syscallRecvfrom: "recvfrom",
+	syscallSendto:   "sendto",
+	syscallRecvmsg:  "recvmsg",
+	syscallSendmsg:  "sendmsg",
 }
 
 func main() {
@@ -65,6 +73,10 @@ func main() {
 		{"sys_enter_read", objs.HandleRead},
 		{"sys_enter_write", objs.HandleWrite},
 		{"sys_enter_close", objs.HandleClose},
+		{"sys_enter_recvfrom", objs.HandleRecvfrom},
+		{"sys_enter_sendto", objs.HandleSendto},
+		{"sys_enter_recvmsg", objs.HandleRecvmsg},
+		{"sys_enter_sendmsg", objs.HandleSendmsg},
 	}
 	for _, a := range attaches {
 		tp, err := link.Tracepoint("syscalls", a.name, a.prog, nil)
@@ -80,7 +92,7 @@ func main() {
 	}
 	defer rd.Close()
 
-	log.Println("tinytap running — watching accept4/read/write/close. Press Ctrl-C to stop.")
+	log.Println("tinytap running — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.")
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt)
@@ -101,7 +113,7 @@ func main() {
 		}
 		name := syscallNames[e.Syscall]
 		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
-		log.Printf("%-7s pid=%-6d tid=%-6d fd=%-3d bytes=%-6d comm=%s",
+		log.Printf("%-8s pid=%-6d tid=%-6d fd=%-3d bytes=%-6d comm=%s",
 			name, e.Pid, e.Tid, e.Fd, e.Bytes, comm)
 	}
 }
