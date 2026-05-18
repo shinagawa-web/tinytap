@@ -41,3 +41,16 @@ sudo ./tinytap
 1. Write code → commit → `git push` from VM
 2. Open PR against `main`
 3. One PR per issue
+
+## Terminology
+
+For socket I/O, prefer **process-relative** vocabulary in code comments, commit messages, PR descriptions, and issues:
+
+- **outgoing** — data leaving the process: `write`, `sendto`, `sendmsg`, `writev`
+- **incoming** — data entering the process: `read`, `recvfrom`, `recvmsg`, `readv`
+
+Avoid bare **send-side** / **receive-side** as the first mention — they sound protocol-relative (request vs response) but are actually process-relative, so they invite confusion. Once a paragraph has established the direction, the short forms are fine.
+
+When HTTP direction matters, write it out: "the HTTP response (server's outgoing payload)" rather than "the send-side payload" — the same outgoing syscall is the *response* on a server and the *request* on a client.
+
+See README §1.5 for the full glossary and the protocol mapping table.
