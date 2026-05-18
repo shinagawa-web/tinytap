@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -24,15 +25,18 @@ const (
 	syscallSendmsg  = 8
 )
 
+const maxPayload = 256
+
 type Event struct {
-	TsNs    uint64
-	Pid     uint32
-	Tid     uint32
-	Fd      int32
-	Bytes   uint32
-	Syscall uint32
-	Comm    [16]byte
-	_       [4]byte
+	TsNs       uint64
+	Pid        uint32
+	Tid        uint32
+	Fd         int32
+	Bytes      uint32
+	Syscall    uint32
+	PayloadLen uint32
+	Comm       [16]byte
+	Payload    [maxPayload]byte
 }
 
 var syscallNames = map[uint32]string{
@@ -113,7 +117,33 @@ func main() {
 		}
 		name := syscallNames[e.Syscall]
 		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
-		log.Printf("%-8s pid=%-6d tid=%-6d fd=%-3d bytes=%-6d comm=%s",
+		line := fmt.Sprintf("%-8s pid=%-6d tid=%-6d fd=%-3d bytes=%-6d comm=%s",
 			name, e.Pid, e.Tid, e.Fd, e.Bytes, comm)
+		if e.PayloadLen > 0 {
+			line += " | " + renderPayload(e.Payload[:e.PayloadLen])
+		}
+		log.Println(line)
 	}
+}
+
+// renderPayload turns a raw byte slice into a single-line printable string.
+// Printable ASCII (0x20–0x7E) is kept as-is; CR/LF/TAB are escaped so the
+// log stays on one line; everything else becomes `.`.
+func renderPayload(p []byte) string {
+	out := make([]byte, 0, len(p)+8)
+	for _, b := range p {
+		switch {
+		case b == '\r':
+			out = append(out, '\\', 'r')
+		case b == '\n':
+			out = append(out, '\\', 'n')
+		case b == '\t':
+			out = append(out, '\\', 't')
+		case b >= 0x20 && b <= 0x7e:
+			out = append(out, b)
+		default:
+			out = append(out, '.')
+		}
+	}
+	return string(out)
 }
