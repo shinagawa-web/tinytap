@@ -10,7 +10,10 @@ generate:
 build:
 	go build -o $(BIN) ./cmd/tinytap
 
-run:
+run: build
+	@bash scripts/demo.sh
+
+run-raw: build
 	sudo ./$(BIN)
 
 clean:
