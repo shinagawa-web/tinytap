@@ -1,6 +1,6 @@
 BIN := tinytap
 
-.PHONY: all generate build run clean
+.PHONY: all generate build run run-raw clean
 
 all: generate build
 

@@ -120,7 +120,11 @@ func main() {
 		line := fmt.Sprintf("%-8s pid=%-6d tid=%-6d fd=%-3d bytes=%-6d comm=%s",
 			name, e.Pid, e.Tid, e.Fd, e.Bytes, comm)
 		if e.PayloadLen > 0 {
-			line += " | " + renderPayload(e.Payload[:e.PayloadLen])
+			n := int(e.PayloadLen)
+			if n > len(e.Payload) {
+				n = len(e.Payload)
+			}
+			line += " | " + renderPayload(e.Payload[:n])
 		}
 		log.Println(line)
 	}
