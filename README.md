@@ -1,4 +1,4 @@
-# tinytap — Design Doc
+# tinytap
 
 > A learning project: tiny eBPF-based HTTP traffic capture tool.
 
@@ -44,19 +44,9 @@ Architecture is modest. Ambition is honest.
 
 ---
 
-## 2. What I'm Explicitly Not Trying to Do
+## 2. v0.1.0: HTTP-aware
 
-- Replace tcpdump
-- Compete with kyanos or ptcpdump on features
-- Be production-ready
-- Support all kernel versions
-- Support every protocol
-- Be fast at the kernel level
-- Get stars on GitHub
-
-## 3. v0.1.0: HTTP-aware
-
-Now that the plumbing works (see Roadmap §7 / closed issues #1-#3, #8), the next step:
+Now that the plumbing works (see Roadmap §5 / closed issues #1-#3, #8), the next step:
 
 1. Capture the **payload bytes** (not just byte count) for `read` and `write`
 2. Buffer per-fd, parse incoming bytes as HTTP/1.1
@@ -68,61 +58,17 @@ Now that the plumbing works (see Roadmap §7 / closed issues #1-#3, #8), the nex
 
 This is the "useful demo" version.
 
-## 4. Architecture
-
-```
-tinytap/
-├── bpf/
-│   └── tinytap.bpf.c        # eBPF C program
-├── cmd/
-│   └── tinytap/
-│       └── main.go           # CLI entry, loads eBPF, reads ringbuf
-├── internal/
-│   ├── loader/               # eBPF program lifecycle (load, attach, detach)
-│   ├── events/               # Event struct, ringbuf reader
-│   ├── proc/                 # PID → process name lookup via /proc
-│   └── parser/               # HTTP parser
-├── tools/
-│   └── gen.go                # //go:generate directives for bpf2go
-├── go.mod
-├── go.sum
-├── Makefile
-├── README.md
-└── DESIGN.md
-```
-
-### Boundaries
-
-- `bpf/` — kernel-side, written in C, compiled by clang
-- `internal/loader/` — knows about cilium/ebpf, loads `.o` files, attaches probes
-- `internal/events/` — knows about ringbuf semantics, decodes raw event bytes into Go structs
-- `internal/proc/` — pure Go, reads /proc, no eBPF
-- `internal/parser/` — pure Go, HTTP state machine, no eBPF, no syscalls
-- `cmd/tinytap/` — wires everything together
-
-### Why this separation
-
-Because it makes it easy to test the HTTP parser without eBPF, and the proc lookup without HTTP. The eBPF and ringbuf parts are the irreducibly system-dependent parts; everything else can be unit-tested with plain Go.
-
-### Reference docs
-
-Lower-level reference material lives under [`docs/`](docs/):
-
-- [`docs/event-schema.md`](docs/event-schema.md) — the kernel↔userspace event struct (C / Go layouts, field semantics, byte offsets)
-- [`docs/terminology.md`](docs/terminology.md) — outgoing/incoming vocabulary and the HTTP protocol mapping
-- [`docs/ebpf-basics.md`](docs/ebpf-basics.md) — eBPF primer
-
-## 5. Where tinytap Runs
+## 3. Where tinytap Runs
 
 There are two distinct environments to keep in mind, and they answer two different questions.
 
-### 5.1 Where tinytap is *built and developed*
+### 3.1 Where tinytap is *built and developed*
 
-This is about me. The development environment is **Mac + Lima + Ubuntu VM**, because eBPF only exists on Linux and I work on a Mac. See Section 6 for setup.
+This is about me. The development environment is **Mac + Lima + Ubuntu VM**, because eBPF only exists on Linux and I work on a Mac. See Section 4 for setup.
 
 This is private to my workflow. It does not constrain users.
 
-### 5.2 Where tinytap is *executed*
+### 3.2 Where tinytap is *executed*
 
 This is about the user (which, for now, is also me, but eventually anyone).
 
@@ -139,7 +85,7 @@ But "requires a Linux kernel" is less restrictive than it sounds, because Linux 
 
 This pattern — "Mac/Win developers run this through a Linux VM" — is the standard for **all** eBPF tools, including kyanos, ptcpdump, eCapture, bpftrace, and Cilium tooling. tinytap is not unusual here.
 
-### 5.3 Containers are friends, not enemies
+### 3.3 Containers are friends, not enemies
 
 A common confusion: "if I'm running my dev stack in Docker on my Mac, can tinytap see inside the containers?"
 
@@ -167,14 +113,14 @@ For the user, this means: **tinytap doesn't need to be installed inside containe
 
 (There's a subtlety: container-aware *attribution* — turning a PID into "this is the api-service container" — is a deliberate feature, slated for v7.x. The kernel sees the PIDs; mapping them back to container names requires reading from Docker / containerd. For now tinytap just shows raw PIDs.)
 
-### 5.4 What this means for the project
+### 3.4 What this means for the project
 
 - The README's "Requirements" section will say: "Linux kernel 5.8+. macOS and Windows users run via Lima / WSL / VM."
 - I will not pretend to support macOS natively. There is no path to that.
 - I will not invest in cross-OS abstractions — there is one OS, Linux, and that's the OS this tool is for.
 - The "feels native on Mac" experience is delegated to Lima/OrbStack/etc., which is already a solved problem for the eBPF community.
 
-## 6. Toolchain
+## 4. Toolchain
 
 | Component | Choice | Why |
 |---|---|---|
@@ -211,15 +157,15 @@ echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-## 7. Roadmap
+## 5. Roadmap
 
 Moved to [#19](https://github.com/shinagawa-web/tinytap/issues/19) and pinned.
 
-## 8. License
+## 6. License
 
 MIT (assume — confirm before public release).
 
-## 9. References I'm Going to Lean On
+## 7. References I'm Going to Lean On
 
 - [cilium/ebpf examples](https://github.com/cilium/ebpf/tree/main/examples) — primary reference for the Go side
 - [hengyoush/kyanos](https://github.com/hengyoush/kyanos) — when I need to see "how do they actually do this for HTTP"
@@ -227,7 +173,3 @@ MIT (assume — confirm before public release).
 - [Pixie blog: Debugging with eBPF Part 2](https://blog.px.dev/ebpf-http-tracing/) — the canonical "tracing HTTP via syscalls" walkthrough
 - [eunomia eBPF tutorials](https://eunomia.dev/) — readable, hands-on
 - Brendan Gregg's blog — for the kernel-side mental model
-
----
-
-*End of design. Stop reading, start coding.*
