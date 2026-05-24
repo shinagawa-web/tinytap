@@ -18,19 +18,17 @@ The goal is **not** to compete with these. The goal is to learn by building.
 
 ---
 
-## 0.5. The Dream
-
-While the immediate goal is learning, the long-term vision keeps me oriented while I write the small early versions. I'm allowed to dream.
+## 1. What tinytap becomes
 
 > **tinytap is the "DevTools Network tab" for everything happening on a local development machine — across processes, across containers, across protocols, across time.**
 
 The browser DevTools Network tab is loved because it makes the otherwise invisible visible: every request, response, header, body, timing, all in one place. But it only sees what the browser does. Once a request leaves the browser, lands at a server, calls another service, hits a DB, comes back — the developer is blind.
 
-`tinytap` aims to be that view, for the **server-side and service-mesh-side** of local development.
+`tinytap` brings that view to the **server-side and service-mesh-side** of local development.
 
 ### The Four Flagship Capabilities
 
-Of all the directions this could go, these four are what I most want to build:
+These four are what tinytap is building toward:
 
 1. **Cross-container observability** — see traffic flowing in and out of every Docker container on the machine, attributed to the right service. No more "is the request making it into the pod?" guessing.
 
@@ -42,30 +40,11 @@ Of all the directions this could go, these four are what I most want to build:
 
 These four together describe the same fundamental thing: **the developer should not be blind to what their machine is doing.** Today they are.
 
-### Why this is allowed to be a fantasy
-
-I may never get past v0.1.0. That's fine. But while I'm writing v0.0.1, I want to know what landscape the code is climbing toward. The design choices of "how do I structure events?" or "how big is the ringbuf?" are different when you're aware that someday this might carry PostgreSQL wire protocol bytes for a 10-service compose stack.
-
-Architecture should be modest. Ambition should be honest.
+Architecture is modest. Ambition is honest.
 
 ---
 
-## 1. What I Want to Learn
-
-This drives every scoping decision. If a feature doesn't help me learn something I want to learn, it gets cut.
-
-| # | Topic | Why |
-|---|---|---|
-| L1 | eBPF programming model | Write a C program that runs in kernel space |
-| L2 | kprobe / syscall hooks | Hook into the kernel without modifying it |
-| L3 | ringbuf for kernel→userspace | The standard way to ship events out of eBPF |
-| L4 | cilium/ebpf library in Go | Modern Go-based eBPF toolchain |
-| L5 | bpf2go workflow | C code → Go bindings, the whole compile pipeline |
-| L6 | Linux syscall semantics | accept4, read, write, close — what they actually do |
-| L7 | HTTP wire format from raw bytes | Parse HTTP without an HTTP library |
-| L8 | Process metadata from /proc | PID → comm, cmdline, etc. |
-
-## 1.5. Terminology
+## 2. Terminology
 
 These terms appear throughout the doc, the code, and the issue tracker. They are deliberately **process-relative** — "from whose point of view?" matters.
 
@@ -86,7 +65,7 @@ These terms appear throughout the doc, the code, and the issue tracker. They are
 
 So "the HTTP response" is *not* a synonym for "outgoing payload" — it depends which process is being observed. When protocol direction matters, write it out: "the HTTP response (server's outgoing payload)" rather than just "the send-side payload".
 
-## 2. What I'm Explicitly Not Trying to Do
+## 3. What I'm Explicitly Not Trying to Do
 
 - Replace tcpdump
 - Compete with kyanos or ptcpdump on features
@@ -96,36 +75,9 @@ So "the HTTP response" is *not* a synonym for "outgoing payload" — it depends 
 - Be fast at the kernel level
 - Get stars on GitHub
 
-## 3. MVP Definition: v0.0.1
-
-**Goal**: when `curl localhost:3000` happens (with a server like `python3 -m http.server` listening on 3000), `tinytap` prints to stdout that it observed kernel-level syscalls related to that connection.
-
-What v0.0.1 does:
-
-1. Loads an eBPF program into the kernel
-2. Attaches kprobes to `sys_accept4`, `sys_read`, `sys_write`, `sys_close`
-3. Each hook fires an event into a ringbuf containing: PID, syscall name, fd, timestamp, byte count
-4. A Go userspace process reads from the ringbuf and prints lines like:
-   ```
-   accept4 pid=12345  tid=12345  fd=3   bytes=0    comm=python3
-   write   pid=12345  tid=12346  fd=2   bytes=60   comm=python3
-   close   pid=12345  tid=12346  fd=5   bytes=0    comm=python3
-   ```
-
-What v0.0.1 does **not** do:
-- Parse HTTP (the bytes are not interpreted, only counted)
-- Filter by anything (every syscall from every process is captured)
-- Pretty TUI (just stdout)
-- Match req/res pairs
-- Anything about TLS
-- Capture HTTP payload syscalls for socket-using code (Python, curl, etc.).
-  Their `read`/`write` go through `recvfrom`/`sendto` which are not yet hooked. See #8.
-
-This is intentionally less than `strace`. The point is to feel eBPF working end to end.
-
 ## 4. v0.1.0: HTTP-aware
 
-Once v0.0.1 works, the next step:
+Now that the plumbing works (see Roadmap §10 / closed issues #1-#3, #8), the next step:
 
 1. Capture the **payload bytes** (not just byte count) for `read` and `write`
 2. Buffer per-fd, parse incoming bytes as HTTP/1.1
@@ -135,7 +87,7 @@ Once v0.0.1 works, the next step:
    [12:34:56.790] pid=12345 GET  /index.html  →  200  156 bytes  (1.2ms)
    ```
 
-This is the "useful demo" version. v0.0.1 is the "I understand the plumbing" version.
+This is the "useful demo" version.
 
 ## 5. Architecture
 
@@ -150,7 +102,7 @@ tinytap/
 │   ├── loader/               # eBPF program lifecycle (load, attach, detach)
 │   ├── events/               # Event struct, ringbuf reader
 │   ├── proc/                 # PID → process name lookup via /proc
-│   └── parser/               # HTTP parser (added in v0.1.0, empty in v0.0.1)
+│   └── parser/               # HTTP parser
 ├── tools/
 │   └── gen.go                # //go:generate directives for bpf2go
 ├── go.mod
@@ -226,7 +178,7 @@ This is not magic. It's the same reason `htop` on the host shows container proce
 
 For the user, this means: **tinytap doesn't need to be installed inside containers**, doesn't need a sidecar, doesn't need the application to be rebuilt with anything. One install on the host, and you see everything below it.
 
-(There's a subtlety: container-aware *attribution* — turning a PID into "this is the api-service container" — is a deliberate feature, slated for v7.x. The kernel sees the PIDs; mapping them back to container names requires reading from Docker / containerd. v0.0.1 just shows raw PIDs.)
+(There's a subtlety: container-aware *attribution* — turning a PID into "this is the api-service container" — is a deliberate feature, slated for v7.x. The kernel sees the PIDs; mapping them back to container names requires reading from Docker / containerd. For now tinytap just shows raw PIDs.)
 
 ### 6.4 What this means for the project
 
@@ -272,7 +224,7 @@ echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-## 8. Event Schema (v0.0.1)
+## 8. Event Schema
 
 The C struct shared between kernel and userspace:
 
@@ -316,39 +268,27 @@ These are the moments I expect to learn the most. They're **listed here precisel
 | OQ-4 | How big should the ringbuf be | Empirically, start at 256KB |
 | OQ-5 | How to handle short reads / partial events at userspace | When events start arriving |
 | OQ-6 | Whether comm[16] is enough, or I need to follow up with /proc reads | When PIDs collide in interesting ways |
-| OQ-7 | Which syscalls cover all socket I/O? `read`/`write` miss Python (recvfrom/sendto). Add more kprobes (Pixie) or hook at TCP layer (tcp_recvmsg)? | While running v0.0.1 against real python3+curl traffic — see #8 |
+| OQ-7 | Which syscalls cover all socket I/O? `read`/`write` miss Python (recvfrom/sendto). Add more kprobes (Pixie) or hook at TCP layer (tcp_recvmsg)? | Discovered while running early builds against real python3+curl traffic — see #8 |
 
 I'm explicitly **not** going to design these in advance. I'll figure them out by writing code and being wrong.
 
-## 10. Anti-Goals (Things I Will Resist)
-
-These are the failure modes I want to actively avoid:
-
-- **Scope creep into being a real tool**: if I find myself adding features because "users would want X", I should stop. There are no users. There is just me, learning.
-- **Over-architecting before code exists**: this DESIGN.md is the most architecture I will do upfront. Past this, the structure should evolve from the code.
-- **Comparing to kyanos at every step**: kyanos is C, has a team, and does many things. tinytap is a hobbyist Go project. Different categories.
-- **Trying to support every kernel version**: I'll target what my Lima VM has. If it works, ship. If someone else's kernel is older, "PR welcome" or "doesn't matter".
-
-## 11. Roadmap
+## 10. Roadmap
 
 The roadmap is split into two layers:
 
 - **Foundation** (v0.x – v1.0): the parts I'm committing to — these are achievable, scoped, and grounded.
-- **Vision** (v2.0+): the dream — what tinytap could become if I keep going. These versions have no deadline, no commitment, and no shame in never being built.
+- **Vision** (v2.0+): the longer-term capabilities tinytap is building toward. Numbers are loose; the order may shift.
 
-The point of writing the Vision down is not to schedule it. It's to make sure that when I'm laying foundations in v0.0.1, I know what they're foundations *for*.
+The point of writing the Vision down is not to schedule it. It's to make sure that while laying the foundation, the code knows what it's foundation *for*.
 
 ### Foundation — Concrete Steps
 
 | Version | Goal |
 |---|---|
-| v0.0.1 | Hooks fire, events make it to userspace as raw syscall traces |
 | v0.1.0 | HTTP req/res visible from `curl` to local server |
 | v0.2.0 | Filtering by PID / port |
 | v0.3.0 | Bubble Tea TUI (replaces stdout) |
 | v1.0.0 | First public release: stable HTTP/1.1 capture, scrollable history, Wireshark-style detail view, Homebrew formula |
-
-If I lose interest at v0.0.1, that's also fine. v0.0.1 alone is enough to learn what I came to learn.
 
 ### Vision — The Four Flagships
 
@@ -426,11 +366,11 @@ This is the version where a developer no longer has to ask "what's happening?" �
 - Web UI — possibly as a sibling tool, but the TUI stays primary
 - Plugin system — only if the core stabilizes enough to deserve one
 
-## 12. License
+## 11. License
 
 MIT (assume — confirm before public release).
 
-## 13. References I'm Going to Lean On
+## 12. References I'm Going to Lean On
 
 - [cilium/ebpf examples](https://github.com/cilium/ebpf/tree/main/examples) — primary reference for the Go side
 - [hengyoush/kyanos](https://github.com/hengyoush/kyanos) — when I need to see "how do they actually do this for HTTP"
