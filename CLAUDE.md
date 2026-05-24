@@ -6,7 +6,53 @@ This is an OSS project. All communication, code comments, commit messages, PR de
 
 ## Project
 
-`tinytap` is a learning project — a tiny eBPF-based HTTP traffic capture tool. See `README.md` for full design doc.
+`tinytap` is a learning project — a tiny eBPF-based HTTP traffic capture tool. See `README.md` for project overview and vision.
+
+## Architecture
+
+```
+tinytap/
+├── bpf/
+│   └── tinytap.bpf.c        # eBPF C program
+├── cmd/
+│   └── tinytap/
+│       └── main.go           # CLI entry, loads eBPF, reads ringbuf
+├── internal/
+│   ├── loader/               # eBPF program lifecycle (load, attach, detach)
+│   ├── events/               # Event struct, ringbuf reader
+│   ├── proc/                 # PID → process name lookup via /proc
+│   └── parser/               # HTTP parser
+├── docs/                     # reference material (see Reference docs below)
+├── scripts/
+│   └── demo.sh               # `make run` orchestrated HTTP smoke test
+├── go.mod
+├── go.sum
+├── Makefile
+└── README.md
+```
+
+(The `internal/` subdirectories are the planned layout; the v0.0.1 code currently lives directly in `cmd/tinytap/main.go` and will be split during the v0.1.0 work tracked in #15.)
+
+### Boundaries
+
+- `bpf/` — kernel-side, written in C, compiled by clang
+- `internal/loader/` — knows about cilium/ebpf, loads `.o` files, attaches probes
+- `internal/events/` — knows about ringbuf semantics, decodes raw event bytes into Go structs
+- `internal/proc/` — pure Go, reads /proc, no eBPF
+- `internal/parser/` — pure Go, HTTP state machine, no eBPF, no syscalls
+- `cmd/tinytap/` — wires everything together
+
+### Why this separation
+
+Because it makes it easy to test the HTTP parser without eBPF, and the proc lookup without HTTP. The eBPF and ringbuf parts are the irreducibly system-dependent parts; everything else can be unit-tested with plain Go.
+
+### Reference docs
+
+Lower-level reference material lives under `docs/`:
+
+- [`docs/event-schema.md`](docs/event-schema.md) — the kernel↔userspace event struct (C / Go layouts, field semantics, byte offsets)
+- [`docs/terminology.md`](docs/terminology.md) — outgoing/incoming vocabulary and the HTTP protocol mapping
+- [`docs/ebpf-basics.md`](docs/ebpf-basics.md) — eBPF primer
 
 ## Development Environment
 
