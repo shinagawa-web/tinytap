@@ -104,6 +104,14 @@ tinytap/
 
 Because it makes it easy to test the HTTP parser without eBPF, and the proc lookup without HTTP. The eBPF and ringbuf parts are the irreducibly system-dependent parts; everything else can be unit-tested with plain Go.
 
+### Reference docs
+
+Lower-level reference material lives under [`docs/`](docs/):
+
+- [`docs/event-schema.md`](docs/event-schema.md) — the kernel↔userspace event struct (C / Go layouts, field semantics, byte offsets)
+- [`docs/terminology.md`](docs/terminology.md) — outgoing/incoming vocabulary and the HTTP protocol mapping
+- [`docs/ebpf-basics.md`](docs/ebpf-basics.md) — eBPF primer
+
 ## 5. Where tinytap Runs
 
 There are two distinct environments to keep in mind, and they answer two different questions.
