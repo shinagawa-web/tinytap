@@ -1,6 +1,6 @@
 BIN := tinytap
 
-.PHONY: all generate build run clean
+.PHONY: all generate build run run-raw clean
 
 all: generate build
 
@@ -10,7 +10,10 @@ generate:
 build:
 	go build -o $(BIN) ./cmd/tinytap
 
-run:
+run: build
+	@bash scripts/demo.sh
+
+run-raw: build
 	sudo ./$(BIN)
 
 clean:
