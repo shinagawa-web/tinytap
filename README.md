@@ -44,28 +44,7 @@ Architecture is modest. Ambition is honest.
 
 ---
 
-## 2. Terminology
-
-These terms appear throughout the doc, the code, and the issue tracker. They are deliberately **process-relative** — "from whose point of view?" matters.
-
-| Term | Meaning |
-|---|---|
-| **Outgoing syscall** | A syscall that writes data *out of* a process address space: `write`, `sendto`, `sendmsg`, `writev`. The user buffer is already populated at `sys_enter`, so the payload can be sampled on entry. |
-| **Incoming syscall** | A syscall that reads data *into* a process address space: `read`, `recvfrom`, `recvmsg`, `readv`. The user buffer is empty at `sys_enter` — the kernel fills it during the syscall, so the payload is only observable at `sys_exit` (with the return value telling us how much was actually filled). |
-| **send-side** / **receive-side** | Synonyms for outgoing / incoming, common in libbpf and Pixie writing. Acceptable once a paragraph has already grounded the direction; avoid as the *first* mention because they sound like they refer to the protocol direction (request vs response) when they actually refer to the syscall family. |
-
-### Protocol mapping (HTTP)
-
-`tinytap` is process-oriented, not protocol-aware. The same syscall carries the **request** on one side and the **response** on the other depending on who is calling it:
-
-| Process | Outgoing payload = | Incoming payload = |
-|---|---|---|
-| HTTP server (e.g. `python3 -m http.server`) | response | request |
-| HTTP client (e.g. `curl`) | request | response |
-
-So "the HTTP response" is *not* a synonym for "outgoing payload" — it depends which process is being observed. When protocol direction matters, write it out: "the HTTP response (server's outgoing payload)" rather than just "the send-side payload".
-
-## 3. What I'm Explicitly Not Trying to Do
+## 2. What I'm Explicitly Not Trying to Do
 
 - Replace tcpdump
 - Compete with kyanos or ptcpdump on features
@@ -75,9 +54,9 @@ So "the HTTP response" is *not* a synonym for "outgoing payload" — it depends 
 - Be fast at the kernel level
 - Get stars on GitHub
 
-## 4. v0.1.0: HTTP-aware
+## 3. v0.1.0: HTTP-aware
 
-Now that the plumbing works (see Roadmap §10 / closed issues #1-#3, #8), the next step:
+Now that the plumbing works (see Roadmap §7 / closed issues #1-#3, #8), the next step:
 
 1. Capture the **payload bytes** (not just byte count) for `read` and `write`
 2. Buffer per-fd, parse incoming bytes as HTTP/1.1
@@ -89,7 +68,7 @@ Now that the plumbing works (see Roadmap §10 / closed issues #1-#3, #8), the ne
 
 This is the "useful demo" version.
 
-## 5. Architecture
+## 4. Architecture
 
 ```
 tinytap/
@@ -125,17 +104,17 @@ tinytap/
 
 Because it makes it easy to test the HTTP parser without eBPF, and the proc lookup without HTTP. The eBPF and ringbuf parts are the irreducibly system-dependent parts; everything else can be unit-tested with plain Go.
 
-## 6. Where tinytap Runs
+## 5. Where tinytap Runs
 
 There are two distinct environments to keep in mind, and they answer two different questions.
 
-### 6.1 Where tinytap is *built and developed*
+### 5.1 Where tinytap is *built and developed*
 
-This is about me. The development environment is **Mac + Lima + Ubuntu VM**, because eBPF only exists on Linux and I work on a Mac. See Section 7 for setup.
+This is about me. The development environment is **Mac + Lima + Ubuntu VM**, because eBPF only exists on Linux and I work on a Mac. See Section 6 for setup.
 
 This is private to my workflow. It does not constrain users.
 
-### 6.2 Where tinytap is *executed*
+### 5.2 Where tinytap is *executed*
 
 This is about the user (which, for now, is also me, but eventually anyone).
 
@@ -152,7 +131,7 @@ But "requires a Linux kernel" is less restrictive than it sounds, because Linux 
 
 This pattern — "Mac/Win developers run this through a Linux VM" — is the standard for **all** eBPF tools, including kyanos, ptcpdump, eCapture, bpftrace, and Cilium tooling. tinytap is not unusual here.
 
-### 6.3 Containers are friends, not enemies
+### 5.3 Containers are friends, not enemies
 
 A common confusion: "if I'm running my dev stack in Docker on my Mac, can tinytap see inside the containers?"
 
@@ -180,14 +159,14 @@ For the user, this means: **tinytap doesn't need to be installed inside containe
 
 (There's a subtlety: container-aware *attribution* — turning a PID into "this is the api-service container" — is a deliberate feature, slated for v7.x. The kernel sees the PIDs; mapping them back to container names requires reading from Docker / containerd. For now tinytap just shows raw PIDs.)
 
-### 6.4 What this means for the project
+### 5.4 What this means for the project
 
 - The README's "Requirements" section will say: "Linux kernel 5.8+. macOS and Windows users run via Lima / WSL / VM."
 - I will not pretend to support macOS natively. There is no path to that.
 - I will not invest in cross-OS abstractions — there is one OS, Linux, and that's the OS this tool is for.
 - The "feels native on Mac" experience is delegated to Lima/OrbStack/etc., which is already a solved problem for the eBPF community.
 
-## 7. Toolchain
+## 6. Toolchain
 
 | Component | Choice | Why |
 |---|---|---|
@@ -224,15 +203,15 @@ echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-## 8. Roadmap
+## 7. Roadmap
 
 Moved to [#19](https://github.com/shinagawa-web/tinytap/issues/19) and pinned.
 
-## 9. License
+## 8. License
 
 MIT (assume — confirm before public release).
 
-## 10. References I'm Going to Lean On
+## 9. References I'm Going to Lean On
 
 - [cilium/ebpf examples](https://github.com/cilium/ebpf/tree/main/examples) — primary reference for the Go side
 - [hengyoush/kyanos](https://github.com/hengyoush/kyanos) — when I need to see "how do they actually do this for HTTP"
