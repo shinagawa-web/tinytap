@@ -53,4 +53,4 @@ Avoid bare **send-side** / **receive-side** as the first mention — they sound 
 
 When HTTP direction matters, write it out: "the HTTP response (server's outgoing payload)" rather than "the send-side payload" — the same outgoing syscall is the *response* on a server and the *request* on a client.
 
-See README §2 for the full glossary and the protocol mapping table.
+See [docs/terminology.md](docs/terminology.md) for the full glossary and the protocol mapping table.
