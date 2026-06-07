@@ -81,6 +81,9 @@ func main() {
 		{"sys_enter_sendto", objs.HandleSendto},
 		{"sys_enter_recvmsg", objs.HandleRecvmsg},
 		{"sys_enter_sendmsg", objs.HandleSendmsg},
+		{"sys_exit_read", objs.HandleExitRead},
+		{"sys_exit_recvfrom", objs.HandleExitRecvfrom},
+		{"sys_exit_recvmsg", objs.HandleExitRecvmsg},
 	}
 	for _, a := range attaches {
 		tp, err := link.Tracepoint("syscalls", a.name, a.prog, nil)

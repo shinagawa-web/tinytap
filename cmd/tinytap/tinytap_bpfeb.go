@@ -8,9 +8,17 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type TinytapIncomingPending struct {
+	_       structs.HostLayout
+	Syscall uint32
+	Fd      int32
+	Buf     uint64
+}
 
 // LoadTinytap returns the embedded CollectionSpec for Tinytap.
 func LoadTinytap() (*ebpf.CollectionSpec, error) {
@@ -54,21 +62,25 @@ type TinytapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type TinytapProgramSpecs struct {
-	HandleAccept4  *ebpf.ProgramSpec `ebpf:"handle_accept4"`
-	HandleClose    *ebpf.ProgramSpec `ebpf:"handle_close"`
-	HandleRead     *ebpf.ProgramSpec `ebpf:"handle_read"`
-	HandleRecvfrom *ebpf.ProgramSpec `ebpf:"handle_recvfrom"`
-	HandleRecvmsg  *ebpf.ProgramSpec `ebpf:"handle_recvmsg"`
-	HandleSendmsg  *ebpf.ProgramSpec `ebpf:"handle_sendmsg"`
-	HandleSendto   *ebpf.ProgramSpec `ebpf:"handle_sendto"`
-	HandleWrite    *ebpf.ProgramSpec `ebpf:"handle_write"`
+	HandleAccept4      *ebpf.ProgramSpec `ebpf:"handle_accept4"`
+	HandleClose        *ebpf.ProgramSpec `ebpf:"handle_close"`
+	HandleExitRead     *ebpf.ProgramSpec `ebpf:"handle_exit_read"`
+	HandleExitRecvfrom *ebpf.ProgramSpec `ebpf:"handle_exit_recvfrom"`
+	HandleExitRecvmsg  *ebpf.ProgramSpec `ebpf:"handle_exit_recvmsg"`
+	HandleRead         *ebpf.ProgramSpec `ebpf:"handle_read"`
+	HandleRecvfrom     *ebpf.ProgramSpec `ebpf:"handle_recvfrom"`
+	HandleRecvmsg      *ebpf.ProgramSpec `ebpf:"handle_recvmsg"`
+	HandleSendmsg      *ebpf.ProgramSpec `ebpf:"handle_sendmsg"`
+	HandleSendto       *ebpf.ProgramSpec `ebpf:"handle_sendto"`
+	HandleWrite        *ebpf.ProgramSpec `ebpf:"handle_write"`
 }
 
 // TinytapMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type TinytapMapSpecs struct {
-	Events *ebpf.MapSpec `ebpf:"events"`
+	Events             *ebpf.MapSpec `ebpf:"events"`
+	IncomingPendingMap *ebpf.MapSpec `ebpf:"incoming_pending_map"`
 }
 
 // TinytapVariableSpecs contains global variables before they are loaded into the kernel.
@@ -98,12 +110,14 @@ func (o *TinytapObjects) Close() error {
 //
 // It can be passed to LoadTinytapObjects or ebpf.CollectionSpec.LoadAndAssign.
 type TinytapMaps struct {
-	Events *ebpf.Map `ebpf:"events"`
+	Events             *ebpf.Map `ebpf:"events"`
+	IncomingPendingMap *ebpf.Map `ebpf:"incoming_pending_map"`
 }
 
 func (m *TinytapMaps) Close() error {
 	return _TinytapClose(
 		m.Events,
+		m.IncomingPendingMap,
 	)
 }
 
@@ -118,20 +132,26 @@ type TinytapVariables struct {
 //
 // It can be passed to LoadTinytapObjects or ebpf.CollectionSpec.LoadAndAssign.
 type TinytapPrograms struct {
-	HandleAccept4  *ebpf.Program `ebpf:"handle_accept4"`
-	HandleClose    *ebpf.Program `ebpf:"handle_close"`
-	HandleRead     *ebpf.Program `ebpf:"handle_read"`
-	HandleRecvfrom *ebpf.Program `ebpf:"handle_recvfrom"`
-	HandleRecvmsg  *ebpf.Program `ebpf:"handle_recvmsg"`
-	HandleSendmsg  *ebpf.Program `ebpf:"handle_sendmsg"`
-	HandleSendto   *ebpf.Program `ebpf:"handle_sendto"`
-	HandleWrite    *ebpf.Program `ebpf:"handle_write"`
+	HandleAccept4      *ebpf.Program `ebpf:"handle_accept4"`
+	HandleClose        *ebpf.Program `ebpf:"handle_close"`
+	HandleExitRead     *ebpf.Program `ebpf:"handle_exit_read"`
+	HandleExitRecvfrom *ebpf.Program `ebpf:"handle_exit_recvfrom"`
+	HandleExitRecvmsg  *ebpf.Program `ebpf:"handle_exit_recvmsg"`
+	HandleRead         *ebpf.Program `ebpf:"handle_read"`
+	HandleRecvfrom     *ebpf.Program `ebpf:"handle_recvfrom"`
+	HandleRecvmsg      *ebpf.Program `ebpf:"handle_recvmsg"`
+	HandleSendmsg      *ebpf.Program `ebpf:"handle_sendmsg"`
+	HandleSendto       *ebpf.Program `ebpf:"handle_sendto"`
+	HandleWrite        *ebpf.Program `ebpf:"handle_write"`
 }
 
 func (p *TinytapPrograms) Close() error {
 	return _TinytapClose(
 		p.HandleAccept4,
 		p.HandleClose,
+		p.HandleExitRead,
+		p.HandleExitRecvfrom,
+		p.HandleExitRecvmsg,
 		p.HandleRead,
 		p.HandleRecvfrom,
 		p.HandleRecvmsg,
