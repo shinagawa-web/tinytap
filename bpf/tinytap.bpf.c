@@ -49,6 +49,18 @@ struct sys_enter_ctx {
     unsigned long  args[6];
 };
 
+// Layout of /sys/kernel/tracing/events/syscalls/sys_exit_*/format.
+// Only the return value matters here.
+struct sys_exit_ctx {
+    unsigned short common_type;
+    unsigned char  common_flags;
+    unsigned char  common_preempt_count;
+    int            common_pid;
+    int            syscall_nr;
+    int            _pad;
+    long           ret;
+};
+
 // Mirror of glibc/Linux 64-bit userspace struct iovec (sys/uio.h).
 struct iovec_user {
     void  *iov_base;
@@ -106,6 +118,28 @@ static __always_inline __u32 read_msghdr(const void *user_msghdr_ptr,
     return total;
 }
 
+// Per-thread state stashed at sys_enter for incoming syscalls (read,
+// recvfrom, recvmsg). At sys_enter the user buffer is empty, so we
+// remember (fd, buf) keyed by tid and consume it at the matching
+// sys_exit, where the buffer is filled and the actual byte count is
+// available as the syscall return value.
+//
+// For read / recvfrom, `buf` is the user buffer pointer.
+// For recvmsg, `buf` is the msghdr pointer; the iov is re-walked at
+// sys_exit to find the first chunk to sample.
+struct incoming_pending {
+    __u32 syscall;
+    __s32 fd;
+    __u64 buf;       // user pointer; pointer type would block bpf2go codegen
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10240);
+    __type(key, __u32);                  // tid
+    __type(value, struct incoming_pending);
+} incoming_pending_map SEC(".maps");
+
 static __always_inline void submit_event(__u32 syscall, __s32 fd, __u32 bytes,
                                          const void *user_buf, __u32 user_len)
 {
@@ -138,6 +172,60 @@ static __always_inline void submit_event(__u32 syscall, __s32 fd, __u32 bytes,
     bpf_ringbuf_submit(e, 0);
 }
 
+// Record (syscall, fd, buf) for this thread at sys_enter so the matching
+// sys_exit can read the now-filled buffer.
+static __always_inline void stash_incoming(__u32 syscall, __s32 fd,
+                                           const void *buf)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    if ((__u32)(pid_tgid >> 32) == own_pid)
+        return;
+
+    __u32 tid = (__u32)pid_tgid;
+    struct incoming_pending p = {
+        .syscall = syscall,
+        .fd      = fd,
+        .buf     = (__u64)(unsigned long)buf,
+    };
+    bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY);
+}
+
+// Look up the stashed (fd, buf) for this thread, emit the event with the
+// actual received bytes, then delete the map entry. Called from sys_exit
+// of read / recvfrom / recvmsg.
+static __always_inline void submit_from_pending(long ret)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct incoming_pending *p =
+        bpf_map_lookup_elem(&incoming_pending_map, &tid);
+    if (!p)
+        return;
+
+    if (ret > 0) {
+        __u32 bytes = (__u32)ret;
+
+        if (p->syscall == SYS_RECVMSG) {
+            // Re-walk the msghdr to find the first iovec; payload sample
+            // comes from that chunk, capped at min(ret, first_len).
+            void *first_base = NULL;
+            __u32 first_len = 0;
+            read_msghdr((const void *)(unsigned long)p->buf,
+                        &first_base, &first_len);
+            __u32 to_read = bytes;
+            if (to_read > first_len)
+                to_read = first_len;
+            submit_event(p->syscall, p->fd, bytes, first_base, to_read);
+        } else {
+            // read / recvfrom: buf points directly at the receive buffer.
+            submit_event(p->syscall, p->fd, bytes,
+                         (const void *)(unsigned long)p->buf, bytes);
+        }
+    }
+    // Negative or zero return (error, EAGAIN, EOF): drop without an event.
+
+    bpf_map_delete_elem(&incoming_pending_map, &tid);
+}
+
 SEC("tracepoint/syscalls/sys_enter_accept4")
 int handle_accept4(struct sys_enter_ctx *ctx)
 {
@@ -145,12 +233,14 @@ int handle_accept4(struct sys_enter_ctx *ctx)
     return 0;
 }
 
-// Receive-side at sys_enter: the user buffer is empty (the kernel will
-// fill it during the syscall). Issue #13 will capture data at sys_exit.
+// Incoming syscalls at sys_enter: stash (fd, buf) for the matching
+// sys_exit. The user buffer is empty here; the kernel fills it during
+// the syscall.
 SEC("tracepoint/syscalls/sys_enter_read")
 int handle_read(struct sys_enter_ctx *ctx)
 {
-    submit_event(SYS_READ, (__s32)ctx->args[0], (__u32)ctx->args[2], NULL, 0);
+    stash_incoming(SYS_READ, (__s32)ctx->args[0],
+                   (const void *)ctx->args[1]);
     return 0;
 }
 
@@ -173,8 +263,8 @@ int handle_close(struct sys_enter_ctx *ctx)
 SEC("tracepoint/syscalls/sys_enter_recvfrom")
 int handle_recvfrom(struct sys_enter_ctx *ctx)
 {
-    submit_event(SYS_RECVFROM, (__s32)ctx->args[0], (__u32)ctx->args[2],
-                 NULL, 0);
+    stash_incoming(SYS_RECVFROM, (__s32)ctx->args[0],
+                   (const void *)ctx->args[1]);
     return 0;
 }
 
@@ -190,8 +280,10 @@ int handle_sendto(struct sys_enter_ctx *ctx)
 SEC("tracepoint/syscalls/sys_enter_recvmsg")
 int handle_recvmsg(struct sys_enter_ctx *ctx)
 {
-    __u32 total = read_msghdr((const void *)ctx->args[1], NULL, NULL);
-    submit_event(SYS_RECVMSG, (__s32)ctx->args[0], total, NULL, 0);
+    // Stash the msghdr pointer; sys_exit re-walks it to find the first
+    // iovec to sample.
+    stash_incoming(SYS_RECVMSG, (__s32)ctx->args[0],
+                   (const void *)ctx->args[1]);
     return 0;
 }
 
@@ -204,6 +296,30 @@ int handle_sendmsg(struct sys_enter_ctx *ctx)
                               &first_buf, &first_len);
     submit_event(SYS_SENDMSG, (__s32)ctx->args[0], total,
                  first_buf, first_len);
+    return 0;
+}
+
+// Incoming syscalls at sys_exit: consume the stashed (fd, buf) and emit
+// a single event with the actual received bytes as payload.
+
+SEC("tracepoint/syscalls/sys_exit_read")
+int handle_exit_read(struct sys_exit_ctx *ctx)
+{
+    submit_from_pending(ctx->ret);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_recvfrom")
+int handle_exit_recvfrom(struct sys_exit_ctx *ctx)
+{
+    submit_from_pending(ctx->ret);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_recvmsg")
+int handle_exit_recvmsg(struct sys_exit_ctx *ctx)
+{
+    submit_from_pending(ctx->ret);
     return 0;
 }
 
