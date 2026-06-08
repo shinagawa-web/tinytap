@@ -108,6 +108,8 @@ func main() {
 		rd.Close()
 	}()
 
+	parser := NewHTTPParser()
+
 	var e Event
 	for {
 		rec, err := rd.Read()
@@ -130,6 +132,13 @@ func main() {
 			line += " | " + renderPayload(e.Payload[:n])
 		}
 		log.Println(line)
+
+		for _, h := range parser.Feed(&e) {
+			log.Println(renderHTTPEvent(h))
+		}
+		if e.Syscall == syscallClose {
+			parser.Close(e.Pid, e.Fd)
+		}
 	}
 }
 
