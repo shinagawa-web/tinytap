@@ -54,10 +54,18 @@ type httpStatusLine struct {
 	status          int
 }
 
+// maxBufBytes caps how much a stream may buffer before we decide it is
+// not HTTP and stop processing it. Real HTTP/1.1 headers are bounded
+// (most clients reject > 8 KiB); going past 16 KiB without finding a
+// recognisable start line or header terminator means this fd carries
+// some other byte stream (a log pipe, a binary file, …).
+const maxBufBytes = 16 * 1024
+
 // stream holds parser state for one direction of one (pid, fd).
 type stream struct {
 	buf           []byte
 	state         httpParseState
+	abandoned     bool // marked true if buf grew past maxBufBytes without progress
 	isRequest     bool // set when the start line is parsed
 	contentLength int
 	bodyRemaining int
@@ -114,10 +122,26 @@ func (p *HTTPParser) Feed(e *Event) []HTTPEvent {
 		s = &stream{}
 		p.streams[key] = s
 	}
+	// Once a stream is recognised as non-HTTP, drop further bytes for it
+	// instead of recreating state on every event. The marker entry stays
+	// in the map until the fd is closed.
+	if s.abandoned {
+		return nil
+	}
 	s.buf = append(s.buf, payload...)
 
 	comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
-	return p.advance(s, e.Pid, comm)
+	out := p.advance(s, e.Pid, comm)
+
+	// If the stream is accumulating without finding HTTP structure, abandon
+	// it so it cannot grow unbounded. State machine in stateNeedBody drains
+	// buf as it goes, so this cap is only reached during start-line / header
+	// scanning of a stream that almost certainly is not HTTP.
+	if len(s.buf) > maxBufBytes {
+		s.abandoned = true
+		s.buf = nil
+	}
+	return out
 }
 
 // Close evicts both directions for the given (pid, fd). Pending data
@@ -183,7 +207,10 @@ func (p *HTTPParser) advance(s *stream, pid uint32, comm string) []HTTPEvent {
 				name := strings.TrimSpace(h[:colon])
 				value := strings.TrimSpace(h[colon+1:])
 				if strings.EqualFold(name, "Content-Length") {
-					if n, err := strconv.Atoi(value); err == nil {
+					// Ignore negative or unparseable values; a hostile or buggy
+					// origin sending Content-Length: -1 would otherwise set
+					// bodyRemaining < 0 and crash stateNeedBody on s.buf[consume:].
+					if n, err := strconv.Atoi(value); err == nil && n >= 0 {
 						s.contentLength = n
 					}
 				}
