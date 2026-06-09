@@ -103,6 +103,94 @@ func TestHeadResponseHasNoBodyDespiteContentLength(t *testing.T) {
 	}
 }
 
+// A 1xx informational response precedes a final response for the same
+// request. Popping the queued method on the 1xx desynchronises the FIFO,
+// so a later pipelined HEAD's slot gets attributed to the wrong response.
+// This test exercises the exact bug: a 1xx must peek, not pop.
+func TestInformationalResponseDoesNotConsumeMethodQueue(t *testing.T) {
+	p := NewHTTPParser()
+	pid, fd := uint32(1234), int32(7)
+
+	// Two pipelined requests: POST with Expect: 100-continue, then HEAD.
+	req1 := []byte("POST /upload HTTP/1.1\r\nExpect: 100-continue\r\n\r\n")
+	req2 := []byte("HEAD /resource HTTP/1.1\r\nHost: x\r\n\r\n")
+	reqWire := append(append([]byte{}, req1...), req2...)
+	p.Feed(makeEvent(syscallWrite, pid, fd, uint32(len(reqWire)), reqWire))
+
+	// Server reply stream: 100 Continue → POST's 200 (5-byte body) →
+	// HEAD's 200 (Content-Length: 1000 but no body). A 204 follows so we
+	// can verify the HEAD's framing closed cleanly and the parser moved on.
+	resp1 := []byte("HTTP/1.1 100 Continue\r\n\r\n")
+	resp2 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+	resp3 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
+	resp4 := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+	respWire := append(append(append(append([]byte{}, resp1...), resp2...), resp3...), resp4...)
+	got := p.Feed(makeEvent(syscallRead, pid, fd, uint32(len(respWire)), respWire))
+
+	if len(got) != 4 {
+		t.Fatalf("want [100, 200(POST), 200(HEAD), 204] = 4 events, got %d: %+v", len(got), got)
+	}
+	statuses := [4]int{got[0].Res.status, got[1].Res.status, got[2].Res.status, got[3].Res.status}
+	if statuses != [4]int{100, 200, 200, 204} {
+		t.Errorf("status sequence wrong: %v", statuses)
+	}
+	// POST's response keeps its body — 1xx peek did NOT pop the POST method.
+	if got[1].ContentLength != 5 {
+		t.Errorf("POST's 200: body should NOT be stripped (ContentLength=%d, want 5)", got[1].ContentLength)
+	}
+	// HEAD's response gets stripped — the HEAD method was correctly popped.
+	if got[2].ContentLength != 0 {
+		t.Errorf("HEAD's 200: ContentLength should be 0 (got %d)", got[2].ContentLength)
+	}
+}
+
+// When two messages arrive in a single syscall (pipeline within one read),
+// the second message's HTTPEvent.TsNs must reflect that syscall's ktime —
+// not 0. Regression for: advance() was zeroing messageStartTs after body
+// completion, then looping into the next start-line without going back
+// through Feed, which is where the ts gets seeded.
+func TestPipelinedMessagesInOneSyscallShareTsNs(t *testing.T) {
+	p := NewHTTPParser()
+	wire := append([]byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"),
+		[]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")...)
+	ev := makeEvent(syscallWrite, 1234, 7, uint32(len(wire)), wire)
+	ev.TsNs = 42_000_000_000
+
+	got := p.Feed(ev)
+	if len(got) != 2 {
+		t.Fatalf("want 2 events, got %d", len(got))
+	}
+	if got[0].TsNs != 42_000_000_000 {
+		t.Errorf("first event TsNs: want 42_000_000_000, got %d", got[0].TsNs)
+	}
+	if got[1].TsNs != 42_000_000_000 {
+		t.Errorf("second event TsNs: want 42_000_000_000 (same syscall), got %d", got[1].TsNs)
+	}
+}
+
+// After a message's body drains exactly at an event boundary, the next
+// message arriving in a fresh event must take its own TsNs — not leak
+// the previous event's. Verifies the Feed-side body-drain reset.
+func TestNextEventAfterBodyCompletesGetsItsOwnTsNs(t *testing.T) {
+	p := NewHTTPParser()
+	pid, fd := uint32(1234), int32(7)
+
+	wire1 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+	evA := makeEvent(syscallWrite, pid, fd, uint32(len(wire1)), wire1)
+	evA.TsNs = 100
+	if got := p.Feed(evA); len(got) != 1 || got[0].TsNs != 100 {
+		t.Fatalf("event A: want one event with TsNs=100, got %+v", got)
+	}
+
+	wire2 := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+	evB := makeEvent(syscallWrite, pid, fd, uint32(len(wire2)), wire2)
+	evB.TsNs = 200
+	got := p.Feed(evB)
+	if len(got) != 1 || got[0].TsNs != 200 {
+		t.Fatalf("event B: want one event with TsNs=200, got %+v", got)
+	}
+}
+
 // 1xx, 204, 304 responses have no body regardless of any Content-Length
 // header. The parser must consume them as zero-length and immediately
 // look for the next message.

@@ -193,6 +193,9 @@ func (p *HTTPParser) Feed(e *Event) []HTTPEvent {
 			return out
 		}
 		// Body drained; any leftover wire/sample bytes are the next message.
+		// Reset messageStartTs to 0; either the carry-over append below
+		// (next-message bytes in this event) will reseed it via the
+		// "if messageStartTs == 0" check, or the next Feed call will.
 		s.state = stateNeedStartLine
 		s.wireBytesSinceMessageStart = 0
 		s.wireBytesConsumed = 0
@@ -216,7 +219,7 @@ func (p *HTTPParser) Feed(e *Event) []HTTPEvent {
 	s.wireBytesSinceMessageStart += wireBytes
 
 	comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
-	out = append(out, p.advance(s, e.Pid, comm)...)
+	out = append(out, p.advance(s, e.Pid, comm, e.TsNs)...)
 
 	// If the stream is accumulating without finding HTTP structure, abandon
 	// it so it cannot grow unbounded. Body draining above never touches buf,
@@ -240,7 +243,10 @@ func (p *HTTPParser) Close(pid uint32, fd int32) {
 
 // advance drives the state machine until the buffer is drained or more
 // bytes are needed. Each completed header set produces one HTTPEvent.
-func (p *HTTPParser) advance(s *stream, pid uint32, comm string) []HTTPEvent {
+// currentEventTs is the BPF ktime of the event Feed is currently
+// processing — used to seed the next message's messageStartTs when a
+// pipelined message's bytes carry over from the same event.
+func (p *HTTPParser) advance(s *stream, pid uint32, comm string, currentEventTs uint64) []HTTPEvent {
 	var out []HTTPEvent
 	for {
 		switch s.state {
@@ -280,13 +286,30 @@ func (p *HTTPParser) advance(s *stream, pid uint32, comm string) []HTTPEvent {
 			s.state = stateNeedHeaders
 
 		case stateNeedHeaders:
-			idx := bytes.Index(s.buf, []byte("\r\n\r\n"))
-			if idx < 0 {
-				return out
+			// The header section ends at the empty line that follows it.
+			// In wire form that empty line is `\r\n` immediately *after*
+			// the previous line's `\r\n` — i.e. `\r\n\r\n` straddling the
+			// boundary. The start-line state already consumed the
+			// boundary's first `\r\n`, so we now expect either:
+			//   - `\r\n` at the very start of buf → zero headers
+			//   - `<header lines>\r\n\r\n` somewhere in buf → some headers
+			// Without the zero-headers case, responses like `HTTP/1.1 100
+			// Continue\r\n\r\n` (no header lines) stall the parser.
+			var headerBlock string
+			var consume int
+			if len(s.buf) >= 2 && s.buf[0] == '\r' && s.buf[1] == '\n' {
+				headerBlock = ""
+				consume = 2
+			} else {
+				idx := bytes.Index(s.buf, []byte("\r\n\r\n"))
+				if idx < 0 {
+					return out
+				}
+				headerBlock = string(s.buf[:idx])
+				consume = idx + 4
 			}
-			headerBlock := string(s.buf[:idx])
-			s.buf = s.buf[idx+4:]
-			s.wireBytesConsumed += idx + 4
+			s.buf = s.buf[consume:]
+			s.wireBytesConsumed += consume
 
 			for _, h := range strings.Split(headerBlock, "\r\n") {
 				colon := strings.Index(h, ":")
@@ -310,11 +333,26 @@ func (p *HTTPParser) advance(s *stream, pid uint32, comm string) []HTTPEvent {
 			// response side can recognise that a HEAD's response carries no
 			// body regardless of Content-Length. Done before emitting so
 			// HTTPEvent.ContentLength reflects the *effective* body size.
+			//
+			// 1xx responses are *informational* — they precede a final
+			// response for the same request (e.g. "100 Continue" before a
+			// "201 Created"). Pop the queued method only on final responses
+			// (>=200); for 1xx peek so the method stays available for the
+			// final reply. Otherwise pipelined HEAD requests get
+			// desynchronised when a prior request emits a 1xx.
 			key := pidFd{pid: pid, fd: s.fd}
 			if s.isRequest {
 				p.pendingMethods[key] = append(p.pendingMethods[key], s.req.method)
-			} else if hasNoBody(s.res.status, p.popMethod(key)) {
-				s.contentLength = 0
+			} else {
+				var method string
+				if s.res.status >= 200 {
+					method = p.popMethod(key)
+				} else {
+					method = p.peekMethod(key)
+				}
+				if hasNoBody(s.res.status, method) {
+					s.contentLength = 0
+				}
 			}
 
 			out = append(out, HTTPEvent{
@@ -350,10 +388,19 @@ func (p *HTTPParser) advance(s *stream, pid uint32, comm string) []HTTPEvent {
 				s.state = stateNeedStartLine
 				s.wireBytesSinceMessageStart = bodyAlready - s.contentLength
 				s.wireBytesConsumed = 0
-				// Carry-over buf bytes belong to the next message. We don't
-				// know which event they came from, so leave messageStartTs
-				// zero; Feed will set it on the next event that lands here.
-				s.messageStartTs = 0
+				// If carry-over buf bytes belong to the next message, they
+				// came in via the event Feed is currently processing — the
+				// same syscall that carried this message's body tail — so
+				// the next message's first byte hit the wire at the same
+				// TsNs. Without this, advance() loops into the next
+				// start-line and emits an HTTPEvent with TsNs==0, breaking
+				// latency. When buf is empty, the next message will arrive
+				// in a future event; reset to 0 so Feed reseeds it then.
+				if len(s.buf) > 0 {
+					s.messageStartTs = currentEventTs
+				} else {
+					s.messageStartTs = 0
+				}
 			} else {
 				// Body still draining — subsequent events are debited via
 				// Feed's wire-byte accounting. Drop body sample bytes; we
@@ -391,6 +438,17 @@ func (p *HTTPParser) popMethod(key pidFd) string {
 		p.pendingMethods[key] = q[1:]
 	}
 	return m
+}
+
+// peekMethod returns the next pending request method without dequeuing.
+// Used for 1xx informational responses, where the same request will be
+// followed by a final response (>=200) that still needs the method.
+func (p *HTTPParser) peekMethod(key pidFd) string {
+	q := p.pendingMethods[key]
+	if len(q) == 0 {
+		return ""
+	}
+	return q[0]
 }
 
 // hasNoBody reports whether a response with the given status, sent in
