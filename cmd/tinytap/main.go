@@ -24,7 +24,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("load: %v", err)
 	}
-	defer tt.Close()
+	defer func() {
+		if err := tt.Close(); err != nil {
+			log.Printf("teardown: %v", err)
+		}
+	}()
 
 	log.Println("tinytap running — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.")
 

@@ -4,4 +4,6 @@
 // them with `go generate` after editing the C source.
 package bpf
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -output-dir . -go-package bpf Tinytap ../../../bpf/tinytap.bpf.c -- -I/usr/include/aarch64-linux-gnu
+// Include both multiarch dirs; clang silently ignores ones that don't
+// exist, so this works on amd64 and arm64 hosts without per-arch tweaks.
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -output-dir . -go-package bpf Tinytap ../../../bpf/tinytap.bpf.c -- -I/usr/include/aarch64-linux-gnu -I/usr/include/x86_64-linux-gnu

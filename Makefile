@@ -5,7 +5,7 @@ BIN := tinytap
 all: generate build
 
 generate:
-	cd cmd/tinytap && go generate
+	cd internal/loader/bpf && go generate
 
 build:
 	go build -o $(BIN) ./cmd/tinytap
@@ -17,4 +17,4 @@ run-raw: build
 	sudo ./$(BIN)
 
 clean:
-	rm -f $(BIN) cmd/tinytap/tinytap_bpf*.go cmd/tinytap/tinytap_bpf*.o
+	rm -f $(BIN) internal/loader/bpf/tinytap_bpf*.go internal/loader/bpf/tinytap_bpf*.o

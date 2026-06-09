@@ -6,6 +6,7 @@
 package loader
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/cilium/ebpf"
@@ -86,13 +87,23 @@ func Load(ownPid uint32) (*Tinytap, error) {
 
 // Close detaches every tracepoint, closes the ringbuf reader, and
 // releases the loaded BPF objects. Safe to call on a partially
-// initialised Tinytap (after a failed Load).
+// initialised Tinytap (after a failed Load). All teardown errors are
+// joined and returned so a single failing component doesn't silently
+// hide its sibling's failures.
 func (t *Tinytap) Close() error {
+	var errs []error
 	if t.Reader != nil {
-		t.Reader.Close()
+		if err := t.Reader.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close ringbuf reader: %w", err))
+		}
 	}
-	for _, tp := range t.tracepoints {
-		tp.Close()
+	for i, tp := range t.tracepoints {
+		if err := tp.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close tracepoint %d: %w", i, err))
+		}
 	}
-	return t.objs.Close()
+	if err := t.objs.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("close objects: %w", err))
+	}
+	return errors.Join(errs...)
 }
