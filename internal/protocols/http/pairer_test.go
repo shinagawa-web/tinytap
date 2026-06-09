@@ -1,4 +1,4 @@
-package main
+package http
 
 import (
 	"testing"
@@ -11,11 +11,11 @@ func TestPairerMatchesRequestAndResponse(t *testing.T) {
 	reqTs := uint64(1_000_000_000)
 	resTs := uint64(1_001_500_000) // +1.5ms
 
-	req := HTTPEvent{
+	req := Message{
 		TsNs: reqTs, Pid: 42, Fd: 7, Comm: "curl", IsRequest: true,
 		Req: httpRequestLine{method: "GET", path: "/x", version: "HTTP/1.1"},
 	}
-	res := HTTPEvent{
+	res := Message{
 		TsNs: resTs, Pid: 42, Fd: 7, Comm: "python3", IsRequest: false,
 		Res:           httpStatusLine{version: "HTTP/1.1", status: 200, reason: "OK"},
 		ContentLength: 649,
@@ -46,13 +46,13 @@ func TestPairerHandlesPipelining(t *testing.T) {
 	p := NewPairer()
 	pid, fd := uint32(42), int32(7)
 
-	r1 := HTTPEvent{TsNs: 100, Pid: pid, Fd: fd, IsRequest: true,
+	r1 := Message{TsNs: 100, Pid: pid, Fd: fd, IsRequest: true,
 		Req: httpRequestLine{method: "GET", path: "/a"}}
-	r2 := HTTPEvent{TsNs: 200, Pid: pid, Fd: fd, IsRequest: true,
+	r2 := Message{TsNs: 200, Pid: pid, Fd: fd, IsRequest: true,
 		Req: httpRequestLine{method: "GET", path: "/b"}}
-	s1 := HTTPEvent{TsNs: 300, Pid: pid, Fd: fd, IsRequest: false,
+	s1 := Message{TsNs: 300, Pid: pid, Fd: fd, IsRequest: false,
 		Res: httpStatusLine{status: 200}}
-	s2 := HTTPEvent{TsNs: 400, Pid: pid, Fd: fd, IsRequest: false,
+	s2 := Message{TsNs: 400, Pid: pid, Fd: fd, IsRequest: false,
 		Res: httpStatusLine{status: 204}}
 
 	p.Push(r1)
@@ -70,7 +70,7 @@ func TestPairerHandlesPipelining(t *testing.T) {
 
 func TestPairerDropsOrphanResponse(t *testing.T) {
 	p := NewPairer()
-	res := HTTPEvent{TsNs: 100, Pid: 42, Fd: 7, IsRequest: false,
+	res := Message{TsNs: 100, Pid: 42, Fd: 7, IsRequest: false,
 		Res: httpStatusLine{status: 200}}
 	if pe, ok := p.Push(res); ok {
 		t.Errorf("orphan response should not pair, got %+v", pe)

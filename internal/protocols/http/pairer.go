@@ -1,4 +1,4 @@
-package main
+package http
 
 import "time"
 
@@ -11,7 +11,7 @@ import "time"
 // so a simple FIFO per (pid, fd) is sufficient. Chunked encoding and
 // HTTP/2 are out of scope for v0.1.0.
 type Pairer struct {
-	pending map[pidFd][]HTTPEvent
+	pending map[pidFd][]Message
 }
 
 // PairedEvent is what the pairer hands off to the renderer once a request
@@ -35,7 +35,7 @@ type PairedEvent struct {
 }
 
 func NewPairer() *Pairer {
-	return &Pairer{pending: make(map[pidFd][]HTTPEvent)}
+	return &Pairer{pending: make(map[pidFd][]Message)}
 }
 
 // Push registers an HTTP event with the pairer. If the event is a request,
@@ -43,7 +43,7 @@ func NewPairer() *Pairer {
 // matching request is queued, the request is dequeued and a paired event
 // is returned. Unmatched responses (request was missed) yield nil so the
 // caller can decide whether to render them on their own.
-func (p *Pairer) Push(e HTTPEvent) (PairedEvent, bool) {
+func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 	key := pidFd{pid: e.Pid, fd: e.Fd}
 	if e.IsRequest {
 		p.pending[key] = append(p.pending[key], e)

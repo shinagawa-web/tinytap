@@ -1,13 +1,15 @@
-package main
+package http
 
 import (
 	"testing"
+
+	"github.com/shinagawa-web/tinytap/internal/events"
 )
 
 // makeEvent builds a synthetic BPF event. wireBytes is the syscall's true
 // wire byte count; the payload is the (possibly truncated) sample.
-func makeEvent(syscall uint32, pid uint32, fd int32, wireBytes uint32, sample []byte) *Event {
-	e := &Event{
+func makeEvent(syscall uint32, pid uint32, fd int32, wireBytes uint32, sample []byte) *events.Event {
+	e := &events.Event{
 		Pid:     pid,
 		Fd:      fd,
 		Bytes:   wireBytes,
@@ -35,29 +37,29 @@ func TestBodySplitAcrossMultipleSyscalls(t *testing.T) {
 		chunk[i] = 'B'
 	}
 
-	p := NewHTTPParser()
+	p := NewParser()
 	pid, fd := uint32(1234), int32(7)
 
 	// Event 1: headers + first 1000 wire bytes of body, sample 256.
 	ev1Wire := append(append([]byte{}, headers...), chunk...)
-	ev1 := makeEvent(syscallWrite, pid, fd, uint32(len(headers)+len(chunk)), ev1Wire)
+	ev1 := makeEvent(events.SyscallWrite, pid, fd, uint32(len(headers)+len(chunk)), ev1Wire)
 	if got := p.Feed(ev1); len(got) != 1 || got[0].Res.status != 200 {
 		t.Fatalf("event 1: want 1 HTTP event with status 200, got %+v", got)
 	}
 
 	// Event 2 and 3: 1000 wire bytes each of pure body.
-	ev2 := makeEvent(syscallWrite, pid, fd, uint32(len(chunk)), chunk)
+	ev2 := makeEvent(events.SyscallWrite, pid, fd, uint32(len(chunk)), chunk)
 	if got := p.Feed(ev2); len(got) != 0 {
 		t.Fatalf("event 2: expected no HTTP events while body drains, got %+v", got)
 	}
-	ev3 := makeEvent(syscallWrite, pid, fd, uint32(len(chunk)), chunk)
+	ev3 := makeEvent(events.SyscallWrite, pid, fd, uint32(len(chunk)), chunk)
 	if got := p.Feed(ev3); len(got) != 0 {
 		t.Fatalf("event 3: expected no HTTP events at body completion, got %+v", got)
 	}
 
 	// Event 4: next pipelined response — only parses if body framing closed.
 	next := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
-	ev4 := makeEvent(syscallWrite, pid, fd, uint32(len(next)), next)
+	ev4 := makeEvent(events.SyscallWrite, pid, fd, uint32(len(next)), next)
 	got := p.Feed(ev4)
 	if len(got) != 1 || got[0].Res.status != 204 {
 		t.Fatalf("event 4: want 204 as next message (body framing closed), got %+v", got)
@@ -70,8 +72,8 @@ func TestBodySplitAcrossMultipleSyscalls(t *testing.T) {
 func TestSmallBodyAndNextMessageInSameSyscall(t *testing.T) {
 	wire := append([]byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"),
 		[]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")...)
-	p := NewHTTPParser()
-	ev := makeEvent(syscallWrite, 1234, 7, uint32(len(wire)), wire)
+	p := NewParser()
+	ev := makeEvent(events.SyscallWrite, 1234, 7, uint32(len(wire)), wire)
 	got := p.Feed(ev)
 	if len(got) != 2 || got[0].Res.status != 200 || got[1].Res.status != 204 {
 		t.Fatalf("want [200, 204], got %+v", got)
@@ -83,12 +85,12 @@ func TestSmallBodyAndNextMessageInSameSyscall(t *testing.T) {
 // body bytes that never arrive, mis-attributing the next keep-alive
 // response as body content.
 func TestHeadResponseHasNoBodyDespiteContentLength(t *testing.T) {
-	p := NewHTTPParser()
+	p := NewParser()
 	pid, fd := uint32(1234), int32(7)
 
 	// Client side: HEAD request goes out (write/sendto/sendmsg).
 	req := []byte("HEAD /index.html HTTP/1.1\r\nHost: x\r\n\r\n")
-	if got := p.Feed(makeEvent(syscallWrite, pid, fd, uint32(len(req)), req)); len(got) != 1 || !got[0].IsRequest || got[0].Req.method != "HEAD" {
+	if got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(req)), req)); len(got) != 1 || !got[0].IsRequest || got[0].Req.method != "HEAD" {
 		t.Fatalf("HEAD request: want 1 request event, got %+v", got)
 	}
 
@@ -97,7 +99,7 @@ func TestHeadResponseHasNoBodyDespiteContentLength(t *testing.T) {
 	resp1 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
 	resp2 := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
 	wire := append(append([]byte{}, resp1...), resp2...)
-	got := p.Feed(makeEvent(syscallRead, pid, fd, uint32(len(wire)), wire))
+	got := p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(wire)), wire))
 	if len(got) != 2 || got[0].Res.status != 200 || got[1].Res.status != 204 {
 		t.Fatalf("HEAD/next: want [200, 204], got %+v", got)
 	}
@@ -108,14 +110,14 @@ func TestHeadResponseHasNoBodyDespiteContentLength(t *testing.T) {
 // so a later pipelined HEAD's slot gets attributed to the wrong response.
 // This test exercises the exact bug: a 1xx must peek, not pop.
 func TestInformationalResponseDoesNotConsumeMethodQueue(t *testing.T) {
-	p := NewHTTPParser()
+	p := NewParser()
 	pid, fd := uint32(1234), int32(7)
 
 	// Two pipelined requests: POST with Expect: 100-continue, then HEAD.
 	req1 := []byte("POST /upload HTTP/1.1\r\nExpect: 100-continue\r\n\r\n")
 	req2 := []byte("HEAD /resource HTTP/1.1\r\nHost: x\r\n\r\n")
 	reqWire := append(append([]byte{}, req1...), req2...)
-	p.Feed(makeEvent(syscallWrite, pid, fd, uint32(len(reqWire)), reqWire))
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(reqWire)), reqWire))
 
 	// Server reply stream: 100 Continue → POST's 200 (5-byte body) →
 	// HEAD's 200 (Content-Length: 1000 but no body). A 204 follows so we
@@ -125,7 +127,7 @@ func TestInformationalResponseDoesNotConsumeMethodQueue(t *testing.T) {
 	resp3 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
 	resp4 := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
 	respWire := append(append(append(append([]byte{}, resp1...), resp2...), resp3...), resp4...)
-	got := p.Feed(makeEvent(syscallRead, pid, fd, uint32(len(respWire)), respWire))
+	got := p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(respWire)), respWire))
 
 	if len(got) != 4 {
 		t.Fatalf("want [100, 200(POST), 200(HEAD), 204] = 4 events, got %d: %+v", len(got), got)
@@ -145,15 +147,15 @@ func TestInformationalResponseDoesNotConsumeMethodQueue(t *testing.T) {
 }
 
 // When two messages arrive in a single syscall (pipeline within one read),
-// the second message's HTTPEvent.TsNs must reflect that syscall's ktime —
+// the second message's Message.TsNs must reflect that syscall's ktime —
 // not 0. Regression for: advance() was zeroing messageStartTs after body
 // completion, then looping into the next start-line without going back
 // through Feed, which is where the ts gets seeded.
 func TestPipelinedMessagesInOneSyscallShareTsNs(t *testing.T) {
-	p := NewHTTPParser()
+	p := NewParser()
 	wire := append([]byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"),
 		[]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")...)
-	ev := makeEvent(syscallWrite, 1234, 7, uint32(len(wire)), wire)
+	ev := makeEvent(events.SyscallWrite, 1234, 7, uint32(len(wire)), wire)
 	ev.TsNs = 42_000_000_000
 
 	got := p.Feed(ev)
@@ -172,18 +174,18 @@ func TestPipelinedMessagesInOneSyscallShareTsNs(t *testing.T) {
 // message arriving in a fresh event must take its own TsNs — not leak
 // the previous event's. Verifies the Feed-side body-drain reset.
 func TestNextEventAfterBodyCompletesGetsItsOwnTsNs(t *testing.T) {
-	p := NewHTTPParser()
+	p := NewParser()
 	pid, fd := uint32(1234), int32(7)
 
 	wire1 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
-	evA := makeEvent(syscallWrite, pid, fd, uint32(len(wire1)), wire1)
+	evA := makeEvent(events.SyscallWrite, pid, fd, uint32(len(wire1)), wire1)
 	evA.TsNs = 100
 	if got := p.Feed(evA); len(got) != 1 || got[0].TsNs != 100 {
 		t.Fatalf("event A: want one event with TsNs=100, got %+v", got)
 	}
 
 	wire2 := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
-	evB := makeEvent(syscallWrite, pid, fd, uint32(len(wire2)), wire2)
+	evB := makeEvent(events.SyscallWrite, pid, fd, uint32(len(wire2)), wire2)
 	evB.TsNs = 200
 	got := p.Feed(evB)
 	if len(got) != 1 || got[0].TsNs != 200 {
@@ -206,13 +208,13 @@ func TestStatusCodesWithNoBody(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := NewHTTPParser()
+			p := NewParser()
 			// Buggy / weird origin: declares Content-Length but the status
 			// forbids a body. Pair with a follow-up 200 to confirm framing.
 			resp1 := []byte("HTTP/1.1 " + tc.status + "\r\nContent-Length: 1000\r\n\r\n")
 			resp2 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
 			wire := append(append([]byte{}, resp1...), resp2...)
-			got := p.Feed(makeEvent(syscallWrite, 1234, 7, uint32(len(wire)), wire))
+			got := p.Feed(makeEvent(events.SyscallWrite, 1234, 7, uint32(len(wire)), wire))
 			if len(got) != 2 || got[0].Res.status != tc.code || got[1].Res.status != 200 {
 				t.Fatalf("want [%d, 200], got %+v", tc.code, got)
 			}

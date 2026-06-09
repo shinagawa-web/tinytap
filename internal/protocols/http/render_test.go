@@ -1,4 +1,4 @@
-package main
+package http
 
 import (
 	"strings"
@@ -15,22 +15,22 @@ func TestRenderPairedEventMatchesSpecFormat(t *testing.T) {
 		Latency:  1200 * time.Microsecond,
 	}
 	when := time.Date(2026, 6, 8, 19, 35, 24, 123_000_000, time.UTC)
-	got := renderPairedEvent(pe, when)
+	got := RenderPaired(pe, when)
 	want := "[19:35:24.123] pid=5936 (python3) GET / HTTP/1.1 → HTTP/1.0 200 OK 649 bytes (1.2ms)"
 	if got != want {
 		t.Errorf("\n got: %q\nwant: %q", got, want)
 	}
 }
 
-// timeAnchor must extrapolate correctly for events whose ktime is before
+// TimeAnchor must extrapolate correctly for events whose ktime is before
 // (smaller than) the anchor — a request that landed slightly earlier than
 // its response, where we anchor on the response.
 func TestTimeAnchorExtrapolatesBackwards(t *testing.T) {
-	var a timeAnchor
+	var a TimeAnchor
 	resTs := uint64(2_000_000_000)
-	resWall := a.wallTime(resTs)
+	resWall := a.WallTime(resTs)
 	// Request 5 ms earlier (in BPF ns).
-	reqWall := a.wallTime(resTs - 5_000_000)
+	reqWall := a.WallTime(resTs - 5_000_000)
 	if delta := resWall.Sub(reqWall); delta != 5*time.Millisecond {
 		t.Errorf("want 5ms gap, got %v", delta)
 	}

@@ -1,13 +1,21 @@
-package main
+// Package http parses HTTP/1.x messages from BPF observation streams,
+// pairs requests with responses on the same (pid, fd), and renders the
+// one-line summary the demo emits. The package is protocol-specific —
+// peers under internal/protocols/ (PostgreSQL, Redis, etc.) will mirror
+// this shape rather than share code with it, because each protocol's
+// framing and pairing semantics differ.
+package http
 
 import (
 	"bytes"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/shinagawa-web/tinytap/internal/events"
 )
 
-// HTTPParser reassembles HTTP/1.x messages from per-direction byte streams
+// Parser reassembles HTTP/1.x messages from per-direction byte streams
 // observed in BPF events. One stream per (pid, fd, direction). A stream
 // can carry multiple messages in sequence (HTTP/1.1 keep-alive), so on
 // body completion the state resets to look for the next start line.
@@ -94,16 +102,16 @@ type stream struct {
 	// the terminator), so this counter is exact for the common path.
 	wireBytesConsumed int
 	// messageStartTs is the BPF timestamp of the first event that
-	// contributed bytes to the current message. Used as the HTTPEvent's
+	// contributed bytes to the current message. Used as the Message's
 	// timestamp, and as the basis for latency once a response is paired
 	// with its request.
 	messageStartTs uint64
 }
 
-// HTTPEvent is what the parser emits when a message's headers are
+// Message is what the parser emits when a message's headers are
 // recognised. Body completion is tracked internally for keep-alive
 // framing but doesn't produce a separate event.
-type HTTPEvent struct {
+type Message struct {
 	TsNs          uint64 // first-byte timestamp of this message (BPF ktime ns)
 	Pid           uint32
 	Fd            int32 // file descriptor — pairs request with response on the same socket
@@ -114,7 +122,7 @@ type HTTPEvent struct {
 	ContentLength int // body length as advertised by Content-Length (post-no-body override)
 }
 
-type HTTPParser struct {
+type Parser struct {
 	streams map[connKey]*stream
 	// pendingMethods is a per-(pid, fd) FIFO of request methods awaiting
 	// their response. Used so the response-side parser can frame the body
@@ -123,8 +131,8 @@ type HTTPParser struct {
 	pendingMethods map[pidFd][]string
 }
 
-func NewHTTPParser() *HTTPParser {
-	return &HTTPParser{
+func NewParser() *Parser {
+	return &Parser{
 		streams:        make(map[connKey]*stream),
 		pendingMethods: make(map[pidFd][]string),
 	}
@@ -133,12 +141,12 @@ func NewHTTPParser() *HTTPParser {
 // Feed processes a BPF event. Returns the HTTP events whose headers
 // completed during this call (zero, one, or more if a stream contained
 // multiple pipelined messages).
-func (p *HTTPParser) Feed(e *Event) []HTTPEvent {
+func (p *Parser) Feed(e *events.Event) []Message {
 	var dir direction
 	switch e.Syscall {
-	case syscallRead, syscallRecvfrom, syscallRecvmsg:
+	case events.SyscallRead, events.SyscallRecvfrom, events.SyscallRecvmsg:
 		dir = dirIncoming
-	case syscallWrite, syscallSendto, syscallSendmsg:
+	case events.SyscallWrite, events.SyscallSendto, events.SyscallSendmsg:
 		dir = dirOutgoing
 	default:
 		return nil
@@ -168,7 +176,7 @@ func (p *HTTPParser) Feed(e *Event) []HTTPEvent {
 	payload := e.Payload[:n]
 	wireBytes := int(e.Bytes)
 
-	var out []HTTPEvent
+	var out []Message
 
 	// If the stream is mid-body, debit wire bytes from bodyRemaining first.
 	// We don't append the body to buf — body content is opaque to this
@@ -206,7 +214,7 @@ func (p *HTTPParser) Feed(e *Event) []HTTPEvent {
 		return out
 	}
 
-	// First event of a new message — capture its timestamp so HTTPEvent.TsNs
+	// First event of a new message — capture its timestamp so Message.TsNs
 	// reflects when bytes first hit the wire (not when headers finished
 	// arriving). messageStartTs is reset alongside wireBytesSinceMessageStart
 	// whenever a message completes, so a zero value identifies a fresh stream
@@ -235,19 +243,19 @@ func (p *HTTPParser) Feed(e *Event) []HTTPEvent {
 // Close evicts both directions for the given (pid, fd). Pending data
 // (an incomplete message, or queued request methods awaiting a response
 // that will never arrive) is dropped silently.
-func (p *HTTPParser) Close(pid uint32, fd int32) {
+func (p *Parser) Close(pid uint32, fd int32) {
 	delete(p.streams, connKey{pid: pid, fd: fd, dir: dirIncoming})
 	delete(p.streams, connKey{pid: pid, fd: fd, dir: dirOutgoing})
 	delete(p.pendingMethods, pidFd{pid: pid, fd: fd})
 }
 
 // advance drives the state machine until the buffer is drained or more
-// bytes are needed. Each completed header set produces one HTTPEvent.
+// bytes are needed. Each completed header set produces one Message.
 // currentEventTs is the BPF ktime of the event Feed is currently
 // processing — used to seed the next message's messageStartTs when a
 // pipelined message's bytes carry over from the same event.
-func (p *HTTPParser) advance(s *stream, pid uint32, comm string, currentEventTs uint64) []HTTPEvent {
-	var out []HTTPEvent
+func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint64) []Message {
+	var out []Message
 	for {
 		switch s.state {
 		case stateNeedStartLine:
@@ -332,7 +340,7 @@ func (p *HTTPParser) advance(s *stream, pid uint32, comm string, currentEventTs 
 			// §3.3.3). Requests are tracked on a per-(pid, fd) FIFO so the
 			// response side can recognise that a HEAD's response carries no
 			// body regardless of Content-Length. Done before emitting so
-			// HTTPEvent.ContentLength reflects the *effective* body size.
+			// Message.ContentLength reflects the *effective* body size.
 			//
 			// 1xx responses are *informational* — they precede a final
 			// response for the same request (e.g. "100 Continue" before a
@@ -355,7 +363,7 @@ func (p *HTTPParser) advance(s *stream, pid uint32, comm string, currentEventTs 
 				}
 			}
 
-			out = append(out, HTTPEvent{
+			out = append(out, Message{
 				TsNs:          s.messageStartTs,
 				Pid:           pid,
 				Fd:            s.fd,
@@ -393,7 +401,7 @@ func (p *HTTPParser) advance(s *stream, pid uint32, comm string, currentEventTs 
 				// same syscall that carried this message's body tail — so
 				// the next message's first byte hit the wire at the same
 				// TsNs. Without this, advance() loops into the next
-				// start-line and emits an HTTPEvent with TsNs==0, breaking
+				// start-line and emits an Message with TsNs==0, breaking
 				// latency. When buf is empty, the next message will arrive
 				// in a future event; reset to 0 so Feed reseeds it then.
 				if len(s.buf) > 0 {
@@ -426,7 +434,7 @@ func (p *HTTPParser) advance(s *stream, pid uint32, comm string, currentEventTs 
 // Returns "" if no request has been seen — which happens when the parser
 // started mid-stream (responses observed without their request) or when
 // the request was on a connection we did not capture from.
-func (p *HTTPParser) popMethod(key pidFd) string {
+func (p *Parser) popMethod(key pidFd) string {
 	q := p.pendingMethods[key]
 	if len(q) == 0 {
 		return ""
@@ -443,7 +451,7 @@ func (p *HTTPParser) popMethod(key pidFd) string {
 // peekMethod returns the next pending request method without dequeuing.
 // Used for 1xx informational responses, where the same request will be
 // followed by a final response (>=200) that still needs the method.
-func (p *HTTPParser) peekMethod(key pidFd) string {
+func (p *Parser) peekMethod(key pidFd) string {
 	q := p.pendingMethods[key]
 	if len(q) == 0 {
 		return ""
@@ -466,7 +474,7 @@ func hasNoBody(status int, method string) bool {
 	return status == 204 || status == 304
 }
 
-func renderHTTPEvent(e HTTPEvent) string {
+func RenderMessage(e Message) string {
 	if e.IsRequest {
 		return fmt.Sprintf("request  pid=%-6d comm=%-16s method=%-6s path=%s version=%s",
 			e.Pid, e.Comm, e.Req.method, e.Req.path, e.Req.version)
