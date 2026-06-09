@@ -17,7 +17,7 @@ URL="http://localhost:${PORT}/"
 TT_LOG=/tmp/tinytap-demo.log
 TT_RAW=/tmp/tinytap-demo-raw.log
 PY_LOG=/tmp/tinytap-demo-py.log
-GREP_RE='comm=(python3|curl)( |$)'
+GREP_RE='comm=(python3|curl)( |$)|\((python3|curl)\)'
 
 PY_PID=""
 TT_PID=""
@@ -74,6 +74,12 @@ wait_for_tinytap || { echo "tinytap did not become ready" >&2; exit 1; }
 
 echo "==> curl ${URL}"
 curl -fsS --retry 5 --retry-connrefused "${URL}" > /dev/null
+
+# HEAD exercises the no-body response path: python's http.server still
+# advertises Content-Length on a HEAD reply, but sends zero body bytes —
+# parser must short-circuit framing via the request-method lookup.
+echo "==> curl -I ${URL}"
+curl -fsS -I --retry 5 --retry-connrefused "${URL}" > /dev/null
 
 # Let kernel events drain into the ringbuf reader.
 sleep 1

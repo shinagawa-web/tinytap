@@ -109,6 +109,8 @@ func main() {
 	}()
 
 	parser := NewHTTPParser()
+	pairer := NewPairer()
+	var anchor timeAnchor
 
 	var e Event
 	for {
@@ -135,9 +137,13 @@ func main() {
 
 		for _, h := range parser.Feed(&e) {
 			log.Println(renderHTTPEvent(h))
+			if pe, ok := pairer.Push(h); ok {
+				log.Println(renderPairedEvent(pe, anchor.wallTime(pe.ReqTsNs)))
+			}
 		}
 		if e.Syscall == syscallClose {
 			parser.Close(e.Pid, e.Fd)
+			pairer.Close(e.Pid, e.Fd)
 		}
 	}
 }
