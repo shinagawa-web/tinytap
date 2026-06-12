@@ -14,7 +14,7 @@ run: build
 	@bash scripts/demo.sh
 
 run-raw: build
-	sudo ./$(BIN)
+	sudo ./$(BIN) --no-tui
 
 clean:
 	rm -f $(BIN) internal/loader/bpf/tinytap_bpf*.go internal/loader/bpf/tinytap_bpf*.o
