@@ -46,8 +46,11 @@ from `~/.ssh/config` on the **Mac** (Wave reads `~/.ssh/config`):
 Include ~/.lima/<vm-name>/ssh.config
 ```
 
-Lima regenerates that file on every VM start, so `Include` keeps the (dynamic)
-port in sync — never hard-code the port.
+Lima regenerates that file on every VM start and may assign a new forwarded
+port, so `Include` always reflects the current port automatically — no
+hard-coding needed. The catch (next section): the Lima-generated `Host` block
+uses directives that Wave's own SSH client cannot handle, so `Include` alone is
+not enough.
 
 The Lima-generated `Host` block, however, contains directives that Wave's
 embedded Go SSH client does not handle well:
@@ -65,13 +68,21 @@ host, port, user, and identity file from `limactl show-ssh --format=config
 ```ssh-config
 Host lima-wave
   HostName 127.0.0.1
-  Port 50049                       # from `limactl show-ssh`; changes on recreate
+  Port 50049                       # see the tradeoff note below
   User <vm-user>
   IdentityFile ~/.lima/_config/user
   IdentitiesOnly yes
   StrictHostKeyChecking accept-new
   UserKnownHostsFile ~/.ssh/known_hosts_lima
 ```
+
+**Tradeoff — why this alias hard-codes the port (unlike `Include`).** The
+`Include` above auto-tracks Lima's dynamic port, but its `Host` block is
+unusable by Wave; this hand-written alias is usable by Wave but is *not*
+auto-updated. So the port is pinned here and you must refresh it whenever Lima
+reassigns it (e.g. after the VM is recreated, or sometimes after a plain
+restart). Check the current value with `limactl show-ssh --format=config
+<vm-name>` and update `Port` if a `wsh ssh lima-wave` connection starts failing.
 
 Key differences from the Lima default:
 
