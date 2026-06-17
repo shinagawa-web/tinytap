@@ -1,25 +1,37 @@
 // Command tinytap attaches the BPF program, drains its ringbuf, parses
 // the per-syscall events into HTTP messages, pairs requests with
-// responses, and prints both raw and demo lines to stdout.
+// responses, and feeds the result to an output sink.
 //
 // Everything beyond this file is in internal/: the BPF lifecycle in
-// internal/loader, the event struct + decode in internal/events, and
-// per-protocol parsing under internal/protocols/.
+// internal/loader, the event struct + decode in internal/events,
+// per-protocol parsing under internal/protocols/, and output rendering
+// under internal/output/. main.go only wires them together and decides
+// which sink drains the pipeline.
 package main
 
 import (
-	"bytes"
-	"fmt"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
 
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/loader"
+	"github.com/shinagawa-web/tinytap/internal/output"
+	"github.com/shinagawa-web/tinytap/internal/output/stdout"
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
 )
 
 func main() {
+	outputMode := flag.String("output", "auto", "output mode: auto, stdout, tui")
+	flag.Parse()
+
+	switch *outputMode {
+	case "auto", "stdout", "tui":
+	default:
+		log.Fatalf("invalid --output %q: want auto, stdout, or tui", *outputMode)
+	}
+
 	tt, err := loader.Load(uint32(os.Getpid()))
 	if err != nil {
 		log.Fatalf("load: %v", err)
@@ -27,6 +39,17 @@ func main() {
 	defer func() {
 		if err := tt.Close(); err != nil {
 			log.Printf("teardown: %v", err)
+		}
+	}()
+
+	// Sink selection. The TUI sink and its TTY/size gate arrive in the next
+	// v0.2.0 child (#38); until then every mode renders to stdout, so
+	// --output is validated but only the stdout sink is wired up yet.
+	var sink output.Sink = stdout.New()
+	_ = outputMode // TODO(#38): select the bubbletea TUI sink for auto (on a TTY) / tui.
+	defer func() {
+		if err := sink.Close(); err != nil {
+			log.Printf("sink close: %v", err)
 		}
 	}()
 
@@ -39,9 +62,16 @@ func main() {
 		tt.Reader.Close()
 	}()
 
+	capture(tt, sink)
+}
+
+// capture drains the ringbuf, decodes each event, feeds the HTTP parser and
+// pairer, and drives the sink in wire order: OnEvent for the raw event, then
+// OnMessage / OnPaired for whatever that event completed. It returns when the
+// reader is closed (Ctrl-C path) or hits an unrecoverable read error.
+func capture(tt *loader.Tinytap, sink output.Sink) {
 	parser := http.NewParser()
 	pairer := http.NewPairer()
-	var anchor http.TimeAnchor
 
 	var e events.Event
 	for {
@@ -53,23 +83,12 @@ func main() {
 			log.Printf("parse event: %v", err)
 			continue
 		}
-		name := events.SyscallNames[e.Syscall]
-		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
-		line := fmt.Sprintf("%-8s pid=%-6d tid=%-6d fd=%-3d bytes=%-6d comm=%s",
-			name, e.Pid, e.Tid, e.Fd, e.Bytes, comm)
-		if e.PayloadLen > 0 {
-			n := int(e.PayloadLen)
-			if n > len(e.Payload) {
-				n = len(e.Payload)
-			}
-			line += " | " + renderPayload(e.Payload[:n])
-		}
-		log.Println(line)
+		sink.OnEvent(&e)
 
-		for _, h := range parser.Feed(&e) {
-			log.Println(http.RenderMessage(h))
-			if pe, ok := pairer.Push(h); ok {
-				log.Println(http.RenderPaired(pe, anchor.WallTime(pe.ReqTsNs)))
+		for _, m := range parser.Feed(&e) {
+			sink.OnMessage(m)
+			if pe, ok := pairer.Push(m); ok {
+				sink.OnPaired(pe)
 			}
 		}
 		if e.Syscall == events.SyscallClose {
@@ -77,26 +96,4 @@ func main() {
 			pairer.Close(e.Pid, e.Fd)
 		}
 	}
-}
-
-// renderPayload turns a raw byte slice into a single-line printable string.
-// Printable ASCII (0x20–0x7E) is kept as-is; CR/LF/TAB are escaped so the
-// log stays on one line; everything else becomes `.`.
-func renderPayload(p []byte) string {
-	out := make([]byte, 0, len(p)+8)
-	for _, b := range p {
-		switch {
-		case b == '\r':
-			out = append(out, '\\', 'r')
-		case b == '\n':
-			out = append(out, '\\', 'n')
-		case b == '\t':
-			out = append(out, '\\', 't')
-		case b >= 0x20 && b <= 0x7e:
-			out = append(out, b)
-		default:
-			out = append(out, '.')
-		}
-	}
-	return string(out)
 }

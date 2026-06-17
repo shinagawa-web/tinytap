@@ -66,9 +66,9 @@ python3 -m http.server "${PORT}" > "${PY_LOG}" 2>&1 &
 PY_PID=$!
 wait_for_port localhost "${PORT}" || { echo "http.server failed to listen on ${PORT}" >&2; exit 1; }
 
-echo "==> sudo ./tinytap   (raw log: ${TT_RAW})"
+echo "==> sudo ./tinytap --output stdout   (raw log: ${TT_RAW})"
 : > "${TT_RAW}"
-sudo ./tinytap > "${TT_RAW}" 2>&1 &
+sudo ./tinytap --output stdout > "${TT_RAW}" 2>&1 &
 TT_PID=$!
 wait_for_tinytap || { echo "tinytap did not become ready" >&2; exit 1; }
 
