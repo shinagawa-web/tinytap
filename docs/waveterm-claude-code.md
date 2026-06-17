@@ -114,10 +114,17 @@ command -v wsh          # e.g. ~/.waveterm/bin/wsh
 echo "$WAVETERM"        # 1
 ```
 
-## Step 2: Add the Badge Hooks
+## Step 2: The Badge Hooks
 
-Add the `wsh badge` hooks to `~/.claude/settings.json` **inside the VM** (merge
-with any existing `hooks` key):
+This repository already ships the badge hooks as project-level Claude Code
+settings in [`.claude/settings.json`](../.claude/settings.json), so once you run
+`claude` from a worktree of this repo inside a Wave session, the badges work with
+no extra setup. You do not need to copy anything by hand — this section just
+documents what is configured and how to adapt it.
+
+Each hook command is guarded so that a missing `wsh` is a true no-op (it exits 0
+instead of failing with `command not found`), which keeps the hooks harmless in
+any non-Wave session:
 
 ```json
 {
@@ -126,20 +133,20 @@ with any existing `hooks` key):
       {
         "matcher": "permission_prompt",
         "hooks": [
-          { "type": "command", "command": "wsh badge bell-exclamation --color '#e0b956' --priority 20 --beep" }
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge bell-exclamation --color '#e0b956' --priority 20 --beep || true" }
         ]
       },
       {
         "matcher": "elicitation_dialog",
         "hooks": [
-          { "type": "command", "command": "wsh badge message-question --color '#e0b956' --priority 20 --beep" }
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge message-question --color '#e0b956' --priority 20 --beep || true" }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "wsh badge check --color '#58c142' --priority 10" }
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge check --color '#58c142' --priority 10 || true" }
         ]
       }
     ],
@@ -147,20 +154,25 @@ with any existing `hooks` key):
       {
         "matcher": "AskUserQuestion",
         "hooks": [
-          { "type": "command", "command": "wsh badge message-question --color '#e0b956' --priority 20 --beep" }
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge message-question --color '#e0b956' --priority 20 --beep || true" }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "wsh badge --clear" }
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge --clear || true" }
         ]
       }
     ]
   }
 }
 ```
+
+To override or extend these per user (e.g. different colors, or to disable a
+badge), put a `hooks` block in your own `~/.claude/settings.json` — the global
+config is merged with the project file. Personal `permissions` and other local
+overrides belong in `.claude/settings.local.json`, which stays git-ignored.
 
 | Event | Badge | Color | Meaning |
 | --- | --- | --- | --- |
@@ -181,10 +193,12 @@ Restart any running Claude Code session so the new hooks are loaded.
   VM session. If the badge shows, the problem is the hook config or PATH; if it
   does not, `wsh` is not reaching Wave — re-check that you connected via
   `wsh ssh lima-wave` and that `$WAVETERM` is set.
-- **`wsh: command not found` in hooks.** Hooks rely on `wsh` being on `PATH`.
-  Wave's session shell adds `~/.waveterm/bin` to `PATH`; if your hook runs in a
-  stripped environment, use the absolute path `~/.waveterm/bin/wsh` in the hook
-  commands.
+- **Badges silently never appear.** The hook commands are guarded with
+  `command -v wsh`, so a missing `wsh` is a no-op rather than an error — which
+  also means a PATH problem fails quietly. Hooks rely on `wsh` being on `PATH`;
+  Wave's session shell adds `~/.waveterm/bin`. If your hook runs in a stripped
+  environment, replace `wsh` with the absolute path `~/.waveterm/bin/wsh` in the
+  hook commands.
 - **`knownhosts: key is unknown` on connect.** The alias is still pointing at a
   `/dev/null` known_hosts file. Use a real file with `StrictHostKeyChecking
   accept-new` as shown above.

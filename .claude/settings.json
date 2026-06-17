@@ -1,80 +1,23 @@
 {
-  "permissions": {
-    "allow": [
-      "Bash(git fetch *)",
-      "Bash(xargs git log --oneline -1)",
-      "Bash(git restore *)",
-      "Bash(git add *)",
-      "Bash(make)",
-      "Bash(git commit -m ' *)",
-      "Bash(git push *)",
-      "Bash(make generate *)",
-      "Bash(bpftool version *)",
-      "Read(//sys/kernel/btf/**)",
-      "Bash(bpftool btf *)",
-      "Bash(make build *)",
-      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('TITLE:', d['title']\\); print\\('---BODY---'\\); print\\(d['body'][:200]\\)\")",
-      "Bash(git checkout *)",
-      "Bash(git pull *)",
-      "Bash(python3 -c \"import json,sys; print\\(json.load\\(sys.stdin\\)['body'][:300]\\)\")",
-      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('NODE_ID:', d['id']\\); print\\('BODY_LEN:', len\\(d['body']\\)\\)\")",
-      "Bash(gh api *)",
-      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('Pinned:', [i['issue'] for i in d['data']['repository']['pinnedIssues']['nodes']]\\)\")",
-      "Bash(git branch *)",
-      "Bash(gh repo *)",
-      "Bash(ps -eo user --no-headers)",
-      "Bash(ps -eo pid,comm,wchan --no-headers)",
-      "Bash(python3 -c ' *)",
-      "Bash(python3 -c \"import json,sys; print\\(json.load\\(sys.stdin\\)['title']\\)\")",
-      "Read(//tmp/**)",
-      "Bash(awk '{print $1}')",
-      "Bash(chmod +x scripts/demo.sh)",
-      "Bash(make run *)",
-      "Bash(python3 -c \"import json,sys; print\\('OK:', json.load\\(sys.stdin\\)['title']\\)\")",
-      "Read(//usr/include/**)",
-      "Read(//usr/include/linux/**)",
-      "Bash(llvm-objdump -d cmd/tinytap/tinytap_bpfel.o)",
-      "Bash(llvm-readelf --section-headers cmd/tinytap/tinytap_bpfel.o)",
-      "Read(//sys/kernel/tracing/events/syscalls/**)",
-      "Read(//sys/kernel/tracing/events/syscalls/sys_enter_accept4/**)",
-      "Bash(sudo cat /sys/kernel/tracing/events/syscalls/sys_enter_accept4/format)",
-      "Read(//usr/lib/cargo/bin/coreutils/**)",
-      "Bash(llvm-readelf --file-header cmd/tinytap/tinytap_bpfel.o)",
-      "Bash(llvm-readelf --hex-dump=license cmd/tinytap/tinytap_bpfel.o)",
-      "Bash(sudo bpftool btf dump file /sys/kernel/btf/vmlinux)",
-      "Bash(sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c)",
-      "Bash(python3 -c \"import json,sys; print\\(json.load\\(sys.stdin\\)['id']\\)\")",
-      "Bash(xargs '-I{}' gh api graphql -f 'query=mutation\\($id: ID!\\) { pinIssue\\(input: {issueId: $id}\\) { issue { number title } } }' -f 'id={}')",
-      "Bash(go version *)",
-      "Bash(sed -n '1,20p' cmd/tinytap/tinytap_bpfel.go)",
-      "Bash(go doc *)",
-      "Bash(go build *)",
-      "Bash(go test *)",
-      "Bash(go vet *)"
-    ],
-    "additionalDirectories": [
-      "/tmp"
-    ]
-  },
   "hooks": {
     "Notification": [
       {
         "matcher": "permission_prompt",
         "hooks": [
-          { "type": "command", "command": "wsh badge bell-exclamation --color '#e0b956' --priority 20 --beep" }
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge bell-exclamation --color '#e0b956' --priority 20 --beep || true" }
         ]
       },
       {
         "matcher": "elicitation_dialog",
         "hooks": [
-          { "type": "command", "command": "wsh badge message-question --color '#e0b956' --priority 20 --beep" }
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge message-question --color '#e0b956' --priority 20 --beep || true" }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "wsh badge check --color '#58c142' --priority 10" }
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge check --color '#58c142' --priority 10 || true" }
         ]
       }
     ],
@@ -82,14 +25,14 @@
       {
         "matcher": "AskUserQuestion",
         "hooks": [
-          { "type": "command", "command": "wsh badge message-question --color '#e0b956' --priority 20 --beep" }
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge message-question --color '#e0b956' --priority 20 --beep || true" }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "wsh badge --clear" }
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge --clear || true" }
         ]
       }
     ]
