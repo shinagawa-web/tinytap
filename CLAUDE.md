@@ -53,6 +53,7 @@ Lower-level reference material lives under `docs/`:
 - [`docs/event-schema.md`](docs/event-schema.md) — the kernel↔userspace event struct (C / Go layouts, field semantics, byte offsets)
 - [`docs/terminology.md`](docs/terminology.md) — outgoing/incoming vocabulary and the HTTP protocol mapping
 - [`docs/ebpf-basics.md`](docs/ebpf-basics.md) — eBPF primer
+- [`docs/waveterm-claude-code.md`](docs/waveterm-claude-code.md) — making Wave Terminal's Claude Code badges work inside the Lima VM
 
 ## Development Environment
 
