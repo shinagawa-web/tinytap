@@ -1,0 +1,40 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge bell-exclamation --color '#e0b956' --priority 20 --beep || true" }
+        ]
+      },
+      {
+        "matcher": "elicitation_dialog",
+        "hooks": [
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge message-question --color '#e0b956' --priority 20 --beep || true" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge check --color '#58c142' --priority 10 || true" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge message-question --color '#e0b956' --priority 20 --beep || true" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge --clear || true" }
+        ]
+      }
+    ]
+  }
+}
