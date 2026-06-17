@@ -1,5 +1,6 @@
 # Build artifacts
 /tinytap
 
-# Claude Code local settings
-.claude/
+# Claude Code local settings (track shared settings.json, ignore the rest)
+.claude/*
+!.claude/settings.json
