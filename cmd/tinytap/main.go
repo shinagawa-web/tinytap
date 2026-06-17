@@ -11,6 +11,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -27,20 +28,27 @@ import (
 )
 
 // The TUI assumes a terminal at least this large; below it the layout breaks,
-// so auto mode falls back to the stdout sink with a notice (see #32).
+// so auto mode declines to start (see #32).
 const (
 	minCols = 120
 	minRows = 24
 )
 
 func main() {
-	outputMode := flag.String("output", "auto", "output mode: auto, stdout, tui")
+	outputMode := flag.String("output", "auto", "output mode: auto (TUI on a terminal), stdout (raw line stream), tui")
 	flag.Parse()
 
 	switch *outputMode {
 	case "auto", "stdout", "tui":
 	default:
 		log.Fatalf("invalid --output %q: want auto, stdout, or tui", *outputMode)
+	}
+
+	// Decide before attaching BPF: the no-terminal / too-small paths exit
+	// here, so nothing is loaded that would need tearing down.
+	decision, w, h := decideOutput(*outputMode)
+	if decision == outputExit {
+		os.Exit(1)
 	}
 
 	tt, err := loader.Load(uint32(os.Getpid()))
@@ -53,45 +61,51 @@ func main() {
 		}
 	}()
 
-	// Sink selection. The TUI is the default on an interactive terminal;
-	// stdout is the fallback (and the forced choice for --output stdout).
-	if w, h, ok := tuiViable(*outputMode); ok {
+	if decision == outputTUI {
 		runTUI(tt, w, h)
 	} else {
 		runStdout(tt)
 	}
 }
 
-// tuiViable reports whether the TUI can run under the given output mode,
-// returning the terminal size to seed the first frame. It prints a fallback
-// notice when the user asked for a TUI but the terminal can't host one.
-func tuiViable(mode string) (width, height int, ok bool) {
+type outputChoice int
+
+const (
+	outputTUI outputChoice = iota
+	outputStdout
+	outputExit
+)
+
+// decideOutput picks the output backend. The TUI is the default; the raw
+// stdout line stream is opt-in via --output stdout only. So auto and tui
+// never silently stream — when the terminal can't host the TUI they print
+// guidance and bail (outputExit), pointing at --output stdout for piping or
+// logging. It returns the terminal size to seed the TUI's first frame.
+func decideOutput(mode string) (choice outputChoice, width, height int) {
 	if mode == "stdout" {
-		return 0, 0, false
+		return outputStdout, 0, 0
 	}
 	// Both streams must be terminals: stdout to render the alt-screen, stdin
-	// to receive keystrokes (q / Ctrl-C). With stdin piped the TUI would draw
-	// but never take input, so it could not be quit interactively.
-	fd := int(os.Stdout.Fd())
-	if !term.IsTerminal(fd) || !term.IsTerminal(int(os.Stdin.Fd())) {
-		// auto silently falls back so `tinytap > log.txt` works unflagged;
-		// an explicit --output tui says why nothing interactive appeared.
-		if mode == "tui" {
-			log.Println("stdin and stdout must both be terminals — falling back to stdout")
-		}
-		return 0, 0, false
+	// to receive keystrokes (q / Ctrl-C). A piped stdin would draw a TUI that
+	// can never be quit; a piped stdout has nowhere to render.
+	if !term.IsTerminal(int(os.Stdout.Fd())) || !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprintln(os.Stderr, "tinytap needs an interactive terminal for the TUI.")
+		fmt.Fprintln(os.Stderr, "Run it in a terminal, or use --output stdout to stream lines to a pipe or file.")
+		return outputExit, 0, 0
 	}
-	w, h, err := term.GetSize(fd)
+	w, h, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil {
-		return 0, 0, false
+		fmt.Fprintln(os.Stderr, "Could not determine terminal size — use --output stdout to stream lines instead.")
+		return outputExit, 0, 0
 	}
 	// auto enforces the minimum size; an explicit --output tui is an override
 	// that takes the cramped layout the user asked for.
 	if mode == "auto" && (w < minCols || h < minRows) {
-		log.Printf("Terminal too narrow — need at least %d cols x %d rows; got %dx%d — falling back to stdout", minCols, minRows, w, h)
-		return 0, 0, false
+		fmt.Fprintf(os.Stderr, "Terminal too small for the TUI — need at least %dx%d, got %dx%d.\n", minCols, minRows, w, h)
+		fmt.Fprintln(os.Stderr, "Resize the terminal and retry, or run with --output stdout.")
+		return outputExit, 0, 0
 	}
-	return w, h, true
+	return outputTUI, w, h
 }
 
 // runStdout drives the v0.1.0 line format. Ctrl-C is delivered as a signal
