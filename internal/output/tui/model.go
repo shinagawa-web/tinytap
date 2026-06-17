@@ -165,8 +165,15 @@ func rowLine(r row, pathWidth int) string {
 	}, " ")
 }
 
+// latencyStr keeps the value inside the 7-column LATENCY budget: "999.9ms"
+// is the widest millisecond form, so 1s and above switch to seconds rather
+// than overflow (and be silently clipped by fitRight).
 func latencyStr(d time.Duration) string {
-	return fmt.Sprintf("%.1fms", float64(d)/float64(time.Millisecond))
+	ms := float64(d) / float64(time.Millisecond)
+	if ms < 1000 {
+		return fmt.Sprintf("%.1fms", ms)
+	}
+	return fmt.Sprintf("%.1fs", ms/1000)
 }
 
 // fitLeft left-aligns s in a field of n display columns: pad with spaces, or
@@ -184,12 +191,17 @@ func fitLeft(s string, n int) string {
 	return s + strings.Repeat(" ", n-len(r))
 }
 
-// fitRight right-aligns s in a field of n columns: pad on the left, or keep
-// the tail if it overflows. Used for the numeric columns.
+// fitRight right-aligns s in a field of n columns: pad on the left, or, when
+// it overflows, keep the tail behind a leading ellipsis so a clipped number
+// reads as clipped rather than as a different, smaller value. Used for the
+// numeric columns.
 func fitRight(s string, n int) string {
 	r := []rune(s)
 	if len(r) > n {
-		return string(r[len(r)-n:])
+		if n <= 1 {
+			return string(r[len(r)-n:])
+		}
+		return "…" + string(r[len(r)-(n-1):])
 	}
 	return strings.Repeat(" ", n-len(r)) + s
 }

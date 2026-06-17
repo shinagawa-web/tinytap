@@ -69,12 +69,15 @@ func tuiViable(mode string) (width, height int, ok bool) {
 	if mode == "stdout" {
 		return 0, 0, false
 	}
+	// Both streams must be terminals: stdout to render the alt-screen, stdin
+	// to receive keystrokes (q / Ctrl-C). With stdin piped the TUI would draw
+	// but never take input, so it could not be quit interactively.
 	fd := int(os.Stdout.Fd())
-	if !term.IsTerminal(fd) {
+	if !term.IsTerminal(fd) || !term.IsTerminal(int(os.Stdin.Fd())) {
 		// auto silently falls back so `tinytap > log.txt` works unflagged;
 		// an explicit --output tui says why nothing interactive appeared.
 		if mode == "tui" {
-			log.Println("stdout is not a terminal — falling back to stdout")
+			log.Println("stdin and stdout must both be terminals — falling back to stdout")
 		}
 		return 0, 0, false
 	}
@@ -121,6 +124,12 @@ func runTUI(tt *loader.Tinytap, width, height int) {
 	sink := tui.New(width, height)
 	defer closeSink(sink)
 
+	// Mute logging before capture starts and keep it muted until capture has
+	// fully stopped, so a stray line (e.g. a decode error) can never land on
+	// the alt-screen — not even during startup or teardown.
+	prev := log.Writer()
+	log.SetOutput(io.Discard)
+
 	done := make(chan struct{})
 	go func() {
 		capture(tt, sink)
@@ -128,13 +137,11 @@ func runTUI(tt *loader.Tinytap, width, height int) {
 		sink.Quit()
 	}()
 
-	prev := log.Writer()
-	log.SetOutput(io.Discard)
 	runErr := sink.Run()
-	log.SetOutput(prev)
-
 	tt.Reader.Close()
 	<-done
+
+	log.SetOutput(prev)
 	if runErr != nil {
 		log.Printf("tui: %v", runErr)
 	}

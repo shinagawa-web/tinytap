@@ -41,10 +41,14 @@ func TestFitRight(t *testing.T) {
 		{"200", 6, "   200"},
 		{"4521", 8, "    4521"},
 		{"123456", 6, "123456"},
+		{"123456789", 8, "…3456789"}, // overflow: clipped, marked with a leading ellipsis
 	}
 	for _, tt := range tests {
 		if got := fitRight(tt.s, tt.n); got != tt.want {
 			t.Errorf("fitRight(%q, %d) = %q, want %q", tt.s, tt.n, got, tt.want)
+		}
+		if w := utf8.RuneCountInString(fitRight(tt.s, tt.n)); w != tt.n {
+			t.Errorf("fitRight(%q, %d) width = %d, want %d", tt.s, tt.n, w, tt.n)
 		}
 	}
 }
