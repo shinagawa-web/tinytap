@@ -23,8 +23,14 @@ import (
 )
 
 func main() {
-	noTUI := flag.Bool("no-tui", false, "disable the TUI and print v0.1.0-style lines to stdout")
+	outputMode := flag.String("output", "auto", "output mode: auto, stdout, tui")
 	flag.Parse()
+
+	switch *outputMode {
+	case "auto", "stdout", "tui":
+	default:
+		log.Fatalf("invalid --output %q: want auto, stdout, or tui", *outputMode)
+	}
 
 	tt, err := loader.Load(uint32(os.Getpid()))
 	if err != nil {
@@ -37,10 +43,10 @@ func main() {
 	}()
 
 	// Sink selection. The TUI sink and its TTY/size gate arrive in the next
-	// v0.2.0 child (#38); until then every path renders to stdout, so
-	// --no-tui is accepted but has no visible effect yet.
+	// v0.2.0 child (#38); until then every mode renders to stdout, so
+	// --output is validated but only the stdout sink is wired up yet.
 	var sink output.Sink = stdout.New()
-	_ = noTUI // TODO(#38): drive the bubbletea TUI sink here unless --no-tui.
+	_ = outputMode // TODO(#38): select the bubbletea TUI sink for auto (on a TTY) / tui.
 	defer func() {
 		if err := sink.Close(); err != nil {
 			log.Printf("sink close: %v", err)

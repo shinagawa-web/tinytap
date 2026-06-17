@@ -2,8 +2,8 @@
 // format tinytap shipped in v0.1.0: one raw line per BPF event, one line
 // per completed HTTP message, and one demo line per paired request/response.
 //
-// It is the fallback sink — selected by --no-tui, and (once the TUI lands)
-// by a non-terminal stdout or a terminal too small for the table.
+// It is the fallback sink — selected by --output stdout, and (once the TUI
+// lands) by a non-terminal stdout or a terminal too small for the table.
 // scripts/demo.sh and `make run-raw` depend on this exact output.
 package stdout
 
