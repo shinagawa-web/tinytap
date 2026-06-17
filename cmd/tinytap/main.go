@@ -11,15 +11,26 @@ package main
 
 import (
 	"flag"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+
+	"golang.org/x/term"
 
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/loader"
 	"github.com/shinagawa-web/tinytap/internal/output"
 	"github.com/shinagawa-web/tinytap/internal/output/stdout"
+	"github.com/shinagawa-web/tinytap/internal/output/tui"
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
+)
+
+// The TUI assumes a terminal at least this large; below it the layout breaks,
+// so auto mode falls back to the stdout sink with a notice (see #32).
+const (
+	minCols = 120
+	minRows = 24
 )
 
 func main() {
@@ -42,16 +53,50 @@ func main() {
 		}
 	}()
 
-	// Sink selection. The TUI sink and its TTY/size gate arrive in the next
-	// v0.2.0 child (#38); until then every mode renders to stdout, so
-	// --output is validated but only the stdout sink is wired up yet.
-	var sink output.Sink = stdout.New()
-	_ = outputMode // TODO(#38): select the bubbletea TUI sink for auto (on a TTY) / tui.
-	defer func() {
-		if err := sink.Close(); err != nil {
-			log.Printf("sink close: %v", err)
+	// Sink selection. The TUI is the default on an interactive terminal;
+	// stdout is the fallback (and the forced choice for --output stdout).
+	if w, h, ok := tuiViable(*outputMode); ok {
+		runTUI(tt, w, h)
+	} else {
+		runStdout(tt)
+	}
+}
+
+// tuiViable reports whether the TUI can run under the given output mode,
+// returning the terminal size to seed the first frame. It prints a fallback
+// notice when the user asked for a TUI but the terminal can't host one.
+func tuiViable(mode string) (width, height int, ok bool) {
+	if mode == "stdout" {
+		return 0, 0, false
+	}
+	fd := int(os.Stdout.Fd())
+	if !term.IsTerminal(fd) {
+		// auto silently falls back so `tinytap > log.txt` works unflagged;
+		// an explicit --output tui says why nothing interactive appeared.
+		if mode == "tui" {
+			log.Println("stdout is not a terminal — falling back to stdout")
 		}
-	}()
+		return 0, 0, false
+	}
+	w, h, err := term.GetSize(fd)
+	if err != nil {
+		return 0, 0, false
+	}
+	// auto enforces the minimum size; an explicit --output tui is an override
+	// that takes the cramped layout the user asked for.
+	if mode == "auto" && (w < minCols || h < minRows) {
+		log.Printf("Terminal too narrow — need at least %d cols x %d rows; got %dx%d — falling back to stdout", minCols, minRows, w, h)
+		return 0, 0, false
+	}
+	return w, h, true
+}
+
+// runStdout drives the v0.1.0 line format. Ctrl-C is delivered as a signal
+// (the terminal stays in cooked mode) and closes the ringbuf reader, which
+// unblocks capture.
+func runStdout(tt *loader.Tinytap) {
+	sink := stdout.New()
+	defer closeSink(sink)
 
 	log.Println("tinytap running — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.")
 
@@ -63,6 +108,42 @@ func main() {
 	}()
 
 	capture(tt, sink)
+}
+
+// runTUI drives the Bubble Tea table. Capture runs on a goroutine feeding the
+// UI via Program.Send while Run holds the main goroutine. Two quit paths
+// converge here: the user presses q/Ctrl-C (Run returns, we close the reader
+// to stop capture), or capture dies on its own (we Quit the UI). Bubble Tea
+// owns the terminal and translates Ctrl-C itself, so no signal handler is
+// installed; log output is muted for the session so stray lines (e.g. a
+// decode error) can't corrupt the alt-screen.
+func runTUI(tt *loader.Tinytap, width, height int) {
+	sink := tui.New(width, height)
+	defer closeSink(sink)
+
+	done := make(chan struct{})
+	go func() {
+		capture(tt, sink)
+		close(done)
+		sink.Quit()
+	}()
+
+	prev := log.Writer()
+	log.SetOutput(io.Discard)
+	runErr := sink.Run()
+	log.SetOutput(prev)
+
+	tt.Reader.Close()
+	<-done
+	if runErr != nil {
+		log.Printf("tui: %v", runErr)
+	}
+}
+
+func closeSink(sink output.Sink) {
+	if err := sink.Close(); err != nil {
+		log.Printf("sink close: %v", err)
+	}
 }
 
 // capture drains the ringbuf, decodes each event, feeds the HTTP parser and
