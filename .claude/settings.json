@@ -36,5 +36,15 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(go vet *)",
+      "Bash(go version *)",
+      "Bash(bpftool btf *)",
+      "Bash(gofmt -l *)",
+      "Bash(llvm-readelf *)",
+      "Bash(llvm-objdump *)"
+    ]
   }
 }
