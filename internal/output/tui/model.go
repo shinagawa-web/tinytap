@@ -28,7 +28,7 @@ const (
 	colLatency = 8 // "999.9ms" (the widest value) is 7; the 8th column is breathing room
 )
 
-// fixedWidth is the sum of the seven fixed columns; with the six separator
+// fixedWidth is the sum of the seven fixed columns; with the seven separator
 // spaces between the eight columns, the remainder is PATH's width.
 const fixedWidth = colTime + colPID + colComm + colMethod + colStatus + colBytes + colLatency
 const separators = 7 // single spaces between the 8 columns
@@ -288,15 +288,20 @@ func rowLine(r row, pathWidth int, selected bool) string {
 }
 
 // latencyStr keeps the value inside the LATENCY budget: "999.9ms" is the widest
-// millisecond form (7 columns), so 1s and above switch to seconds rather than
-// overflow (and be silently clipped by fitRight). The seconds form is also what
-// slowLatencyStyle highlights — see rowLine.
+// millisecond form (7 columns), so anything >= 1s switches to seconds rather
+// than overflow (and be silently clipped by fitRight). The boundary is exactly
+// 1s, matching the slowLatencyStyle highlight in rowLine. The ms form is capped
+// at 999.9ms so float rounding just under the boundary (e.g. 999.95ms) can't
+// emit "1000.0ms" — a value that would read as second-scale yet stay uncolored.
 func latencyStr(d time.Duration) string {
-	ms := float64(d) / float64(time.Millisecond)
-	if ms < 1000 {
+	if d < time.Second {
+		ms := float64(d) / float64(time.Millisecond)
+		if ms > 999.9 {
+			ms = 999.9
+		}
 		return fmt.Sprintf("%.1fms", ms)
 	}
-	return fmt.Sprintf("%.1fs", ms/1000)
+	return fmt.Sprintf("%.1fs", float64(d)/float64(time.Second))
 }
 
 // fitLeft left-aligns s in a field of n display columns: pad with spaces, or
