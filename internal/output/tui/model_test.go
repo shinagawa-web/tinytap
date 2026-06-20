@@ -94,6 +94,33 @@ func TestRowLineSelectedMarker(t *testing.T) {
 	}
 }
 
+// The numeric column headers are right-aligned so they sit over their
+// right-aligned values (BYTES used to drift left of the digits).
+func TestHeaderNumericColumnsRightAligned(t *testing.T) {
+	const width = 120
+	pathWidth := width - markerCol - fixedWidth - separators
+	want := markerBlank + strings.Join([]string{
+		fitLeft("TIME", colTime),
+		fitLeft("PID", colPID),
+		fitLeft("COMM", colComm),
+		fitLeft("METHOD", colMethod),
+		fitLeft("PATH", pathWidth),
+		fitRight("STATUS", colStatus),
+		fitRight("BYTES", colBytes),
+		fitRight("LATENCY", colLatency),
+	}, " ")
+	got := headerLine(pathWidth)
+	if got != want {
+		t.Errorf("headerLine mismatch\n got: %q\nwant: %q", got, want)
+	}
+	// The BYTES label's right edge must line up with a value's right edge.
+	r := row{bytes: 1253}
+	rl := rowLine(r, pathWidth, false)
+	if hi, ri := strings.Index(got, "BYTES")+len("BYTES"), strings.Index(rl, "1253")+len("1253"); hi != ri {
+		t.Errorf("BYTES header ends at col %d but value ends at col %d", hi, ri)
+	}
+}
+
 // key feeds a single keystroke through Update and returns the new model.
 func key(m model, s string) model {
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)})

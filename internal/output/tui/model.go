@@ -232,15 +232,18 @@ func (m model) View() string {
 }
 
 func headerLine(pathWidth int) string {
+	// Numeric columns (STATUS / BYTES / LATENCY) carry right-aligned values,
+	// so their labels are right-aligned too — otherwise a label narrower than
+	// its column (e.g. BYTES in an 8-wide field) drifts left of the digits.
 	return markerBlank + strings.Join([]string{
 		fitLeft("TIME", colTime),
 		fitLeft("PID", colPID),
 		fitLeft("COMM", colComm),
 		fitLeft("METHOD", colMethod),
 		fitLeft("PATH", pathWidth),
-		fitLeft("STATUS", colStatus),
-		fitLeft("BYTES", colBytes),
-		fitLeft("LATENCY", colLatency),
+		fitRight("STATUS", colStatus),
+		fitRight("BYTES", colBytes),
+		fitRight("LATENCY", colLatency),
 	}, " ")
 }
 
