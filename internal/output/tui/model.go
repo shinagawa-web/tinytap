@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -46,8 +47,20 @@ const (
 )
 
 // chromeLines is the non-row height of the table view: top divider, column
-// header, header divider, bottom divider, and the footer help line.
+// header, header divider, the bottom line, and the footer help line. The
+// bottom line is the closing divider when the detail panel is closed, or the
+// detail panel's own header divider when it is open — one line either way, so
+// chromeLines holds whether the panel is open or not.
 const chromeLines = 5
+
+// detailFraction is the detail panel's share of the row area when open: a
+// 60/40 table/detail split (#40). The remaining 60% stays with the table,
+// which keeps scrolling and navigating.
+const detailFraction = 0.4
+
+// detailPlaceholder is the body shown until structured headers (#34) and the
+// decoded/hex body (#35) land. The header divider already carries pid/comm.
+const detailPlaceholder = " headers + body coming in #34 / #35"
 
 // row is a single rendered exchange. Values are kept raw (not pre-padded) so
 // View can re-truncate PATH/COMM when the terminal is resized.
@@ -80,12 +93,13 @@ func newRow(pe http.PairedEvent, when time.Time) row {
 type rowMsg row
 
 type model struct {
-	rows     []row
-	width    int
-	height   int
-	selected int  // index into rows of the ▸ row; 0 when rows is empty
-	top      int  // index of the first visible row (the scroll anchor)
-	follow   bool // when true, selection tracks the newest row as rows arrive
+	rows       []row
+	width      int
+	height     int
+	selected   int  // index into rows of the ▸ row; 0 when rows is empty
+	top        int  // index of the first visible row (the scroll anchor)
+	follow     bool // when true, selection tracks the newest row as rows arrive
+	detailOpen bool // when true, the bottom detail panel is shown for the selection
 }
 
 func newModel(width, height int) model {
@@ -105,6 +119,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "enter":
+			// Toggle the detail panel for the current selection. Navigation
+			// keys keep working while it is open.
+			m.detailOpen = !m.detailOpen
+		case "esc":
+			// Esc only closes, and only when the panel is open — it is a no-op
+			// in the table-only state.
+			if m.detailOpen {
+				m.detailOpen = false
+			}
 		case "up", "k":
 			// Moving off the newest row means the user wants to inspect, so
 			// stop letting new rows steal the selection.
@@ -154,14 +178,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// visibleRows is how many table rows fit above the chrome at the current
-// height (top divider, header, header divider, bottom divider, footer).
+// visibleRows is how many table rows fit at the current height, after the
+// chrome (top divider, header, header divider, bottom line, footer) and the
+// detail panel's body, if open.
 func (m model) visibleRows() int {
-	v := m.height - chromeLines
+	v := m.height - chromeLines - m.bodyLines()
 	if v < 0 {
 		v = 0
 	}
 	return v
+}
+
+// bodyLines is the height of the detail panel's body (the lines below its
+// header divider), 0 when the panel is closed. It claims detailFraction of the
+// row area, leaving the rest to the table.
+func (m model) bodyLines() int {
+	if !m.detailOpen {
+		return 0
+	}
+	avail := m.height - chromeLines
+	if avail <= 0 {
+		return 0
+	}
+	b := int(float64(avail) * detailFraction)
+	if b < 1 {
+		b = 1
+	}
+	if b > avail {
+		b = avail
+	}
+	return b
 }
 
 // clampScroll moves the scroll anchor only when the selection has left the
@@ -216,19 +262,70 @@ func (m model) View() string {
 		end = len(m.rows)
 	}
 
-	lines := make([]string, 0, visible+3)
+	lines := make([]string, 0, m.height)
 	lines = append(lines, divider, headerLine(pathWidth), divider)
 	for i := start; i < end; i++ {
 		lines = append(lines, rowLine(m.rows[i], pathWidth, i == m.selected))
 	}
-	lines = append(lines, divider)
-	table := strings.Join(lines, "\n")
+	// Pad the table to its full row budget so the bottom line, detail panel,
+	// and footer stay pinned to the bottom even before the buffer fills.
+	for i := end - start; i < visible; i++ {
+		lines = append(lines, "")
+	}
 
-	// Split-pane scaffold: table on top, detail panel below collapsed to
-	// zero height (its content lands in #40). Joining only the non-empty
-	// sections keeps the collapsed panel from costing a blank line.
-	footer := " ↑↓/jk: navigate │ g/G: top/bottom │ q: quit"
-	return lipgloss.JoinVertical(lipgloss.Left, table, footer)
+	// The line below the table is the closing divider when the panel is closed,
+	// or the panel's own header divider (with the selection's pid/comm) when it
+	// is open, followed by the placeholder body.
+	if m.detailOpen {
+		lines = append(lines, m.detailDivider())
+		lines = append(lines, m.detailBody()...)
+	} else {
+		lines = append(lines, divider)
+	}
+
+	lines = append(lines, m.footer())
+	return strings.Join(lines, "\n")
+}
+
+// footer is the help line. It advertises the detail toggle, and switches to the
+// close hints once the panel is open.
+func (m model) footer() string {
+	if m.detailOpen {
+		return " ↑↓/jk: navigate │ Enter/Esc: close │ g/G: top/bottom │ q: quit"
+	}
+	return " ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ q: quit"
+}
+
+// detailDivider renders the detail panel's header line for the selected row:
+//
+//	───── Detail ───── pid=5950 (curl) ─────
+//
+// It is exactly m.width display columns wide, padded with box-drawing dashes.
+// With no rows selected it omits the pid/comm clause.
+func (m model) detailDivider() string {
+	label := "───── Detail ───── "
+	if len(m.rows) > 0 {
+		r := m.rows[m.selected]
+		label += fmt.Sprintf("pid=%d (%s) ", r.pid, r.comm)
+	}
+	n := utf8.RuneCountInString(label)
+	if n >= m.width {
+		return string([]rune(label)[:m.width])
+	}
+	return label + strings.Repeat("─", m.width-n)
+}
+
+// detailBody returns exactly bodyLines() lines of placeholder content. Real
+// headers (#34) and the decoded/hex body (#35) replace it later; for now the
+// first line names what is coming and the rest are blank padding.
+func (m model) detailBody() []string {
+	n := m.bodyLines()
+	if n == 0 {
+		return nil
+	}
+	lines := make([]string, n)
+	lines[0] = detailPlaceholder
+	return lines
 }
 
 func headerLine(pathWidth int) string {

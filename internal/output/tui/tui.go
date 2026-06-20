@@ -5,10 +5,11 @@
 //
 // This is the v0.2.0 TUI: a live table with vim-style navigation (#38, #39) —
 // a ▸ marker, ↑↓/jk/g/G movement, and auto-scroll follow that pauses while the
-// user inspects and re-arms at the newest row. The detail panel (#40) and
-// header/body content (#34/#35) arrive in later children, so OnEvent and
-// OnMessage are no-ops here — the TUI cares only about completed exchanges
-// (OnPaired).
+// user inspects and re-arms at the newest row — plus a toggleable detail panel
+// (#40, Enter to open / Enter or Esc to close) whose body is still a
+// placeholder until structured headers (#34) and the decoded/hex body (#35)
+// land. OnEvent and OnMessage stay no-ops — the TUI cares only about completed
+// exchanges (OnPaired).
 package tui
 
 import (

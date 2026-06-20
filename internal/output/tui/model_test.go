@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -286,5 +287,114 @@ func TestSelectionClampsAtEdges(t *testing.T) {
 	m = key(m, "j") // already at bottom
 	if m.selected != 2 {
 		t.Errorf("down at bottom: selected = %d, want 2", m.selected)
+	}
+}
+
+// press feeds a non-rune key (Enter, Esc, …) through Update.
+func press(m model, t tea.KeyType) model {
+	next, _ := m.Update(tea.KeyMsg{Type: t})
+	return next.(model)
+}
+
+// Enter opens the detail panel; Enter again closes it.
+func TestEnterTogglesDetail(t *testing.T) {
+	m := withRows(5)
+	if m.detailOpen {
+		t.Fatal("panel should start closed")
+	}
+	m = press(m, tea.KeyEnter)
+	if !m.detailOpen {
+		t.Error("Enter should open the panel")
+	}
+	m = press(m, tea.KeyEnter)
+	if m.detailOpen {
+		t.Error("Enter again should close the panel")
+	}
+}
+
+// Esc closes an open panel and is a no-op when already closed.
+func TestEscClosesDetailOnlyWhenOpen(t *testing.T) {
+	m := press(withRows(5), tea.KeyEsc)
+	if m.detailOpen {
+		t.Error("Esc with the panel closed should stay closed")
+	}
+	m = press(withRows(5), tea.KeyEnter)
+	m = press(m, tea.KeyEsc)
+	if m.detailOpen {
+		t.Error("Esc should close an open panel")
+	}
+}
+
+// The detail divider names the selected row and tracks it as the selection
+// moves while the panel stays open.
+func TestDetailHeaderTracksSelectionLive(t *testing.T) {
+	m := withRows(5)
+	for i := range m.rows {
+		m.rows[i].pid = uint32(1000 + i)
+		m.rows[i].comm = fmt.Sprintf("proc%d", i)
+	}
+	m = press(m, tea.KeyEnter) // open on the newest row (index 4)
+	out := m.View()
+	if !strings.Contains(out, "───── Detail ─────") {
+		t.Errorf("View missing the Detail divider:\n%s", out)
+	}
+	if !strings.Contains(out, "pid=1004 (proc4)") {
+		t.Errorf("divider should name the selected row, got:\n%s", out)
+	}
+	if !strings.Contains(out, detailPlaceholder) {
+		t.Error("View should show the placeholder body")
+	}
+	// Move the selection up; the divider must update live.
+	m = key(m, "k")
+	out = m.View()
+	if !strings.Contains(out, "pid=1003 (proc3)") {
+		t.Errorf("divider should follow the moved selection, got:\n%s", out)
+	}
+	if strings.Contains(out, "pid=1004 (proc4)") {
+		t.Error("divider should no longer name the previous selection")
+	}
+}
+
+// Opening the panel shrinks the table but it stays navigable, and closing it
+// restores the full row budget.
+func TestDetailShrinksTableButKeepsItNavigable(t *testing.T) {
+	m := withRows(100)
+	full := m.visibleRows()
+	m = press(m, tea.KeyEnter)
+	open := m.visibleRows()
+	if open >= full {
+		t.Errorf("open visibleRows=%d, want fewer than the full %d", open, full)
+	}
+	if open <= 0 {
+		t.Errorf("open visibleRows=%d, want the table to keep some rows", open)
+	}
+	// Navigation still moves the selection with the panel open.
+	before := m.selected
+	m = key(m, "k")
+	if m.selected != before-1 {
+		t.Errorf("selected=%d, want navigation to move it to %d", m.selected, before-1)
+	}
+	// Closing restores the full height.
+	m = press(m, tea.KeyEsc)
+	if got := m.visibleRows(); got != full {
+		t.Errorf("after close visibleRows=%d, want the full %d", got, full)
+	}
+}
+
+// View must still fit the terminal height with the panel open, at any scroll
+// position — the table + detail panel + footer share the fixed height.
+func TestViewFitsHeightWithDetailOpen(t *testing.T) {
+	const h = 24
+	m := newModel(120, h)
+	for i := 0; i < 100; i++ {
+		next, _ := m.Update(rowMsg(row{path: "/"}))
+		m = next.(model)
+	}
+	m = press(m, tea.KeyEnter)
+	for _, k := range []string{"G", "g", "k", "j", "G"} {
+		m = key(m, k)
+		if got := len(strings.Split(m.View(), "\n")); got != h {
+			t.Errorf("after %q with the panel open: View() emitted %d lines, want %d", k, got, h)
+		}
 	}
 }
