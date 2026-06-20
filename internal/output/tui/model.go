@@ -210,8 +210,10 @@ func (m model) visibleRows() int {
 // bodyLines is the height of the detail panel's body (the lines below its
 // header divider), 0 when the panel is closed. The panel grows to fit the
 // selected row's detail content but is capped at detailMaxFraction of the row
-// area, so the table keeps the rest and stays navigable. With no rows yet it
-// reserves a single blank line.
+// area *and* at avail-1, so the table always keeps at least one row and
+// visibleRows() can never reach 0 — even if a runtime resize shrinks the
+// terminal below the startup floor (#57). With no rows yet it reserves a
+// single blank line.
 func (m model) bodyLines() int {
 	if !m.detailOpen {
 		return 0
@@ -221,8 +223,11 @@ func (m model) bodyLines() int {
 		return 0
 	}
 	max := int(float64(avail) * detailMaxFraction)
-	if max < 1 {
-		max = 1
+	if max > avail-1 {
+		max = avail - 1 // leave at least one table row
+	}
+	if max < 0 {
+		max = 0
 	}
 	want := 1
 	if len(m.rows) > 0 {
@@ -377,8 +382,9 @@ func detailContent(r row) []string {
 	return lines
 }
 
-// headerLines renders one header section, one "  Name: Value" line per header
-// in wire order. A section with no headers shows an explicit "(none)" so the
+// headerLines renders one header section, one "   Name: Value" line per header
+// in wire order (three-space indent, matching the start lines under each
+// section label). A section with no headers shows an explicit "(none)" so the
 // panel never looks like it failed to capture them.
 func headerLines(hs []http.Header) []string {
 	if len(hs) == 0 {

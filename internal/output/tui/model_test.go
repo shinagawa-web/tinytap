@@ -548,3 +548,23 @@ func TestDetailBodyClipsToPanelHeightAndWidth(t *testing.T) {
 		t.Errorf("overflowing headers should flag the hidden lines:\n%s", strings.Join(body, "\n"))
 	}
 }
+
+// Even below the startup size floor (reachable only via a runtime resize, #57),
+// an open detail panel must leave at least one table row — visibleRows() can
+// never collapse to 0 — and View must still fit the terminal height exactly.
+func TestDetailKeepsOneTableRowAtAnyHeight(t *testing.T) {
+	for h := chromeLines + 1; h <= 24; h++ {
+		m := newModel(120, h)
+		m = appendRow(m, row{
+			method: "GET", path: "/", reqVersion: "HTTP/1.1",
+			status: 200, resVersion: "HTTP/1.1", reason: "OK",
+		})
+		m.detailOpen = true
+		if got := m.visibleRows(); got < 1 {
+			t.Errorf("height=%d: visibleRows()=%d with the panel open, want >= 1", h, got)
+		}
+		if got := len(strings.Split(m.View(), "\n")); got != h {
+			t.Errorf("height=%d: View() emitted %d lines, want %d", h, got, h)
+		}
+	}
+}
