@@ -101,3 +101,32 @@ func TestPairerCarriesHeaders(t *testing.T) {
 		t.Errorf("ResHeaders = %+v, want [Content-Type]", pe.ResHeaders)
 	}
 }
+
+// The pairer carries request and response bodies (and their truncation flags)
+// into the PairedEvent. A POST populates both; a body-less request leaves
+// ReqBody empty.
+func TestPairerCarriesBodies(t *testing.T) {
+	p := NewPairer()
+	pid, fd := uint32(42), int32(7)
+	req := Message{TsNs: 100, Pid: pid, Fd: fd, IsRequest: true,
+		ContentLength: 5, BodySample: []byte("hello")}
+	res := Message{TsNs: 200, Pid: pid, Fd: fd, IsRequest: false,
+		Res: httpStatusLine{status: 200}, ContentLength: 4,
+		BodySample: []byte("body"), BodyTruncated: true}
+	if _, ok := p.Push(req); ok {
+		t.Fatal("request should be queued, not paired")
+	}
+	pe, ok := p.Push(res)
+	if !ok {
+		t.Fatal("response should pair with the queued request")
+	}
+	if string(pe.ReqBody) != "hello" || pe.ReqBodyTruncated {
+		t.Errorf("ReqBody = %q trunc=%v, want \"hello\" false", pe.ReqBody, pe.ReqBodyTruncated)
+	}
+	if string(pe.ResBody) != "body" || !pe.ResBodyTruncated {
+		t.Errorf("ResBody = %q trunc=%v, want \"body\" true", pe.ResBody, pe.ResBodyTruncated)
+	}
+	if pe.ReqBytes != 5 || pe.ResBytes != 4 {
+		t.Errorf("ReqBytes=%d ResBytes=%d, want 5 and 4", pe.ReqBytes, pe.ResBytes)
+	}
+}

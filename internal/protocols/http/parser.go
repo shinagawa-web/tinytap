@@ -69,6 +69,12 @@ type httpStatusLine struct {
 // some other byte stream (a log pipe, a binary file, …).
 const maxBufBytes = 16 * 1024
 
+// maxBodyBytes caps how many body bytes a single message retains (#35). A
+// streamed upload or download can be megabytes; we keep a prefix so the detail
+// panel has something to show without letting RSS track the largest exchange.
+// Beyond it the body is marked truncated and further bytes are dropped.
+const maxBodyBytes = 16 * 1024
+
 // pidFd identifies a connection across both directions. Used to thread
 // request-side state (e.g., the request method) over to the response side
 // for framing decisions like "HEAD responses have no body".
@@ -88,6 +94,14 @@ type stream struct {
 	bodyRemaining int // wire bytes of body still to drain (not sample bytes)
 	req           httpRequestLine
 	res           httpStatusLine
+	// Body capture (#35). A message is emitted only once its body has fully
+	// drained, so while bodyRemaining > 0 the parsed-but-bodyless message waits
+	// in pendingMsg and body sample bytes accumulate in bodyBuf (capped at
+	// maxBodyBytes). bodyTruncated records that some body bytes were lost.
+	bodyBuf       []byte
+	bodyTruncated bool
+	pendingMsg    Message
+	pendingValid  bool
 	// wireBytesSinceMessageStart sums Event.Bytes for events whose payload
 	// has been appended to buf since the current message's start. At the
 	// header→body transition we subtract wireBytesConsumed to recover how
@@ -108,9 +122,11 @@ type stream struct {
 	messageStartTs uint64
 }
 
-// Message is what the parser emits when a message's headers are
-// recognised. Body completion is tracked internally for keep-alive
-// framing but doesn't produce a separate event.
+// Message is what the parser emits for one HTTP message. A message with a body
+// is emitted once that body has fully drained, so BodySample is populated (#35);
+// a body-less message (no Content-Length, or a no-body status/method) is emitted
+// as soon as its headers are recognised. TsNs is always the first-byte
+// timestamp regardless of emission timing, so latency stays header-to-header.
 type Message struct {
 	TsNs          uint64 // first-byte timestamp of this message (BPF ktime ns)
 	Pid           uint32
@@ -121,6 +137,12 @@ type Message struct {
 	Res           httpStatusLine
 	ContentLength int      // body length as advertised by Content-Length (post-no-body override)
 	Headers       []Header // request/response headers in on-wire order
+	// BodySample is the captured body bytes, up to maxBodyBytes per message and
+	// bounded per syscall by the BPF MaxPayload sample cap (#35). BodyTruncated
+	// is set when any body bytes were lost — either a single syscall exceeded
+	// the sample cap (wire-only tail) or the body exceeded maxBodyBytes.
+	BodySample    []byte
+	BodyTruncated bool
 }
 
 // Header is a single HTTP header field as it appeared on the wire. Name and
@@ -198,9 +220,19 @@ func (p *Parser) Feed(e *events.Event) []Message {
 			debit = s.bodyRemaining
 		}
 		s.bodyRemaining -= debit
-		// Trim the body portion off the sample. The first `debit` wire bytes
-		// of this event are body; sample positions [0..debit) correspond to
-		// those wire positions when debit <= len(payload).
+		// Capture the body portion of this event's sample before trimming it
+		// off. The first `debit` wire bytes of this event are body; the sample
+		// carries the first min(debit, len(payload)) of them. If debit ran past
+		// the sample, the syscall exceeded MaxPayload and the tail is wire-only
+		// — mark the body truncated (#35).
+		bodyInSample := debit
+		if bodyInSample > len(payload) {
+			bodyInSample = len(payload)
+		}
+		s.appendBody(payload[:bodyInSample])
+		if debit > bodyInSample {
+			s.bodyTruncated = true
+		}
 		if debit < len(payload) {
 			payload = payload[debit:]
 		} else {
@@ -210,10 +242,14 @@ func (p *Parser) Feed(e *events.Event) []Message {
 		if s.bodyRemaining > 0 {
 			return out
 		}
-		// Body drained; any leftover wire/sample bytes are the next message.
-		// Reset messageStartTs to 0; either the carry-over append below
-		// (next-message bytes in this event) will reseed it via the
-		// "if messageStartTs == 0" check, or the next Feed call will.
+		// Body fully drained — emit the pending message with its body now.
+		if s.pendingValid {
+			out = append(out, s.takeBody(s.pendingMsg))
+		}
+		// Any leftover wire/sample bytes are the next message. Reset
+		// messageStartTs to 0; either the carry-over append below (next-message
+		// bytes in this event) will reseed it via the "if messageStartTs == 0"
+		// check, or the next Feed call will.
 		s.state = stateNeedStartLine
 		s.wireBytesSinceMessageStart = 0
 		s.wireBytesConsumed = 0
@@ -257,6 +293,36 @@ func (p *Parser) Close(pid uint32, fd int32) {
 	delete(p.streams, connKey{pid: pid, fd: fd, dir: dirIncoming})
 	delete(p.streams, connKey{pid: pid, fd: fd, dir: dirOutgoing})
 	delete(p.pendingMethods, pidFd{pid: pid, fd: fd})
+}
+
+// appendBody accumulates body sample bytes for the in-flight message, capped at
+// maxBodyBytes. Hitting the cap (or appending past it) marks the body truncated.
+func (s *stream) appendBody(p []byte) {
+	if len(p) == 0 {
+		return
+	}
+	room := maxBodyBytes - len(s.bodyBuf)
+	if room <= 0 {
+		s.bodyTruncated = true
+		return
+	}
+	if len(p) > room {
+		p = p[:room]
+		s.bodyTruncated = true
+	}
+	s.bodyBuf = append(s.bodyBuf, p...)
+}
+
+// takeBody attaches the accumulated body to msg and resets the stream's body
+// capture state, returning the completed message.
+func (s *stream) takeBody(msg Message) Message {
+	msg.BodySample = s.bodyBuf
+	msg.BodyTruncated = s.bodyTruncated
+	s.bodyBuf = nil
+	s.bodyTruncated = false
+	s.pendingMsg = Message{}
+	s.pendingValid = false
+	return msg
 }
 
 // advance drives the state machine until the buffer is drained or more
@@ -375,7 +441,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				}
 			}
 
-			out = append(out, Message{
+			msg := Message{
 				TsNs:          s.messageStartTs,
 				Pid:           pid,
 				Fd:            s.fd,
@@ -385,7 +451,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				Res:           s.res,
 				ContentLength: s.contentLength,
 				Headers:       headers,
-			})
+			}
 
 			// Recover how much of the body has already arrived in wire bytes.
 			// Buf positions consumed by start-line + headers map 1:1 to wire
@@ -397,18 +463,33 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				bodyAlready = 0
 			}
 
+			// Capture the body bytes already sitting in buf (the body portion,
+			// capped by what the samples carried). The message is emitted only
+			// once its body has fully drained (#35) — a body delivered across
+			// later syscalls is still attached — so until then it waits in
+			// pendingMsg. A zero-body message (no Content-Length, or no-body
+			// status/method) takes the bodyAlready >= contentLength branch with
+			// an empty body and is emitted immediately.
+			bodyInBuf := s.contentLength
+			if bodyInBuf > len(s.buf) {
+				bodyInBuf = len(s.buf)
+			}
+			s.appendBody(s.buf[:bodyInBuf])
+
 			if bodyAlready >= s.contentLength {
 				// Body fully covered by events already in buf. Any extra
-				// sample bytes belong to the next pipelined message.
-				bodyInBuf := s.contentLength
-				if bodyInBuf > len(s.buf) {
-					bodyInBuf = len(s.buf)
+				// sample bytes belong to the next pipelined message. If the
+				// samples didn't carry the whole body (a syscall > MaxPayload),
+				// the wire-only tail is lost — mark it truncated.
+				if bodyInBuf < s.contentLength {
+					s.bodyTruncated = true
 				}
 				s.buf = s.buf[bodyInBuf:]
 				s.bodyRemaining = 0
 				s.state = stateNeedStartLine
 				s.wireBytesSinceMessageStart = bodyAlready - s.contentLength
 				s.wireBytesConsumed = 0
+				out = append(out, s.takeBody(msg))
 				// If carry-over buf bytes belong to the next message, they
 				// came in via the event Feed is currently processing — the
 				// same syscall that carried this message's body tail — so
@@ -424,11 +505,17 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				}
 			} else {
 				// Body still draining — subsequent events are debited via
-				// Feed's wire-byte accounting. Drop body sample bytes; we
-				// no longer need buf until the next start line.
+				// Feed's wire-byte accounting and appended to the pending
+				// message. If the buf portion already dropped wire bytes (a
+				// syscall > MaxPayload), mark it truncated now.
+				if bodyAlready > bodyInBuf {
+					s.bodyTruncated = true
+				}
 				s.bodyRemaining = s.contentLength - bodyAlready
 				s.buf = nil
 				s.state = stateNeedBody
+				s.pendingMsg = msg
+				s.pendingValid = true
 				s.wireBytesSinceMessageStart = 0
 				s.wireBytesConsumed = 0
 				return out

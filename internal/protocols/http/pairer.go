@@ -32,8 +32,15 @@ type PairedEvent struct {
 	Reason     string   // response reason phrase (e.g. "OK", "Not Found")
 	ResVersion string   // response start-line HTTP version
 	ResBytes   int      // response body bytes (Content-Length, post-no-body override)
+	ReqBytes   int      // request body bytes (Content-Length, post-no-body override)
 	ReqHeaders []Header // request headers in on-wire order
 	ResHeaders []Header // response headers in on-wire order
+	// Captured body samples (#35). Empty when the message carried no body.
+	// *Truncated marks that some body bytes were lost (sample cap or budget).
+	ReqBody          []byte
+	ReqBodyTruncated bool
+	ResBody          []byte
+	ResBodyTruncated bool
 }
 
 func NewPairer() *Pairer {
@@ -74,8 +81,14 @@ func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 		Reason:     e.Res.reason,
 		ResVersion: e.Res.version,
 		ResBytes:   e.ContentLength,
+		ReqBytes:   req.ContentLength,
 		ReqHeaders: req.Headers,
 		ResHeaders: e.Headers,
+
+		ReqBody:          req.BodySample,
+		ReqBodyTruncated: req.BodyTruncated,
+		ResBody:          e.BodySample,
+		ResBodyTruncated: e.BodyTruncated,
 	}, true
 }
 

@@ -62,9 +62,11 @@ const chromeLines = 5
 // long ones get as much room as the cap allows before truncating.
 const detailMaxFraction = 0.6
 
-// detailBodyPlaceholder fills the body line of the detail panel until the
-// decoded/hex body view lands (#35); the structured headers above it are live.
-const detailBodyPlaceholder = "   body coming in #35"
+// sessionBodyBudget bounds the total body bytes retained across all rows (#35).
+// When a new row pushes the total past it, body samples are dropped from the
+// oldest rows first — their summary line and headers stay; only the body is
+// lost — so a long-running session can't grow unbounded.
+const sessionBodyBudget = 8 * 1024 * 1024
 
 // row is a single rendered exchange. Values are kept raw (not pre-padded) so
 // View can re-truncate PATH/COMM when the terminal is resized.
@@ -78,13 +80,20 @@ type row struct {
 	bytes   int
 	latency time.Duration
 
-	// Detail-panel fields: the full start lines and header sets, surfaced
-	// only when the panel is open (#34). Headers keep their on-wire order.
-	reqVersion string
-	resVersion string
-	reason     string
-	reqHeaders []http.Header
-	resHeaders []http.Header
+	// Detail-panel fields: the full start lines, header sets, and body samples,
+	// surfaced only when the panel is open (#34, #35). Headers keep their
+	// on-wire order. A body slice is empty when the message carried no body or
+	// its sample was dropped to stay within sessionBodyBudget.
+	reqVersion       string
+	resVersion       string
+	reason           string
+	reqHeaders       []http.Header
+	resHeaders       []http.Header
+	reqBytes         int // request Content-Length (body total, for the kept/total label)
+	reqBody          []byte
+	resBody          []byte
+	reqBodyTruncated bool
+	resBodyTruncated bool
 }
 
 func newRow(pe http.PairedEvent, when time.Time) row {
@@ -98,13 +107,21 @@ func newRow(pe http.PairedEvent, when time.Time) row {
 		bytes:   pe.ResBytes,
 		latency: pe.Latency,
 
-		reqVersion: pe.ReqVersion,
-		resVersion: pe.ResVersion,
-		reason:     pe.Reason,
-		reqHeaders: pe.ReqHeaders,
-		resHeaders: pe.ResHeaders,
+		reqVersion:       pe.ReqVersion,
+		resVersion:       pe.ResVersion,
+		reason:           pe.Reason,
+		reqHeaders:       pe.ReqHeaders,
+		resHeaders:       pe.ResHeaders,
+		reqBytes:         pe.ReqBytes,
+		reqBody:          pe.ReqBody,
+		resBody:          pe.ResBody,
+		reqBodyTruncated: pe.ReqBodyTruncated,
+		resBodyTruncated: pe.ResBodyTruncated,
 	}
 }
+
+// bodyBytes is the row's contribution to the session body budget.
+func (r row) bodyBytes() int { return len(r.reqBody) + len(r.resBody) }
 
 // rowMsg delivers a new exchange from the capture goroutine into the model
 // via Program.Send.
@@ -120,6 +137,8 @@ type model struct {
 	detailOpen   bool // when true, the bottom detail panel is shown for the selection
 	panelFocus   bool // when true (and detailOpen), keys scroll the panel instead of the table
 	detailOffset int  // first visible line of the panel body when its content overflows
+	hexMode      bool // when true, body blocks render as a hex dump instead of decoded text
+	bodyBytes    int  // total retained body bytes across rows, bounded by sessionBodyBudget
 }
 
 func newModel(width, height int) model {
@@ -214,15 +233,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.follow = true
 			m.detailOffset = 0
+		case "b", "h":
+			// Global toggle: flip every body block between decoded text and a
+			// hex dump at once (#35). Sticky as the selection moves. The line
+			// count can change with the mode, so re-clamp the panel scroll below.
+			m.hexMode = !m.hexMode
 		}
 	case rowMsg:
+		nr := row(msg)
 		// Append until full, then shift in place so the backing array stays
 		// bounded at maxRows instead of growing on every drop.
 		if len(m.rows) < maxRows {
-			m.rows = append(m.rows, row(msg))
+			m.rows = append(m.rows, nr)
 		} else {
+			m.bodyBytes -= m.rows[0].bodyBytes() // the row about to fall off
 			copy(m.rows, m.rows[1:])
-			m.rows[maxRows-1] = row(msg)
+			m.rows[maxRows-1] = nr
 			// The drop slid every row down one index. While inspecting, follow
 			// the same logical row down; if that row was the one dropped, clamp
 			// to the new oldest.
@@ -230,6 +256,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selected--
 			}
 		}
+		m.bodyBytes += nr.bodyBytes()
+		m.evictBodiesOverBudget()
 		if m.follow {
 			// Following re-pins the selection to the new tail, so the panel is
 			// showing a different exchange — reset its scroll.
@@ -259,7 +287,7 @@ func (m model) detailLineCount() int {
 	if len(m.rows) == 0 {
 		return 0
 	}
-	return len(detailContent(m.rows[m.selected]))
+	return len(detailContent(m.rows[m.selected], m.hexMode))
 }
 
 // maxDetailOffset is the furthest the panel can scroll. At the bottom the up
@@ -320,7 +348,7 @@ func (m model) bodyLines() int {
 	}
 	want := 1
 	if len(m.rows) > 0 {
-		want = len(detailContent(m.rows[m.selected]))
+		want = m.detailLineCount()
 	}
 	if want > max {
 		want = max
@@ -421,13 +449,19 @@ func (m model) View() string {
 // table focus, and panel open with panel focus — each advertising the keys that
 // do something in that state.
 func (m model) footer() string {
+	// In the open states, b flips the body view; the label names what it
+	// switches *to*, matching the table-focus body toggle.
+	mode := "hex"
+	if m.hexMode {
+		mode = "text"
+	}
 	switch {
 	case m.detailOpen && m.panelFocus:
 		// Esc steps back to table focus here (it doesn't close until the next
 		// Esc from the table), so it reads "back", and quit stays advertised.
-		return " ↑↓/jk: scroll │ g/G: top/bottom │ Tab: table │ Esc: back │ q: quit"
+		return fmt.Sprintf(" ↑↓/jk: scroll │ g/G: top/bottom │ Tab: table │ b: %s body │ Esc: back │ q: quit", mode)
 	case m.detailOpen:
-		return " ↑↓/jk: navigate │ Tab: inspect │ Enter/Esc: close │ q: quit"
+		return fmt.Sprintf(" ↑↓/jk: navigate │ Tab: inspect │ b: %s body │ Enter/Esc: close │ q: quit", mode)
 	default:
 		return " ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ q: quit"
 	}
@@ -480,7 +514,7 @@ func (m model) detailBody() []string {
 	if len(m.rows) == 0 {
 		return lines
 	}
-	content := detailContent(m.rows[m.selected])
+	content := detailContent(m.rows[m.selected], m.hexMode)
 	offset := m.detailOffset
 	if max := m.maxDetailOffset(); offset > max {
 		offset = max
@@ -513,15 +547,112 @@ func (m model) detailBody() []string {
 }
 
 // detailContent builds the full, unbounded set of detail lines for a row: a
-// Request section (start line + headers) and a Response section, mirroring the
-// on-wire order. detailBody clips this to the panel height.
-func detailContent(r row) []string {
+// Request section (start line + headers + body) and a Response section,
+// mirroring the on-wire order. A body block is omitted entirely when that side
+// carried no body. hex selects the body view mode. detailBody clips this to the
+// panel height.
+func detailContent(r row, hex bool) []string {
 	lines := []string{" Request:", fmt.Sprintf("   %s %s %s", r.method, r.path, r.reqVersion)}
 	lines = append(lines, headerLines(r.reqHeaders)...)
+	lines = append(lines, bodyBlock("Request body", r.reqBody, r.reqBytes, r.reqBodyTruncated, hex)...)
 	lines = append(lines, "", " Response:", fmt.Sprintf("   %s %d %s", r.resVersion, r.status, r.reason))
 	lines = append(lines, headerLines(r.resHeaders)...)
-	lines = append(lines, "", detailBodyPlaceholder)
+	lines = append(lines, bodyBlock("Response body", r.resBody, r.bytes, r.resBodyTruncated, hex)...)
 	return lines
+}
+
+// bodyBlock renders a blank separator and a "<label> (<mode>, kept/total bytes
+// [— truncated]):" header followed by the body as decoded text or a hex dump.
+// It returns nil — no block at all — when there is no body to show (#32: GET
+// shows only a response body; a body-less side renders nothing, not "(none)").
+func bodyBlock(label string, body []byte, total int, truncated, hex bool) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	mode := "decoded"
+	if hex {
+		mode = "hex"
+	}
+	head := fmt.Sprintf(" %s (%s, %d/%d bytes", label, mode, len(body), total)
+	if truncated {
+		head += " — truncated"
+	}
+	head += "):"
+
+	out := []string{"", head}
+	if hex {
+		return append(out, hexLines(body)...)
+	}
+	return append(out, decodedLines(body)...)
+}
+
+// decodedLines renders body bytes as indented text lines: printable ASCII is
+// kept, a newline starts a new line, every other byte shows as '.'. A carriage
+// return is dropped so CRLF-delimited text breaks cleanly instead of leaving a
+// spurious '.' at each line end.
+func decodedLines(body []byte) []string {
+	var lines []string
+	var b strings.Builder
+	for _, c := range body {
+		switch {
+		case c == '\n':
+			lines = append(lines, "   "+b.String())
+			b.Reset()
+		case c == '\r':
+			// drop — pairs with the \n that follows in CRLF
+		case c >= 0x20 && c <= 0x7e:
+			b.WriteByte(c)
+		default:
+			b.WriteByte('.')
+		}
+	}
+	return append(lines, "   "+b.String())
+}
+
+// hexLines renders body bytes as an xxd-style dump: 8-digit offset, 16 bytes as
+// hex pairs (split into two columns of 8), then the printable-ASCII gutter.
+func hexLines(body []byte) []string {
+	var lines []string
+	for off := 0; off < len(body); off += 16 {
+		end := off + 16
+		if end > len(body) {
+			end = len(body)
+		}
+		chunk := body[off:end]
+		var hexCol, ascii strings.Builder
+		for i := 0; i < 16; i++ {
+			if i == 8 {
+				hexCol.WriteByte(' ')
+			}
+			if i < len(chunk) {
+				fmt.Fprintf(&hexCol, "%02x ", chunk[i])
+				if c := chunk[i]; c >= 0x20 && c <= 0x7e {
+					ascii.WriteByte(c)
+				} else {
+					ascii.WriteByte('.')
+				}
+			} else {
+				hexCol.WriteString("   ")
+			}
+		}
+		lines = append(lines, fmt.Sprintf("   %08x: %s|%s|", off, hexCol.String(), ascii.String()))
+	}
+	return lines
+}
+
+// evictBodiesOverBudget drops body samples from the oldest rows until the total
+// retained body bytes fall back within sessionBodyBudget. Evicted rows keep
+// their summary line and headers; only the body bytes are released (#35).
+func (m *model) evictBodiesOverBudget() {
+	for i := 0; i < len(m.rows) && m.bodyBytes > sessionBodyBudget; i++ {
+		n := m.rows[i].bodyBytes()
+		if n == 0 {
+			continue
+		}
+		m.rows[i].reqBody = nil
+		m.rows[i].resBody = nil
+		m.bodyBytes -= n
+	}
 }
 
 // headerLines renders one header section, one "   Name: Value" line per header
