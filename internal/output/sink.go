@@ -20,9 +20,12 @@ import (
 //   - OnMessage for every HTTP message whose headers that event completed;
 //   - OnPaired for every request/response pair that event completed.
 //
-// Implementations decide how to render. stdout prints all three as lines;
-// a TUI cares only about OnPaired (one row per exchange) and no-ops the
-// rest. Close releases any resources the sink holds.
+// Implementations decide how to render — and both current sinks render only
+// OnPaired. stdout prints it as a summary line (with -v hanging the headers
+// beneath) and no-ops OnEvent/OnMessage; the TUI draws it as a table row and
+// likewise no-ops the other two. The raw OnEvent / per-message OnMessage
+// callbacks stay on the interface for future sinks that may want them. Close
+// releases any resources the sink holds.
 type Sink interface {
 	OnEvent(e *events.Event)
 	OnMessage(m http.Message)

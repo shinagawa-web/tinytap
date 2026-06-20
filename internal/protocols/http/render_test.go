@@ -16,9 +16,33 @@ func TestRenderPairedEventMatchesSpecFormat(t *testing.T) {
 	}
 	when := time.Date(2026, 6, 8, 19, 35, 24, 123_000_000, time.UTC)
 	got := RenderPaired(pe, when)
-	want := "[19:35:24.123] pid=5936 (python3) GET / HTTP/1.1 → HTTP/1.0 200 OK 649 bytes (1.2ms)"
+	want := "19:35:24.123  python3[5936]    GET   /                        200     649B     1.2ms"
 	if got != want {
 		t.Errorf("\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestRenderPairedDetailHasStartLinesAndHeaders(t *testing.T) {
+	pe := PairedEvent{
+		Method: "GET", Path: "/", ReqVersion: "HTTP/1.1",
+		Status: 200, Reason: "OK", ResVersion: "HTTP/1.0",
+		ReqHeaders: []Header{{Name: "Host", Value: "localhost:8081"}},
+		ResHeaders: []Header{{Name: "Content-Type", Value: "text/html"}},
+	}
+	want := []string{
+		"    > GET / HTTP/1.1",
+		"    > Host: localhost:8081",
+		"    < HTTP/1.0 200 OK",
+		"    < Content-Type: text/html",
+	}
+	got := RenderPairedDetail(pe)
+	if len(got) != len(want) {
+		t.Fatalf("got %d lines, want %d: %q", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d:\n got: %q\nwant: %q", i, got[i], want[i])
+		}
 	}
 }
 
