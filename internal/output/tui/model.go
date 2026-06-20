@@ -179,10 +179,18 @@ func (m model) View() string {
 	} else if visible > 0 && m.selected >= start+visible {
 		start = m.selected - visible + 1
 	}
+	// Render at most `visible` rows. Without this cap, panning the window up
+	// (e.g. g to the top with a full buffer) would emit every row from start
+	// to the end, overflowing the terminal height — the alt-screen then
+	// scrolls and the header/chrome get pushed off the top.
+	end := start + visible
+	if end > len(m.rows) {
+		end = len(m.rows)
+	}
 
 	lines := make([]string, 0, visible+3)
 	lines = append(lines, divider, headerLine(pathWidth), divider)
-	for i := start; i < len(m.rows); i++ {
+	for i := start; i < end; i++ {
 		lines = append(lines, rowLine(m.rows[i], pathWidth, i == m.selected))
 	}
 	lines = append(lines, divider)

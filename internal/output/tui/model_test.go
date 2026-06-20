@@ -194,6 +194,24 @@ func TestViewportPansToSelection(t *testing.T) {
 	}
 }
 
+// View must never emit more lines than the terminal is tall, at any scroll
+// position — overflow makes the alt-screen scroll and pushes the header off
+// the top. Regression for the g-to-top-with-a-full-buffer case.
+func TestViewFitsHeightAtEveryScrollPosition(t *testing.T) {
+	const h = 24
+	m := newModel(120, h)
+	for i := 0; i < 100; i++ {
+		next, _ := m.Update(rowMsg(row{path: "/"}))
+		m = next.(model)
+	}
+	for _, k := range []string{"G", "g", "k", "j", "G", "g"} {
+		m = key(m, k)
+		if got := len(strings.Split(m.View(), "\n")); got > h {
+			t.Errorf("after %q: View() emitted %d lines, want <= %d", k, got, h)
+		}
+	}
+}
+
 // The selection clamps at the ends instead of running off either edge.
 func TestSelectionClampsAtEdges(t *testing.T) {
 	m := key(withRows(3), "g") // row 0
