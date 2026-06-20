@@ -78,7 +78,7 @@ func TestRowLineWidth(t *testing.T) {
 	}
 	const width = 120
 	pathWidth := width - markerCol - fixedWidth - separators
-	line := rowLine(r, pathWidth, false)
+	line := rowLine(r, pathWidth, false, false)
 	if got := utf8.RuneCountInString(line); got != width {
 		t.Errorf("rowLine width = %d, want %d", got, width)
 	}
@@ -124,8 +124,8 @@ func TestRowLineSlowLatencyHighlighted(t *testing.T) {
 
 	const width = 120
 	pathWidth := width - markerCol - fixedWidth - separators
-	slow := rowLine(row{path: "/", latency: 1500 * time.Millisecond}, pathWidth, false)
-	fast := rowLine(row{path: "/", latency: 800 * time.Microsecond}, pathWidth, false)
+	slow := rowLine(row{path: "/", latency: 1500 * time.Millisecond}, pathWidth, false, false)
+	fast := rowLine(row{path: "/", latency: 800 * time.Microsecond}, pathWidth, false, false)
 
 	// The slow row carries styling around its "1.5s" value; the fast one stays
 	// plain. \x1b[ is the start of any ANSI escape sequence.
@@ -146,7 +146,7 @@ func TestRowLineSlowLatencyHighlighted(t *testing.T) {
 func TestRowLineSelectedMarker(t *testing.T) {
 	r := row{time: "19:35:24.123", pid: 5950, comm: "curl", method: "GET", path: "/"}
 	pathWidth := 120 - markerCol - fixedWidth - separators
-	if got := rowLine(r, pathWidth, true); !strings.Contains(got, markerSelected) {
+	if got := rowLine(r, pathWidth, true, true); !strings.Contains(got, markerSelected) {
 		t.Errorf("rowLine(selected) = %q, want it to contain the ▸ marker", got)
 	}
 }
@@ -172,7 +172,7 @@ func TestHeaderNumericColumnsRightAligned(t *testing.T) {
 	}
 	// The BYTES label's right edge must line up with a value's right edge.
 	r := row{bytes: 1253}
-	rl := rowLine(r, pathWidth, false)
+	rl := rowLine(r, pathWidth, false, false)
 	if hi, ri := strings.Index(got, "BYTES")+len("BYTES"), strings.Index(rl, "1253")+len("1253"); hi != ri {
 		t.Errorf("BYTES header ends at col %d but value ends at col %d", hi, ri)
 	}
@@ -754,5 +754,44 @@ func TestFooterStates(t *testing.T) {
 	focused := press(withScrollablePanel(), tea.KeyTab)
 	if got := focused.footer(); !strings.Contains(got, "Tab: table") || !strings.Contains(got, "scroll") {
 		t.Errorf("open/panel footer = %q", got)
+	}
+}
+
+// The reverse-video focus bar moves with focus: the selected row wears it while
+// the table is focused, and yields it (keeping only its ▸) once focus is in the
+// panel. ANSI profile forced so the styling is observable.
+func TestRowLineFocusHighlight(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	pathWidth := 120 - markerCol - fixedWidth - separators
+	r := row{path: "/"}
+	if got := rowLine(r, pathWidth, true, true); !strings.Contains(got, "\x1b[") {
+		t.Errorf("selected + focused row should be reverse-styled, got %q", got)
+	}
+	unfocused := rowLine(r, pathWidth, true, false)
+	if strings.Contains(unfocused, "\x1b[") {
+		t.Errorf("selected but unfocused row should not be styled, got %q", unfocused)
+	}
+	if !strings.Contains(unfocused, markerSelected) {
+		t.Error("an unfocused selected row should keep its ▸ marker")
+	}
+}
+
+// The Detail divider gets the reverse-video bar only when the panel holds focus,
+// so the bright highlight reads as the focus indicator. ANSI profile forced.
+func TestDetailDividerFocusStyling(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := withScrollablePanel() // open, table focus
+	if div := detailDividerLine(m.View()); strings.Contains(div, "\x1b[") {
+		t.Errorf("table focus: Detail divider should be unstyled, got %q", div)
+	}
+	m = press(m, tea.KeyTab) // panel focus
+	if div := detailDividerLine(m.View()); !strings.Contains(div, "\x1b[") {
+		t.Errorf("panel focus: Detail divider should be reverse-styled, got %q", div)
 	}
 }

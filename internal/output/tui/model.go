@@ -378,10 +378,15 @@ func (m model) View() string {
 		end = len(m.rows)
 	}
 
+	// The reverse-video focus bar sits on the table's selected row unless focus
+	// has moved into the detail panel, in which case it moves to the panel's
+	// divider (below) so it is always obvious which region the keys drive.
+	tableFocused := !(m.detailOpen && m.panelFocus)
+
 	lines := make([]string, 0, m.height)
 	lines = append(lines, divider, headerLine(pathWidth), divider)
 	for i := start; i < end; i++ {
-		lines = append(lines, rowLine(m.rows[i], pathWidth, i == m.selected))
+		lines = append(lines, rowLine(m.rows[i], pathWidth, i == m.selected, tableFocused))
 	}
 	// Pad the table to its full row budget so the bottom line, detail panel,
 	// and footer stay pinned to the bottom even before the buffer fills.
@@ -393,7 +398,14 @@ func (m model) View() string {
 	// or the panel's own header divider (with the selection's pid/comm) when it
 	// is open, followed by the placeholder body.
 	if m.detailOpen {
-		lines = append(lines, m.detailDivider())
+		// When the panel holds focus, paint its divider in reverse video — the
+		// same bright bar the selected row wears when the table holds focus — so
+		// the focus reads at a glance, not from the small ▸ alone.
+		div := m.detailDivider()
+		if m.panelFocus {
+			div = selectedStyle.Render(div)
+		}
+		lines = append(lines, div)
 		lines = append(lines, m.detailBody()...)
 	} else {
 		lines = append(lines, divider)
@@ -538,11 +550,13 @@ var selectedStyle = lipgloss.NewStyle().Reverse(true)
 // bold yellow — the unit ceases to be the only signal that a request was slow.
 var slowLatencyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 
-// rowLine renders one exchange. The leading gutter holds ▸ when selected
-// (blank otherwise); the selected row is also reverse-styled. The returned
-// line is exactly m.width display columns wide before styling so the columns
-// stay aligned regardless of selection.
-func rowLine(r row, pathWidth int, selected bool) string {
+// rowLine renders one exchange. `selected` draws the ▸ gutter marker (blank
+// otherwise); `focused` additionally paints the row in reverse video — the
+// bright focus bar. The two are separate so that when focus is in the detail
+// panel the selected row keeps its ▸ but yields the highlight to the panel's
+// divider. The returned line is exactly m.width display columns wide before
+// styling so the columns stay aligned regardless of selection.
+func rowLine(r row, pathWidth int, selected, focused bool) string {
 	marker := markerBlank
 	if selected {
 		marker = markerSelected
@@ -563,7 +577,7 @@ func rowLine(r row, pathWidth int, selected bool) string {
 		fitRight(strconv.Itoa(r.bytes), colBytes),
 		latency,
 	}, " ")
-	if selected {
+	if selected && focused {
 		return selectedStyle.Render(line)
 	}
 	return line
