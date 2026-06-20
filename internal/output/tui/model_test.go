@@ -568,3 +568,108 @@ func TestDetailKeepsOneTableRowAtAnyHeight(t *testing.T) {
 		}
 	}
 }
+
+// A POST renders both a request and a response body block.
+func TestDetailRendersBothBodiesForPost(t *testing.T) {
+	r := row{
+		method: "POST", path: "/u", reqVersion: "HTTP/1.1",
+		status: 201, resVersion: "HTTP/1.1", reason: "Created",
+		reqBytes: 5, bytes: 4,
+		reqBody: []byte("hello"), resBody: []byte("done"),
+	}
+	got := strings.Join(detailContent(r, false), "\n")
+	if !strings.Contains(got, "Request body (decoded, 5/5 bytes):") || !strings.Contains(got, "   hello") {
+		t.Errorf("missing request body block:\n%s", got)
+	}
+	if !strings.Contains(got, "Response body (decoded, 4/4 bytes):") || !strings.Contains(got, "   done") {
+		t.Errorf("missing response body block:\n%s", got)
+	}
+}
+
+// A GET has no request body, so that block is omitted entirely (no "(none)").
+func TestDetailOmitsAbsentRequestBody(t *testing.T) {
+	r := row{
+		method: "GET", path: "/", reqVersion: "HTTP/1.1",
+		status: 200, resVersion: "HTTP/1.1", reason: "OK",
+		bytes: 4, resBody: []byte("body"),
+	}
+	got := strings.Join(detailContent(r, false), "\n")
+	if strings.Contains(got, "Request body") {
+		t.Errorf("GET has no request body; the block should be omitted:\n%s", got)
+	}
+	if !strings.Contains(got, "Response body (decoded, 4/4 bytes):") {
+		t.Errorf("missing response body block:\n%s", got)
+	}
+}
+
+// A truncated body is flagged in the block header with kept/total bytes.
+func TestDetailBodyShowsTruncatedMarker(t *testing.T) {
+	r := row{
+		method: "GET", path: "/", status: 200, bytes: 1000,
+		resBody: make([]byte, 256), resBodyTruncated: true,
+	}
+	got := strings.Join(detailContent(r, false), "\n")
+	if !strings.Contains(got, "Response body (decoded, 256/1000 bytes — truncated):") {
+		t.Errorf("want a truncated marker with kept/total bytes:\n%s", got)
+	}
+}
+
+// Binary content: hex shows the raw bytes and an ASCII gutter; decoded shows
+// non-printable bytes as '.'.
+func TestBodyHexAndDecodedViews(t *testing.T) {
+	body := []byte{0x7b, 0x00, 0xff, 0x41} // '{', NUL, 0xff, 'A'
+	r := row{method: "GET", path: "/", status: 200, bytes: 4, resBody: body}
+
+	dec := strings.Join(detailContent(r, false), "\n")
+	if !strings.Contains(dec, "{..A") {
+		t.Errorf("decoded should show non-printables as '.':\n%s", dec)
+	}
+
+	hexv := strings.Join(detailContent(r, true), "\n")
+	if !strings.Contains(hexv, "7b 00 ff 41") {
+		t.Errorf("hex should show the raw bytes:\n%s", hexv)
+	}
+	if !strings.Contains(hexv, "|{..A|") {
+		t.Errorf("hex ASCII gutter should show non-printables as '.':\n%s", hexv)
+	}
+}
+
+// b (and h) toggle every body block between decoded and hex at once, and the
+// mode is sticky.
+func TestBodyModeToggleKey(t *testing.T) {
+	m := newModel(120, 60)
+	m = appendRow(m, row{method: "GET", path: "/", status: 200, bytes: 2, resBody: []byte{0x41, 0x00}})
+	m.detailOpen = true
+	if strings.Contains(m.View(), "(hex,") {
+		t.Error("default body mode should be decoded")
+	}
+	m = key(m, "b")
+	if !strings.Contains(m.View(), "(hex,") {
+		t.Errorf("b should switch to hex:\n%s", m.View())
+	}
+	m = key(m, "h")
+	if strings.Contains(m.View(), "(hex,") {
+		t.Error("h should also toggle, switching back to decoded")
+	}
+}
+
+// The session body budget bounds total retained body bytes: once exceeded,
+// the oldest rows lose their bodies (their summary survives) while the newest
+// keep theirs.
+func TestSessionBodyBudgetEvictsOldest(t *testing.T) {
+	m := newModel(120, 24)
+	big := 1024 * 1024 // ~1 MiB per row
+	n := sessionBodyBudget/big + 3
+	for i := 0; i < n; i++ {
+		m = appendRow(m, row{method: "GET", path: "/", status: 200, bytes: big, resBody: make([]byte, big)})
+	}
+	if m.bodyBytes > sessionBodyBudget {
+		t.Errorf("retained body bytes %d exceed budget %d", m.bodyBytes, sessionBodyBudget)
+	}
+	if len(m.rows[0].resBody) != 0 {
+		t.Error("oldest row should have had its body evicted")
+	}
+	if len(m.rows[len(m.rows)-1].resBody) == 0 {
+		t.Error("newest row should still have its body")
+	}
+}
