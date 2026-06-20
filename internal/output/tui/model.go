@@ -111,13 +111,15 @@ func newRow(pe http.PairedEvent, when time.Time) row {
 type rowMsg row
 
 type model struct {
-	rows       []row
-	width      int
-	height     int
-	selected   int  // index into rows of the ▸ row; 0 when rows is empty
-	top        int  // index of the first visible row (the scroll anchor)
-	follow     bool // when true, selection tracks the newest row as rows arrive
-	detailOpen bool // when true, the bottom detail panel is shown for the selection
+	rows         []row
+	width        int
+	height       int
+	selected     int  // index into rows of the ▸ row; 0 when rows is empty
+	top          int  // index of the first visible row (the scroll anchor)
+	follow       bool // when true, selection tracks the newest row as rows arrive
+	detailOpen   bool // when true, the bottom detail panel is shown for the selection
+	panelFocus   bool // when true (and detailOpen), keys scroll the panel instead of the table
+	detailOffset int  // first visible line of the panel body when its content overflows
 }
 
 func newModel(width, height int) model {
@@ -137,24 +139,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		case "enter":
-			// Toggle the detail panel for the current selection. Navigation
-			// keys keep working while it is open.
-			m.detailOpen = !m.detailOpen
-		case "esc":
-			// Esc only closes, and only when the panel is open — it is a no-op
-			// in the table-only state.
+		case "tab":
+			// Toggle focus between the table and the open detail panel. A no-op
+			// when the panel is closed (there is nothing to drill into).
 			if m.detailOpen {
+				m.panelFocus = !m.panelFocus
+				if m.panelFocus {
+					// You came to read the current row — stop the tail from
+					// moving the selection out from under you.
+					m.follow = false
+				} else {
+					m.rearmFollowAtBottom()
+				}
+			}
+		case "enter":
+			// Toggle the detail panel for the current selection. Navigation keys
+			// keep working while it is open.
+			m.detailOpen = !m.detailOpen
+			if !m.detailOpen {
+				m.panelFocus = false
+				m.detailOffset = 0
+			}
+		case "esc":
+			// Step out one level: panel focus → table focus (panel stays open),
+			// table focus → close. A no-op in the table-only state.
+			switch {
+			case m.detailOpen && m.panelFocus:
+				m.panelFocus = false
+				m.rearmFollowAtBottom()
+			case m.detailOpen:
 				m.detailOpen = false
+				m.detailOffset = 0
 			}
 		case "up", "k":
+			if m.panelFocus {
+				m.detailOffset-- // clamped below
+				break
+			}
 			// Moving off the newest row means the user wants to inspect, so
 			// stop letting new rows steal the selection.
 			if m.selected > 0 {
 				m.selected--
 			}
 			m.follow = false
+			m.detailOffset = 0 // the selection changed, so the panel content did too
 		case "down", "j":
+			if m.panelFocus {
+				m.detailOffset++ // clamped below
+				break
+			}
 			if m.selected < len(m.rows)-1 {
 				m.selected++
 			}
@@ -162,14 +195,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.selected == len(m.rows)-1 {
 				m.follow = true
 			}
+			m.detailOffset = 0
 		case "g":
+			if m.panelFocus {
+				m.detailOffset = 0
+				break
+			}
 			m.selected = 0
 			m.follow = false
+			m.detailOffset = 0
 		case "G":
+			if m.panelFocus {
+				m.detailOffset = m.maxDetailOffset()
+				break
+			}
 			if len(m.rows) > 0 {
 				m.selected = len(m.rows) - 1
 			}
 			m.follow = true
+			m.detailOffset = 0
 		}
 	case rowMsg:
 		// Append until full, then shift in place so the backing array stays
@@ -187,13 +231,56 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.follow {
+			// Following re-pins the selection to the new tail, so the panel is
+			// showing a different exchange — reset its scroll.
 			m.selected = len(m.rows) - 1
+			m.detailOffset = 0
 		}
 	}
 	// Reconcile the scroll anchor after any selection / row-count / size
 	// change so the selected row stays inside the visible window.
 	m.clampScroll()
+	m.clampDetailOffset()
 	return m, nil
+}
+
+// rearmFollowAtBottom resumes live tracking when the selection already sits on
+// the newest row — used when focus returns to the table, so stepping back out of
+// the panel at the tail picks the live stream back up.
+func (m *model) rearmFollowAtBottom() {
+	if len(m.rows) > 0 && m.selected == len(m.rows)-1 {
+		m.follow = true
+	}
+}
+
+// detailLineCount is the full, unclipped height of the selected row's detail
+// content (0 when there are no rows).
+func (m model) detailLineCount() int {
+	if len(m.rows) == 0 {
+		return 0
+	}
+	return len(detailContent(m.rows[m.selected]))
+}
+
+// maxDetailOffset is the furthest the panel can scroll: the point where its last
+// body line shows the final content line. 0 when the content fits.
+func (m model) maxDetailOffset() int {
+	mo := m.detailLineCount() - m.bodyLines()
+	if mo < 0 {
+		mo = 0
+	}
+	return mo
+}
+
+// clampDetailOffset keeps the panel scroll offset within [0, maxDetailOffset]
+// after any key / selection / resize change.
+func (m *model) clampDetailOffset() {
+	if max := m.maxDetailOffset(); m.detailOffset > max {
+		m.detailOffset = max
+	}
+	if m.detailOffset < 0 {
+		m.detailOffset = 0
+	}
 }
 
 // visibleRows is how many table rows fit at the current height, after the
@@ -316,23 +403,35 @@ func (m model) View() string {
 	return strings.Join(lines, "\n")
 }
 
-// footer is the help line. It advertises the detail toggle, and switches to the
-// close hints once the panel is open.
+// footer is the help line. It has three states: panel closed, panel open with
+// table focus, and panel open with panel focus — each advertising the keys that
+// do something in that state.
 func (m model) footer() string {
-	if m.detailOpen {
-		return " ↑↓/jk: navigate │ Enter/Esc: close │ g/G: top/bottom │ q: quit"
+	switch {
+	case m.detailOpen && m.panelFocus:
+		return " ↑↓/jk: scroll │ g/G: top/bottom │ Tab: table │ Esc: close"
+	case m.detailOpen:
+		return " ↑↓/jk: navigate │ Tab: inspect │ Enter/Esc: close │ q: quit"
+	default:
+		return " ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ q: quit"
 	}
-	return " ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ q: quit"
 }
 
 // detailDivider renders the detail panel's header line for the selected row:
 //
-//	───── Detail ───── pid=5950 (curl) ─────
+//	 ───── Detail ───── pid=5950 (curl) ─────   ← table focus (leading space)
+//	▸───── Detail ───── pid=5950 (curl) ─────   ← panel focus
 //
-// It is exactly m.width display columns wide, padded with box-drawing dashes.
-// With no rows selected it omits the pid/comm clause.
+// A one-column gutter mirrors the row ▸ marker: blank when the table holds
+// focus, ▸ when the panel does. It is exactly m.width display columns wide,
+// padded with box-drawing dashes. With no rows selected it omits the pid/comm
+// clause.
 func (m model) detailDivider() string {
-	label := "───── Detail ───── "
+	marker := markerBlank
+	if m.panelFocus {
+		marker = markerSelected
+	}
+	label := marker + "───── Detail ───── "
 	if len(m.rows) > 0 {
 		r := m.rows[m.selected]
 		label += fmt.Sprintf("pid=%d (%s) ", r.pid, r.comm)
@@ -348,8 +447,9 @@ func (m model) detailDivider() string {
 // structured request/response header sections (#34), followed by a body
 // placeholder (#35). Every line is fit to m.width so a long header value can't
 // wrap and push the panel past its fixed height. When the content is taller
-// than the panel, the last line flags how much is hidden rather than silently
-// dropping headers.
+// than the panel it scrolls (#61): the body shows content[offset:offset+height],
+// and directional hints flag content hidden above (`↑ N more`) or below
+// (`↓ N more`) — each indicator costing the body line it sits on, pager-style.
 func (m model) detailBody() []string {
 	n := m.bodyLines()
 	if n == 0 {
@@ -357,15 +457,31 @@ func (m model) detailBody() []string {
 	}
 	lines := make([]string, n)
 	if len(m.rows) == 0 {
+		for i := range lines {
+			lines[i] = fitLeft("", m.width)
+		}
 		return lines
 	}
 	content := detailContent(m.rows[m.selected])
-	for i := 0; i < n && i < len(content); i++ {
-		lines[i] = fitLeft(content[i], m.width)
+	offset := m.detailOffset
+	if max := len(content) - n; offset > max {
+		offset = max
 	}
-	if len(content) > n {
-		more := fmt.Sprintf(" … %d more lines (resize for full headers)", len(content)-(n-1))
-		lines[n-1] = fitLeft(more, m.width)
+	if offset < 0 {
+		offset = 0
+	}
+	for i := 0; i < n; i++ {
+		if ci := offset + i; ci < len(content) {
+			lines[i] = fitLeft(content[ci], m.width)
+		} else {
+			lines[i] = fitLeft("", m.width)
+		}
+	}
+	if offset > 0 {
+		lines[0] = fitLeft(fmt.Sprintf(" ↑ %d more", offset), m.width)
+	}
+	if hidden := len(content) - (offset + n); hidden > 0 {
+		lines[n-1] = fitLeft(fmt.Sprintf(" ↓ %d more", hidden), m.width)
 	}
 	return lines
 }
