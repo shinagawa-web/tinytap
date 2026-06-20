@@ -78,7 +78,7 @@ func TestRowLineWidth(t *testing.T) {
 	}
 	const width = 120
 	pathWidth := width - markerCol - fixedWidth - separators
-	line := rowLine(r, pathWidth, false)
+	line := rowLine(r, pathWidth, false, false)
 	if got := utf8.RuneCountInString(line); got != width {
 		t.Errorf("rowLine width = %d, want %d", got, width)
 	}
@@ -124,8 +124,8 @@ func TestRowLineSlowLatencyHighlighted(t *testing.T) {
 
 	const width = 120
 	pathWidth := width - markerCol - fixedWidth - separators
-	slow := rowLine(row{path: "/", latency: 1500 * time.Millisecond}, pathWidth, false)
-	fast := rowLine(row{path: "/", latency: 800 * time.Microsecond}, pathWidth, false)
+	slow := rowLine(row{path: "/", latency: 1500 * time.Millisecond}, pathWidth, false, false)
+	fast := rowLine(row{path: "/", latency: 800 * time.Microsecond}, pathWidth, false, false)
 
 	// The slow row carries styling around its "1.5s" value; the fast one stays
 	// plain. \x1b[ is the start of any ANSI escape sequence.
@@ -146,7 +146,7 @@ func TestRowLineSlowLatencyHighlighted(t *testing.T) {
 func TestRowLineSelectedMarker(t *testing.T) {
 	r := row{time: "19:35:24.123", pid: 5950, comm: "curl", method: "GET", path: "/"}
 	pathWidth := 120 - markerCol - fixedWidth - separators
-	if got := rowLine(r, pathWidth, true); !strings.Contains(got, markerSelected) {
+	if got := rowLine(r, pathWidth, true, true); !strings.Contains(got, markerSelected) {
 		t.Errorf("rowLine(selected) = %q, want it to contain the ▸ marker", got)
 	}
 }
@@ -172,7 +172,7 @@ func TestHeaderNumericColumnsRightAligned(t *testing.T) {
 	}
 	// The BYTES label's right edge must line up with a value's right edge.
 	r := row{bytes: 1253}
-	rl := rowLine(r, pathWidth, false)
+	rl := rowLine(r, pathWidth, false, false)
 	if hi, ri := strings.Index(got, "BYTES")+len("BYTES"), strings.Index(rl, "1253")+len("1253"); hi != ri {
 		t.Errorf("BYTES header ends at col %d but value ends at col %d", hi, ri)
 	}
@@ -544,8 +544,14 @@ func TestDetailBodyClipsToPanelHeightAndWidth(t *testing.T) {
 			t.Errorf("line %d width %d exceeds m.width %d: %q", i, w, m.width, line)
 		}
 	}
-	if !strings.Contains(strings.Join(body, "\n"), "more lines") {
-		t.Errorf("overflowing headers should flag the hidden lines:\n%s", strings.Join(body, "\n"))
+	// At rest (offset 0) the overflow is below, flagged by a down indicator; the
+	// top has nothing hidden above it, so no up indicator yet.
+	joined := strings.Join(body, "\n")
+	if !strings.Contains(joined, "↓") {
+		t.Errorf("overflowing headers should flag the hidden lines with a ↓ indicator:\n%s", joined)
+	}
+	if strings.Contains(joined, "↑") {
+		t.Errorf("at the top there is nothing above, so no ↑ indicator:\n%s", joined)
 	}
 }
 
@@ -566,5 +572,258 @@ func TestDetailKeepsOneTableRowAtAnyHeight(t *testing.T) {
 		if got := len(strings.Split(m.View(), "\n")); got != h {
 			t.Errorf("height=%d: View() emitted %d lines, want %d", h, got, h)
 		}
+	}
+}
+
+// withScrollablePanel seeds five rows whose detail content overflows the panel
+// (40 headers each), opens the panel on the newest row, and returns the model in
+// table focus. Scrolling is meaningful because the content exceeds bodyLines().
+func withScrollablePanel() model {
+	m := newModel(120, 24)
+	hdrs := make([]http.Header, 40)
+	for i := range hdrs {
+		hdrs[i] = http.Header{Name: fmt.Sprintf("X-Header-%02d", i), Value: "v"}
+	}
+	for i := 0; i < 5; i++ {
+		m = appendRow(m, row{
+			method: "GET", path: "/", reqVersion: "HTTP/1.1",
+			status: 200, resVersion: "HTTP/1.1", reason: "OK", reqHeaders: hdrs,
+		})
+	}
+	return press(m, tea.KeyEnter) // open on the newest row, table focus
+}
+
+// detailDividerLine returns the rendered Detail divider line from a View dump.
+func detailDividerLine(out string) string {
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "Detail") {
+			return ln
+		}
+	}
+	return ""
+}
+
+// Tab toggles focus between the table and the open panel; entering panel focus
+// pauses follow. Tab is a no-op when the panel is closed.
+func TestTabSwitchesFocus(t *testing.T) {
+	m := withScrollablePanel()
+	if m.panelFocus {
+		t.Fatal("panel should not start focused")
+	}
+	m = press(m, tea.KeyTab)
+	if !m.panelFocus {
+		t.Error("Tab should move focus into the panel")
+	}
+	if m.follow {
+		t.Error("entering panel focus should pause follow")
+	}
+	m = press(m, tea.KeyTab)
+	if m.panelFocus {
+		t.Error("Tab again should return focus to the table")
+	}
+
+	closed := press(withRows(5), tea.KeyTab)
+	if closed.panelFocus || closed.detailOpen {
+		t.Error("Tab with the panel closed should be a no-op")
+	}
+}
+
+// With the panel focused, ↑↓/jk scroll the body and leave the table selection
+// frozen; the offset clamps at the top.
+func TestPanelFocusScrollsBodyNotSelection(t *testing.T) {
+	m := press(withScrollablePanel(), tea.KeyTab) // panel focus
+	sel := m.selected
+	m = key(m, "j")
+	if m.detailOffset != 1 {
+		t.Errorf("j should scroll the body, offset=%d want 1", m.detailOffset)
+	}
+	if m.selected != sel {
+		t.Errorf("selection should stay frozen while scrolling, selected=%d want %d", m.selected, sel)
+	}
+	m = key(m, "k")
+	if m.detailOffset != 0 {
+		t.Errorf("k should scroll back up, offset=%d want 0", m.detailOffset)
+	}
+	m = key(m, "k") // already at the top
+	if m.detailOffset != 0 {
+		t.Errorf("offset should clamp at 0, got %d", m.detailOffset)
+	}
+}
+
+// In panel focus, g/G jump to the top/bottom of the body; G lands on the last
+// scroll position and never overshoots.
+func TestPanelFocusJumpKeys(t *testing.T) {
+	m := press(withScrollablePanel(), tea.KeyTab)
+	m = key(m, "G")
+	if m.detailOffset == 0 {
+		t.Fatal("content should overflow, so G must produce a non-zero offset")
+	}
+	if m.detailOffset != m.maxDetailOffset() {
+		t.Errorf("G offset=%d, want maxDetailOffset()=%d", m.detailOffset, m.maxDetailOffset())
+	}
+	m = key(m, "G") // already at the bottom, must not overshoot
+	if m.detailOffset != m.maxDetailOffset() {
+		t.Errorf("G at bottom offset=%d, want it pinned to %d", m.detailOffset, m.maxDetailOffset())
+	}
+	m = key(m, "g")
+	if m.detailOffset != 0 {
+		t.Errorf("g should jump to the top, offset=%d want 0", m.detailOffset)
+	}
+}
+
+// Esc steps out one level: panel focus → table focus (panel stays open) → closed.
+func TestEscStepsOutOneLevel(t *testing.T) {
+	m := press(withScrollablePanel(), tea.KeyTab) // panel focus
+	m = press(m, tea.KeyEsc)
+	if !m.detailOpen {
+		t.Error("first Esc should keep the panel open")
+	}
+	if m.panelFocus {
+		t.Error("first Esc should return focus to the table")
+	}
+	m = press(m, tea.KeyEsc)
+	if m.detailOpen {
+		t.Error("second Esc should close the panel")
+	}
+}
+
+// Moving the table selection resets the panel scroll offset, since the panel is
+// now showing a different exchange.
+func TestMovingSelectionResetsPanelScroll(t *testing.T) {
+	m := press(withScrollablePanel(), tea.KeyTab) // panel focus
+	m = key(m, "G")
+	if m.detailOffset == 0 {
+		t.Fatal("expected a non-zero offset after G")
+	}
+	m = press(m, tea.KeyTab) // back to the table
+	m = key(m, "k")          // move the selection
+	if m.detailOffset != 0 {
+		t.Errorf("moving the selection should reset panel scroll, offset=%d want 0", m.detailOffset)
+	}
+}
+
+// The panel shows a ↓ hint when content is hidden below and a ↑ hint when hidden
+// above; at the very bottom the ↓ hint is gone.
+func TestScrollIndicators(t *testing.T) {
+	m := press(withScrollablePanel(), tea.KeyTab)
+	top := strings.Join(m.detailBody(), "\n")
+	if strings.Contains(top, "↑") {
+		t.Errorf("no up indicator at the top:\n%s", top)
+	}
+	if !strings.Contains(top, "↓") {
+		t.Errorf("want a down indicator when content overflows below:\n%s", top)
+	}
+	m = key(m, "G")
+	bottom := strings.Join(m.detailBody(), "\n")
+	if !strings.Contains(bottom, "↑") {
+		t.Errorf("want an up indicator at the bottom:\n%s", bottom)
+	}
+	if strings.Contains(bottom, "↓") {
+		t.Errorf("no down indicator at the bottom:\n%s", bottom)
+	}
+}
+
+// The Detail divider carries the ▸ focus marker only when the panel is focused;
+// in table focus it leads with a blank gutter.
+func TestPanelFocusMarkerOnDivider(t *testing.T) {
+	m := withScrollablePanel()
+	tableDiv := detailDividerLine(m.View())
+	if strings.HasPrefix(tableDiv, markerSelected) {
+		t.Errorf("table focus: divider should not carry ▸: %q", tableDiv)
+	}
+	if !strings.HasPrefix(tableDiv, markerBlank+"─") {
+		t.Errorf("table focus: divider should lead with a blank gutter: %q", tableDiv)
+	}
+	m = press(m, tea.KeyTab)
+	panelDiv := detailDividerLine(m.View())
+	if !strings.HasPrefix(panelDiv, markerSelected) {
+		t.Errorf("panel focus: divider should lead with ▸: %q", panelDiv)
+	}
+}
+
+// The footer advertises the right keys for each of the three states.
+func TestFooterStates(t *testing.T) {
+	closed := withRows(5)
+	if got := closed.footer(); !strings.Contains(got, "Enter: detail") {
+		t.Errorf("closed footer = %q", got)
+	}
+	open := withScrollablePanel() // already open, table focus
+	if got := open.footer(); !strings.Contains(got, "Tab: inspect") {
+		t.Errorf("open/table footer = %q", got)
+	}
+	focused := press(withScrollablePanel(), tea.KeyTab)
+	if got := focused.footer(); !strings.Contains(got, "Tab: table") || !strings.Contains(got, "scroll") {
+		t.Errorf("open/panel footer = %q", got)
+	}
+}
+
+// The reverse-video focus bar moves with focus: the selected row wears it while
+// the table is focused, and yields it (keeping only its ▸) once focus is in the
+// panel. ANSI profile forced so the styling is observable.
+func TestRowLineFocusHighlight(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	pathWidth := 120 - markerCol - fixedWidth - separators
+	r := row{path: "/"}
+	if got := rowLine(r, pathWidth, true, true); !strings.Contains(got, "\x1b[") {
+		t.Errorf("selected + focused row should be reverse-styled, got %q", got)
+	}
+	unfocused := rowLine(r, pathWidth, true, false)
+	if strings.Contains(unfocused, "\x1b[") {
+		t.Errorf("selected but unfocused row should not be styled, got %q", unfocused)
+	}
+	if !strings.Contains(unfocused, markerSelected) {
+		t.Error("an unfocused selected row should keep its ▸ marker")
+	}
+}
+
+// The Detail divider gets the reverse-video bar only when the panel holds focus,
+// so the bright highlight reads as the focus indicator. ANSI profile forced.
+func TestDetailDividerFocusStyling(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := withScrollablePanel() // open, table focus
+	if div := detailDividerLine(m.View()); strings.Contains(div, "\x1b[") {
+		t.Errorf("table focus: Detail divider should be unstyled, got %q", div)
+	}
+	m = press(m, tea.KeyTab) // panel focus
+	if div := detailDividerLine(m.View()); !strings.Contains(div, "\x1b[") {
+		t.Errorf("panel focus: Detail divider should be reverse-styled, got %q", div)
+	}
+}
+
+// A one-line scroll advances the body by exactly one content line: the up hint
+// gets its own reserved line rather than overwriting (and skipping) content.
+func TestPanelScrollDoesNotSkipLines(t *testing.T) {
+	m := press(withScrollablePanel(), tea.KeyTab) // panel focus
+	if body := m.detailBody(); !strings.Contains(body[0], "Request:") {
+		t.Fatalf("top line should be the Request label, got %q", body[0])
+	}
+	m = key(m, "j") // scroll down one
+	body := m.detailBody()
+	if !strings.Contains(body[0], "↑ 1 more") {
+		t.Errorf("after one j, line 0 should be the up hint, got %q", body[0])
+	}
+	// content[1] is the request start line; seeing it on the next line proves no
+	// content was skipped behind the indicator.
+	if !strings.Contains(body[1], "GET / HTTP/1.1") {
+		t.Errorf("after one j, line 1 should be content[1] (nothing skipped), got %q", body[1])
+	}
+}
+
+// G scrolls all the way to the final content line — the bottom is fully
+// reachable, with no lingering down indicator.
+func TestPanelScrollReachesLastLine(t *testing.T) {
+	m := key(press(withScrollablePanel(), tea.KeyTab), "G")
+	body := strings.Join(m.detailBody(), "\n")
+	if !strings.Contains(body, detailBodyPlaceholder) {
+		t.Errorf("G should reveal the final content line %q:\n%s", detailBodyPlaceholder, body)
+	}
+	if strings.Contains(body, "↓") {
+		t.Errorf("no down indicator once the bottom is reached:\n%s", body)
 	}
 }
