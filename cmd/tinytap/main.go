@@ -28,7 +28,7 @@ import (
 )
 
 // The TUI assumes a terminal at least this large; below it the layout breaks,
-// so auto mode declines to start (see #32).
+// so both auto and an explicit --output tui decline to start (see #32).
 const (
 	minCols = 120
 	minRows = 24
@@ -98,9 +98,11 @@ func decideOutput(mode string) (choice outputChoice, width, height int) {
 		fmt.Fprintln(os.Stderr, "Could not determine terminal size — use --output stdout to stream lines instead.")
 		return outputExit, 0, 0
 	}
-	// auto enforces the minimum size; an explicit --output tui is an override
-	// that takes the cramped layout the user asked for.
-	if mode == "auto" && (w < minCols || h < minRows) {
+	// The minimum size is a hard floor for the TUI: below it the layout
+	// breaks (visibleRows can hit 0, the panel can't keep a row navigable),
+	// so both auto and an explicit --output tui bail rather than render a
+	// broken frame. --output stdout is the escape hatch for any size.
+	if w < minCols || h < minRows {
 		fmt.Fprintf(os.Stderr, "Terminal too small for the TUI — need at least %dx%d, got %dx%d.\n", minCols, minRows, w, h)
 		fmt.Fprintln(os.Stderr, "Resize the terminal and retry, or run with --output stdout.")
 		return outputExit, 0, 0
