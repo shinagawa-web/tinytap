@@ -1,80 +1,63 @@
-// Package stdout renders the capture pipeline's output as the line-based
-// format tinytap shipped in v0.1.0: one raw line per BPF event, one line
-// per completed HTTP message, and one demo line per paired request/response.
+// Package stdout renders the capture pipeline's output as a line-oriented
+// HTTP exchange log (#63): one self-contained summary line per paired
+// request/response, written to stdout. With verbose mode it hangs the
+// request/response start lines and headers under each summary.
 //
-// It is the fallback sink — selected by --output stdout, and (once the TUI
-// lands) by a non-terminal stdout or a terminal too small for the table.
-// scripts/demo.sh and `make run-raw` depend on this exact output.
+// The raw per-syscall events (OnEvent) and the per-message request/response
+// lines (OnMessage) are intentionally dropped here — the paired line already
+// carries method/path/status, and the raw syscalls were pure noise. Data goes
+// to stdout; operational logs (startup, errors) stay on the global logger's
+// stderr, so a consumer can `> log` the data without the diagnostics.
+//
+// It is selected only by an explicit --output stdout: when the terminal
+// can't host the TUI, auto/tui print guidance and exit rather than falling
+// back here (see decideOutput in cmd/tinytap). scripts/demo.sh and
+// `make run-raw` depend on this output.
 package stdout
 
 import (
-	"bytes"
 	"fmt"
-	"log"
+	"io"
+	"os"
 
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
 )
 
-// Sink writes v0.1.0-format lines via the standard logger. It holds the
-// time anchor used to stamp paired demo lines with wall-clock time.
+// Sink writes exchange lines to w (stdout by default). It holds the time
+// anchor used to stamp summary lines with wall-clock time.
 type Sink struct {
-	anchor http.TimeAnchor
+	w       io.Writer
+	verbose bool
+	anchor  http.TimeAnchor
 }
 
-// New returns a stdout sink ready to consume the capture pipeline.
-func New() *Sink {
-	return &Sink{}
+// New returns a stdout sink ready to consume the capture pipeline. When
+// verbose is set, each summary line is followed by its request/response
+// start lines and headers.
+func New(verbose bool) *Sink {
+	return &Sink{w: os.Stdout, verbose: verbose}
 }
 
-// OnEvent prints the raw per-syscall line: syscall name, pid/tid/fd, byte
-// count, comm, and — when a payload sample is present — its printable form.
-func (s *Sink) OnEvent(e *events.Event) {
-	name := events.SyscallNames[e.Syscall]
-	comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
-	line := fmt.Sprintf("%-8s pid=%-6d tid=%-6d fd=%-3d bytes=%-6d comm=%s",
-		name, e.Pid, e.Tid, e.Fd, e.Bytes, comm)
-	if e.PayloadLen > 0 {
-		n := int(e.PayloadLen)
-		if n > len(e.Payload) {
-			n = len(e.Payload)
-		}
-		line += " | " + renderPayload(e.Payload[:n])
-	}
-	log.Println(line)
-}
+// OnEvent is a no-op: stdout does not print raw per-syscall lines (#63). The
+// pipeline still delivers raw events to every sink, so the method stays to
+// satisfy the output.Sink interface.
+func (s *Sink) OnEvent(_ *events.Event) {}
 
-// OnMessage prints the per-message debug line (request or response summary).
-func (s *Sink) OnMessage(m http.Message) {
-	log.Println(http.RenderMessage(m))
-}
+// OnMessage is a no-op: the paired summary line (OnPaired) carries the
+// request/response details, so the per-message lines are redundant here.
+func (s *Sink) OnMessage(_ http.Message) {}
 
-// OnPaired prints the demo line for a matched request/response exchange.
+// OnPaired prints the one-line summary for a matched request/response
+// exchange, plus its detail lines when verbose.
 func (s *Sink) OnPaired(pe http.PairedEvent) {
-	log.Println(http.RenderPaired(pe, s.anchor.WallTime(pe.ReqTsNs)))
+	fmt.Fprintln(s.w, http.RenderPaired(pe, s.anchor.WallTime(pe.ReqTsNs)))
+	if s.verbose {
+		for _, line := range http.RenderPairedDetail(pe) {
+			fmt.Fprintln(s.w, line)
+		}
+	}
 }
 
 // Close is a no-op; the stdout sink holds no resources to release.
 func (s *Sink) Close() error { return nil }
-
-// renderPayload turns a raw byte slice into a single-line printable string.
-// Printable ASCII (0x20–0x7E) is kept as-is; CR/LF/TAB are escaped so the
-// log stays on one line; everything else becomes `.`.
-func renderPayload(p []byte) string {
-	out := make([]byte, 0, len(p)+8)
-	for _, b := range p {
-		switch {
-		case b == '\r':
-			out = append(out, '\\', 'r')
-		case b == '\n':
-			out = append(out, '\\', 'n')
-		case b == '\t':
-			out = append(out, '\\', 't')
-		case b >= 0x20 && b <= 0x7e:
-			out = append(out, b)
-		default:
-			out = append(out, '.')
-		}
-	}
-	return string(out)
-}

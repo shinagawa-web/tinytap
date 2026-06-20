@@ -35,7 +35,9 @@ const (
 )
 
 func main() {
-	outputMode := flag.String("output", "auto", "output mode: auto (TUI on a terminal), stdout (raw line stream), tui")
+	outputMode := flag.String("output", "auto", "output mode: auto (TUI on a terminal), stdout (line stream), tui")
+	verbose := flag.Bool("v", false, "verbose: hang request/response headers under each exchange (stdout only)")
+	flag.BoolVar(verbose, "verbose", false, "alias for -v")
 	flag.Parse()
 
 	switch *outputMode {
@@ -64,7 +66,7 @@ func main() {
 	if decision == outputTUI {
 		runTUI(tt, w, h)
 	} else {
-		runStdout(tt)
+		runStdout(tt, *verbose)
 	}
 }
 
@@ -110,11 +112,11 @@ func decideOutput(mode string) (choice outputChoice, width, height int) {
 	return outputTUI, w, h
 }
 
-// runStdout drives the v0.1.0 line format. Ctrl-C is delivered as a signal
-// (the terminal stays in cooked mode) and closes the ringbuf reader, which
-// unblocks capture.
-func runStdout(tt *loader.Tinytap) {
-	sink := stdout.New()
+// runStdout drives the line-oriented exchange log. Ctrl-C is delivered as a
+// signal (the terminal stays in cooked mode) and closes the ringbuf reader,
+// which unblocks capture.
+func runStdout(tt *loader.Tinytap, verbose bool) {
+	sink := stdout.New(verbose)
 	defer closeSink(sink)
 
 	log.Println("tinytap running — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.")
