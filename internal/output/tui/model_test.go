@@ -795,3 +795,35 @@ func TestDetailDividerFocusStyling(t *testing.T) {
 		t.Errorf("panel focus: Detail divider should be reverse-styled, got %q", div)
 	}
 }
+
+// A one-line scroll advances the body by exactly one content line: the up hint
+// gets its own reserved line rather than overwriting (and skipping) content.
+func TestPanelScrollDoesNotSkipLines(t *testing.T) {
+	m := press(withScrollablePanel(), tea.KeyTab) // panel focus
+	if body := m.detailBody(); !strings.Contains(body[0], "Request:") {
+		t.Fatalf("top line should be the Request label, got %q", body[0])
+	}
+	m = key(m, "j") // scroll down one
+	body := m.detailBody()
+	if !strings.Contains(body[0], "↑ 1 more") {
+		t.Errorf("after one j, line 0 should be the up hint, got %q", body[0])
+	}
+	// content[1] is the request start line; seeing it on the next line proves no
+	// content was skipped behind the indicator.
+	if !strings.Contains(body[1], "GET / HTTP/1.1") {
+		t.Errorf("after one j, line 1 should be content[1] (nothing skipped), got %q", body[1])
+	}
+}
+
+// G scrolls all the way to the final content line — the bottom is fully
+// reachable, with no lingering down indicator.
+func TestPanelScrollReachesLastLine(t *testing.T) {
+	m := key(press(withScrollablePanel(), tea.KeyTab), "G")
+	body := strings.Join(m.detailBody(), "\n")
+	if !strings.Contains(body, detailBodyPlaceholder) {
+		t.Errorf("G should reveal the final content line %q:\n%s", detailBodyPlaceholder, body)
+	}
+	if strings.Contains(body, "↓") {
+		t.Errorf("no down indicator once the bottom is reached:\n%s", body)
+	}
+}

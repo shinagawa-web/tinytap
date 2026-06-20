@@ -262,14 +262,16 @@ func (m model) detailLineCount() int {
 	return len(detailContent(m.rows[m.selected]))
 }
 
-// maxDetailOffset is the furthest the panel can scroll: the point where its last
-// body line shows the final content line. 0 when the content fits.
+// maxDetailOffset is the furthest the panel can scroll. At the bottom the up
+// indicator still occupies one body line, so only the last (bodyLines-1) content
+// lines are shown — hence the +1 over a naive height subtraction. 0 when the
+// content fits.
 func (m model) maxDetailOffset() int {
-	mo := m.detailLineCount() - m.bodyLines()
-	if mo < 0 {
-		mo = 0
+	L, n := m.detailLineCount(), m.bodyLines()
+	if L <= n {
+		return 0
 	}
-	return mo
+	return L - (n - 1)
 }
 
 // clampDetailOffset keeps the panel scroll offset within [0, maxDetailOffset]
@@ -421,7 +423,9 @@ func (m model) View() string {
 func (m model) footer() string {
 	switch {
 	case m.detailOpen && m.panelFocus:
-		return " ↑↓/jk: scroll │ g/G: top/bottom │ Tab: table │ Esc: close"
+		// Esc steps back to table focus here (it doesn't close until the next
+		// Esc from the table), so it reads "back", and quit stays advertised.
+		return " ↑↓/jk: scroll │ g/G: top/bottom │ Tab: table │ Esc: back │ q: quit"
 	case m.detailOpen:
 		return " ↑↓/jk: navigate │ Tab: inspect │ Enter/Esc: close │ q: quit"
 	default:
@@ -459,41 +463,51 @@ func (m model) detailDivider() string {
 // structured request/response header sections (#34), followed by a body
 // placeholder (#35). Every line is fit to m.width so a long header value can't
 // wrap and push the panel past its fixed height. When the content is taller
-// than the panel it scrolls (#61): the body shows content[offset:offset+height],
-// and directional hints flag content hidden above (`↑ N more`) or below
-// (`↓ N more`) — each indicator costing the body line it sits on, pager-style.
+// than the panel it scrolls (#61): the body shows content from m.detailOffset,
+// reserving a line for a directional hint at each end that has hidden content —
+// `↑ N more` above, `↓ N more` below. The hint sits on its own line rather than
+// over a content line, so a one-line scroll moves the body by exactly one line
+// and no header is skipped behind an indicator.
 func (m model) detailBody() []string {
 	n := m.bodyLines()
 	if n == 0 {
 		return nil
 	}
 	lines := make([]string, n)
+	for i := range lines {
+		lines[i] = fitLeft("", m.width)
+	}
 	if len(m.rows) == 0 {
-		for i := range lines {
-			lines[i] = fitLeft("", m.width)
-		}
 		return lines
 	}
 	content := detailContent(m.rows[m.selected])
 	offset := m.detailOffset
-	if max := len(content) - n; offset > max {
+	if max := m.maxDetailOffset(); offset > max {
 		offset = max
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	for i := 0; i < n; i++ {
-		if ci := offset + i; ci < len(content) {
-			lines[i] = fitLeft(content[ci], m.width)
-		} else {
-			lines[i] = fitLeft("", m.width)
-		}
+
+	// Reserve a body line for each end that hides content; the visible content
+	// fills what's left, starting after the top hint (if any).
+	showUp := offset > 0
+	first, avail := 0, n
+	if showUp {
+		first, avail = 1, n-1
 	}
-	if offset > 0 {
+	showDown := offset+avail < len(content)
+	if showDown {
+		avail--
+	}
+	for i := 0; i < avail && offset+i < len(content); i++ {
+		lines[first+i] = fitLeft(content[offset+i], m.width)
+	}
+	if showUp {
 		lines[0] = fitLeft(fmt.Sprintf(" ↑ %d more", offset), m.width)
 	}
-	if hidden := len(content) - (offset + n); hidden > 0 {
-		lines[n-1] = fitLeft(fmt.Sprintf(" ↓ %d more", hidden), m.width)
+	if showDown {
+		lines[n-1] = fitLeft(fmt.Sprintf(" ↓ %d more", len(content)-(offset+avail)), m.width)
 	}
 	return lines
 }
