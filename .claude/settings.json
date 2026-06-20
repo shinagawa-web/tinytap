@@ -51,16 +51,13 @@
       "Bash(gofmt *)",
       "Bash(llvm-readelf *)",
       "Bash(llvm-objdump *)",
-      "Bash(cd *)",
       "Bash(ls *)",
-      "Bash(find *)",
       "Bash(grep *)",
       "Bash(head *)",
       "Bash(tail *)",
       "Bash(go build *)",
       "Bash(go test *)",
       "Bash(go doc *)",
-      "Bash(go generate *)",
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(git push *)",
@@ -78,9 +75,7 @@
       "Bash(git check-ignore *)",
       "Bash(gh pr *)",
       "Bash(gh issue *)",
-      "Bash(gh api *)",
-      "Bash(gh repo *)",
-      "Bash(make *)"
+      "Bash(gh repo *)"
     ]
   }
 }
