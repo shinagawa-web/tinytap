@@ -7,6 +7,8 @@ import (
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestFitLeft(t *testing.T) {
@@ -82,6 +84,58 @@ func TestRowLineWidth(t *testing.T) {
 	}
 	if !strings.HasSuffix(line, "0.8ms") {
 		t.Errorf("rowLine = %q, want it to end with the latency 0.8ms", line)
+	}
+}
+
+// latencyStr never overflows the 7-column ms budget: the sub-second form is
+// capped at 999.9ms, and at exactly 1s it rolls over to seconds.
+func TestLatencyStr(t *testing.T) {
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{800 * time.Microsecond, "0.8ms"},
+		{12500 * time.Microsecond, "12.5ms"},
+		{999900 * time.Microsecond, "999.9ms"},
+		{999950 * time.Microsecond, "999.9ms"}, // would round to 1000.0ms without the cap
+		{time.Second, "1.0s"},
+		{1500 * time.Millisecond, "1.5s"},
+		{10 * time.Second, "10.0s"},
+	}
+	for _, tc := range tests {
+		if got := latencyStr(tc.d); got != tc.want {
+			t.Errorf("latencyStr(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+// Second-scale latencies (>= 1s) are highlighted; sub-second ones are not, and
+// the zero-width color escapes must not change the row's visible width.
+func TestRowLineSlowLatencyHighlighted(t *testing.T) {
+	// go test's stdout isn't a TTY, so lipgloss defaults to the no-color
+	// profile and Render would be a silent no-op. Force a profile that emits
+	// ANSI so the styling is observable, and restore it afterwards.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	const width = 120
+	pathWidth := width - markerCol - fixedWidth - separators
+	slow := rowLine(row{path: "/", latency: 1500 * time.Millisecond}, pathWidth, false)
+	fast := rowLine(row{path: "/", latency: 800 * time.Microsecond}, pathWidth, false)
+
+	// The slow row carries styling around its "1.5s" value; the fast one stays
+	// plain. \x1b[ is the start of any ANSI escape sequence.
+	if !strings.Contains(slow, "1.5s") || !strings.Contains(slow, "\x1b[") {
+		t.Errorf("slow row (>=1s) should show a styled 1.5s, got %q", slow)
+	}
+	if strings.Contains(fast, "\x1b[") {
+		t.Errorf("sub-second row should be unstyled, got %q", fast)
+	}
+	// lipgloss.Width ignores the escapes: the styled row must still occupy
+	// exactly `width` display columns so the table stays aligned.
+	if got := lipgloss.Width(slow); got != width {
+		t.Errorf("slow row visible width = %d, want %d", got, width)
 	}
 }
 

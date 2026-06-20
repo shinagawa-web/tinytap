@@ -25,10 +25,10 @@ const (
 	colMethod  = 7  // longest standard method is OPTIONS
 	colStatus  = 6
 	colBytes   = 8
-	colLatency = 7
+	colLatency = 8 // "999.9ms" (the widest value) is 7; the 8th column is breathing room
 )
 
-// fixedWidth is the sum of the seven fixed columns; with the six separator
+// fixedWidth is the sum of the seven fixed columns; with the seven separator
 // spaces between the eight columns, the remainder is PATH's width.
 const fixedWidth = colTime + colPID + colComm + colMethod + colStatus + colBytes + colLatency
 const separators = 7 // single spaces between the 8 columns
@@ -251,6 +251,11 @@ func headerLine(pathWidth int) string {
 // glance even where the marker glyph is easy to miss.
 var selectedStyle = lipgloss.NewStyle().Reverse(true)
 
+// slowLatencyStyle highlights second-scale latencies. "1.2s" and "1.2ms" differ
+// by a single character that the eye skips, so the slow case (≥ 1s) is painted
+// bold yellow — the unit ceases to be the only signal that a request was slow.
+var slowLatencyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+
 // rowLine renders one exchange. The leading gutter holds ▸ when selected
 // (blank otherwise); the selected row is also reverse-styled. The returned
 // line is exactly m.width display columns wide before styling so the columns
@@ -260,6 +265,12 @@ func rowLine(r row, pathWidth int, selected bool) string {
 	if selected {
 		marker = markerSelected
 	}
+	// Color the padded cell (not the bare value) so the zero-width escapes
+	// leave the column's display width untouched and the table stays aligned.
+	latency := fitRight(latencyStr(r.latency), colLatency)
+	if r.latency >= time.Second {
+		latency = slowLatencyStyle.Render(latency)
+	}
 	line := marker + strings.Join([]string{
 		fitLeft(r.time, colTime),
 		fitLeft(strconv.FormatUint(uint64(r.pid), 10), colPID),
@@ -268,7 +279,7 @@ func rowLine(r row, pathWidth int, selected bool) string {
 		fitLeft(r.path, pathWidth),
 		fitRight(strconv.Itoa(r.status), colStatus),
 		fitRight(strconv.Itoa(r.bytes), colBytes),
-		fitRight(latencyStr(r.latency), colLatency),
+		latency,
 	}, " ")
 	if selected {
 		return selectedStyle.Render(line)
@@ -276,15 +287,21 @@ func rowLine(r row, pathWidth int, selected bool) string {
 	return line
 }
 
-// latencyStr keeps the value inside the 7-column LATENCY budget: "999.9ms"
-// is the widest millisecond form, so 1s and above switch to seconds rather
-// than overflow (and be silently clipped by fitRight).
+// latencyStr keeps the value inside the LATENCY budget: "999.9ms" is the widest
+// millisecond form (7 columns), so anything >= 1s switches to seconds rather
+// than overflow (and be silently clipped by fitRight). The boundary is exactly
+// 1s, matching the slowLatencyStyle highlight in rowLine. The ms form is capped
+// at 999.9ms so float rounding just under the boundary (e.g. 999.95ms) can't
+// emit "1000.0ms" — a value that would read as second-scale yet stay uncolored.
 func latencyStr(d time.Duration) string {
-	ms := float64(d) / float64(time.Millisecond)
-	if ms < 1000 {
+	if d < time.Second {
+		ms := float64(d) / float64(time.Millisecond)
+		if ms > 999.9 {
+			ms = 999.9
+		}
 		return fmt.Sprintf("%.1fms", ms)
 	}
-	return fmt.Sprintf("%.1fs", ms/1000)
+	return fmt.Sprintf("%.1fs", float64(d)/float64(time.Second))
 }
 
 // fitLeft left-aligns s in a field of n display columns: pad with spaces, or
