@@ -673,3 +673,18 @@ func TestSessionBodyBudgetEvictsOldest(t *testing.T) {
 		t.Error("newest row should still have its body")
 	}
 }
+
+// A CRLF-delimited text body breaks into lines without spurious '.' at the
+// ends (the '\r' is dropped, not rendered as a non-printable).
+func TestDecodedBodyDropsCarriageReturns(t *testing.T) {
+	r := row{method: "GET", path: "/", status: 200, bytes: 10, resBody: []byte("ab\r\ncd\r\nef")}
+	got := strings.Join(detailContent(r, false), "\n")
+	if strings.Contains(got, "ab.") || strings.Contains(got, "cd.") {
+		t.Errorf("CRLF should not leave a spurious '.' at line ends:\n%s", got)
+	}
+	for _, want := range []string{"   ab", "   cd", "   ef"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("CRLF body should break into lines, missing %q:\n%s", want, got)
+		}
+	}
+}

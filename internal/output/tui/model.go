@@ -351,7 +351,7 @@ func (m model) footer() string {
 		if m.hexMode {
 			mode = "text"
 		}
-		return fmt.Sprintf(" ↑↓/jk: navigate │ Enter/Esc: close │ b: %s body │ q: quit", mode)
+		return fmt.Sprintf(" ↑↓/jk: navigate │ Enter/Esc: close │ g/G: top/bottom │ b: %s body │ q: quit", mode)
 	}
 	return " ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ q: quit"
 }
@@ -442,7 +442,9 @@ func bodyBlock(label string, body []byte, total int, truncated, hex bool) []stri
 }
 
 // decodedLines renders body bytes as indented text lines: printable ASCII is
-// kept, a newline starts a new line, every other byte shows as '.'.
+// kept, a newline starts a new line, every other byte shows as '.'. A carriage
+// return is dropped so CRLF-delimited text breaks cleanly instead of leaving a
+// spurious '.' at each line end.
 func decodedLines(body []byte) []string {
 	var lines []string
 	var b strings.Builder
@@ -451,6 +453,8 @@ func decodedLines(body []byte) []string {
 		case c == '\n':
 			lines = append(lines, "   "+b.String())
 			b.Reset()
+		case c == '\r':
+			// drop — pairs with the \n that follows in CRLF
 		case c >= 0x20 && c <= 0x7e:
 			b.WriteByte(c)
 		default:

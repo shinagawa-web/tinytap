@@ -122,9 +122,11 @@ type stream struct {
 	messageStartTs uint64
 }
 
-// Message is what the parser emits when a message's headers are
-// recognised. Body completion is tracked internally for keep-alive
-// framing but doesn't produce a separate event.
+// Message is what the parser emits for one HTTP message. A message with a body
+// is emitted once that body has fully drained, so BodySample is populated (#35);
+// a body-less message (no Content-Length, or a no-body status/method) is emitted
+// as soon as its headers are recognised. TsNs is always the first-byte
+// timestamp regardless of emission timing, so latency stays header-to-header.
 type Message struct {
 	TsNs          uint64 // first-byte timestamp of this message (BPF ktime ns)
 	Pid           uint32
