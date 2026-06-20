@@ -34,7 +34,7 @@ const fixedWidth = colTime + colPID + colComm + colMethod + colStatus + colBytes
 const separators = 7 // single spaces between the 8 columns
 
 // markerCol is the one-column left gutter carrying the ▸ selection marker
-// (blank on every other row). It eats into PATH's flexible width so each line
+// (blank on unselected rows). It eats into PATH's flexible width so each line
 // still fills exactly m.width and nothing wraps.
 const markerCol = 1
 
