@@ -194,6 +194,42 @@ func TestViewportPansToSelection(t *testing.T) {
 	}
 }
 
+// After jumping to the top, moving down advances the cursor within the
+// visible window first; the content only scrolls once the cursor reaches the
+// last visible row. (Regression: the cursor used to stick to the top row
+// while the rows scrolled under it.)
+func TestDownMovesCursorBeforeScrolling(t *testing.T) {
+	const h = 24
+	m := newModel(120, h)
+	for i := 0; i < 100; i++ {
+		next, _ := m.Update(rowMsg(row{path: "/"}))
+		m = next.(model)
+	}
+	m = key(m, "g") // top: selected=0, top=0
+	if m.top != 0 || m.selected != 0 {
+		t.Fatalf("after g: selected=%d top=%d, want 0/0", m.selected, m.top)
+	}
+	visible := m.visibleRows()
+	// Step down to the last visible row — top must not move yet.
+	for i := 1; i < visible; i++ {
+		m = key(m, "j")
+		if m.selected != i {
+			t.Fatalf("after %d×j: selected=%d, want %d", i, m.selected, i)
+		}
+		if m.top != 0 {
+			t.Errorf("after %d×j: top=%d, want 0 (cursor should move, not the content)", i, m.top)
+		}
+	}
+	// One more down: cursor is at the bottom, so now the content scrolls.
+	m = key(m, "j")
+	if m.selected != visible {
+		t.Fatalf("selected=%d, want %d", m.selected, visible)
+	}
+	if m.top != 1 {
+		t.Errorf("top=%d, want 1 (content scrolls once the cursor hits the bottom)", m.top)
+	}
+}
+
 // View must never emit more lines than the terminal is tall, at any scroll
 // position — overflow makes the alt-screen scroll and pushes the header off
 // the top. Regression for the g-to-top-with-a-full-buffer case.

@@ -84,6 +84,7 @@ type model struct {
 	width    int
 	height   int
 	selected int  // index into rows of the ▸ row; 0 when rows is empty
+	top      int  // index of the first visible row (the scroll anchor)
 	follow   bool // when true, selection tracks the newest row as rows arrive
 }
 
@@ -147,7 +148,48 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selected = len(m.rows) - 1
 		}
 	}
+	// Reconcile the scroll anchor after any selection / row-count / size
+	// change so the selected row stays inside the visible window.
+	m.clampScroll()
 	return m, nil
+}
+
+// visibleRows is how many table rows fit above the chrome at the current
+// height (top divider, header, header divider, bottom divider, footer).
+func (m model) visibleRows() int {
+	v := m.height - chromeLines
+	if v < 0 {
+		v = 0
+	}
+	return v
+}
+
+// clampScroll moves the scroll anchor only when the selection has left the
+// visible window — scrolling up when it rises above `top`, down when it falls
+// below the last visible row — and otherwise leaves `top` put. This is what
+// keeps the ▸ row stationary on screen while the user steps through rows,
+// rather than pinning it to an edge. `top` is then clamped to a valid range.
+func (m *model) clampScroll() {
+	visible := m.visibleRows()
+	if visible <= 0 {
+		m.top = 0
+		return
+	}
+	if m.selected < m.top {
+		m.top = m.selected
+	} else if m.selected >= m.top+visible {
+		m.top = m.selected - visible + 1
+	}
+	maxTop := len(m.rows) - visible
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if m.top > maxTop {
+		m.top = maxTop
+	}
+	if m.top < 0 {
+		m.top = 0
+	}
 }
 
 func (m model) View() string {
@@ -163,26 +205,12 @@ func (m model) View() string {
 	}
 	divider := strings.Repeat("─", m.width)
 
-	// Rows that fit above the chrome, scrolled so the selected row stays on
-	// screen: follow the tail by default, but pan up when the selection has
-	// moved above the visible window.
-	visible := m.height - chromeLines
-	if visible < 0 {
-		visible = 0
-	}
-	start := len(m.rows) - visible
-	if start < 0 {
-		start = 0
-	}
-	if m.selected < start {
-		start = m.selected
-	} else if visible > 0 && m.selected >= start+visible {
-		start = m.selected - visible + 1
-	}
-	// Render at most `visible` rows. Without this cap, panning the window up
-	// (e.g. g to the top with a full buffer) would emit every row from start
-	// to the end, overflowing the terminal height — the alt-screen then
-	// scrolls and the header/chrome get pushed off the top.
+	// The scroll anchor (m.top) is maintained in Update; here we just render
+	// the window [top, top+visible). Capping at `visible` rows keeps the
+	// output within the terminal height so the alt-screen never scrolls and
+	// pushes the header off the top.
+	visible := m.visibleRows()
+	start := m.top
 	end := start + visible
 	if end > len(m.rows) {
 		end = len(m.rows)
