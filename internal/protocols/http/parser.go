@@ -119,7 +119,17 @@ type Message struct {
 	IsRequest     bool
 	Req           httpRequestLine
 	Res           httpStatusLine
-	ContentLength int // body length as advertised by Content-Length (post-no-body override)
+	ContentLength int      // body length as advertised by Content-Length (post-no-body override)
+	Headers       []Header // request/response headers in on-wire order
+}
+
+// Header is a single HTTP header field as it appeared on the wire. Name and
+// Value are trimmed of surrounding whitespace but otherwise unmodified — no
+// canonicalisation or lowercasing, so the detail panel shows exactly what was
+// sent. Order is preserved (the slice mirrors wire order).
+type Header struct {
+	Name  string
+	Value string
 }
 
 type Parser struct {
@@ -319,6 +329,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			s.buf = s.buf[consume:]
 			s.wireBytesConsumed += consume
 
+			var headers []Header
 			for _, h := range strings.Split(headerBlock, "\r\n") {
 				colon := strings.Index(h, ":")
 				if colon < 0 {
@@ -326,6 +337,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				}
 				name := strings.TrimSpace(h[:colon])
 				value := strings.TrimSpace(h[colon+1:])
+				headers = append(headers, Header{Name: name, Value: value})
 				if strings.EqualFold(name, "Content-Length") {
 					// Ignore negative or unparseable values; a hostile or buggy
 					// origin sending Content-Length: -1 would otherwise set
@@ -372,6 +384,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				Req:           s.req,
 				Res:           s.res,
 				ContentLength: s.contentLength,
+				Headers:       headers,
 			})
 
 			// Recover how much of the body has already arrived in wire bytes.

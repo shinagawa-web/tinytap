@@ -53,14 +53,18 @@ const (
 // chromeLines holds whether the panel is open or not.
 const chromeLines = 5
 
-// detailFraction is the detail panel's share of the row area when open: a
-// 60/40 table/detail split (#40). The remaining 60% stays with the table,
-// which keeps scrolling and navigating.
-const detailFraction = 0.4
+// detailMaxFraction caps the detail panel's share of the row area when open.
+// The panel grows to fit its content (#34) rather than claiming a fixed slice,
+// but never past this cap — so the table always keeps at least the remaining
+// 1-detailMaxFraction of the rows to scroll and navigate, and visibleRows()
+// can never reach 0. Originally a fixed 40% split (#40); content-aware sizing
+// replaced it so short header sets don't shrink the table for no reason and
+// long ones get as much room as the cap allows before truncating.
+const detailMaxFraction = 0.6
 
-// detailPlaceholder is the body shown until structured headers (#34) and the
-// decoded/hex body (#35) land. The header divider already carries pid/comm.
-const detailPlaceholder = " headers + body coming in #34 / #35"
+// detailBodyPlaceholder fills the body line of the detail panel until the
+// decoded/hex body view lands (#35); the structured headers above it are live.
+const detailBodyPlaceholder = "   body coming in #35"
 
 // row is a single rendered exchange. Values are kept raw (not pre-padded) so
 // View can re-truncate PATH/COMM when the terminal is resized.
@@ -73,6 +77,14 @@ type row struct {
 	status  int
 	bytes   int
 	latency time.Duration
+
+	// Detail-panel fields: the full start lines and header sets, surfaced
+	// only when the panel is open (#34). Headers keep their on-wire order.
+	reqVersion string
+	resVersion string
+	reason     string
+	reqHeaders []http.Header
+	resHeaders []http.Header
 }
 
 func newRow(pe http.PairedEvent, when time.Time) row {
@@ -85,6 +97,12 @@ func newRow(pe http.PairedEvent, when time.Time) row {
 		status:  pe.Status,
 		bytes:   pe.ResBytes,
 		latency: pe.Latency,
+
+		reqVersion: pe.ReqVersion,
+		resVersion: pe.ResVersion,
+		reason:     pe.Reason,
+		reqHeaders: pe.ReqHeaders,
+		resHeaders: pe.ResHeaders,
 	}
 }
 
@@ -190,8 +208,12 @@ func (m model) visibleRows() int {
 }
 
 // bodyLines is the height of the detail panel's body (the lines below its
-// header divider), 0 when the panel is closed. It claims detailFraction of the
-// row area, leaving the rest to the table.
+// header divider), 0 when the panel is closed. The panel grows to fit the
+// selected row's detail content but is capped at detailMaxFraction of the row
+// area *and* at avail-1, so the table always keeps at least one row and
+// visibleRows() can never reach 0 — even if a runtime resize shrinks the
+// terminal below the startup floor (#57). With no rows yet it reserves a
+// single blank line.
 func (m model) bodyLines() int {
 	if !m.detailOpen {
 		return 0
@@ -200,14 +222,21 @@ func (m model) bodyLines() int {
 	if avail <= 0 {
 		return 0
 	}
-	b := int(float64(avail) * detailFraction)
-	if b < 1 {
-		b = 1
+	max := int(float64(avail) * detailMaxFraction)
+	if max > avail-1 {
+		max = avail - 1 // leave at least one table row
 	}
-	if b > avail {
-		b = avail
+	if max < 0 {
+		max = 0
 	}
-	return b
+	want := 1
+	if len(m.rows) > 0 {
+		want = len(detailContent(m.rows[m.selected]))
+	}
+	if want > max {
+		want = max
+	}
+	return want
 }
 
 // clampScroll moves the scroll anchor only when the selection has left the
@@ -315,16 +344,56 @@ func (m model) detailDivider() string {
 	return label + strings.Repeat("─", m.width-n)
 }
 
-// detailBody returns exactly bodyLines() lines of placeholder content. Real
-// headers (#34) and the decoded/hex body (#35) replace it later; for now the
-// first line names what is coming and the rest are blank padding.
+// detailBody returns exactly bodyLines() lines for the selected row: the
+// structured request/response header sections (#34), followed by a body
+// placeholder (#35). Every line is fit to m.width so a long header value can't
+// wrap and push the panel past its fixed height. When the content is taller
+// than the panel, the last line flags how much is hidden rather than silently
+// dropping headers.
 func (m model) detailBody() []string {
 	n := m.bodyLines()
 	if n == 0 {
 		return nil
 	}
 	lines := make([]string, n)
-	lines[0] = detailPlaceholder
+	if len(m.rows) == 0 {
+		return lines
+	}
+	content := detailContent(m.rows[m.selected])
+	for i := 0; i < n && i < len(content); i++ {
+		lines[i] = fitLeft(content[i], m.width)
+	}
+	if len(content) > n {
+		more := fmt.Sprintf(" … %d more lines (resize for full headers)", len(content)-(n-1))
+		lines[n-1] = fitLeft(more, m.width)
+	}
+	return lines
+}
+
+// detailContent builds the full, unbounded set of detail lines for a row: a
+// Request section (start line + headers) and a Response section, mirroring the
+// on-wire order. detailBody clips this to the panel height.
+func detailContent(r row) []string {
+	lines := []string{" Request:", fmt.Sprintf("   %s %s %s", r.method, r.path, r.reqVersion)}
+	lines = append(lines, headerLines(r.reqHeaders)...)
+	lines = append(lines, "", " Response:", fmt.Sprintf("   %s %d %s", r.resVersion, r.status, r.reason))
+	lines = append(lines, headerLines(r.resHeaders)...)
+	lines = append(lines, "", detailBodyPlaceholder)
+	return lines
+}
+
+// headerLines renders one header section, one "   Name: Value" line per header
+// in wire order (three-space indent, matching the start lines under each
+// section label). A section with no headers shows an explicit "(none)" so the
+// panel never looks like it failed to capture them.
+func headerLines(hs []http.Header) []string {
+	if len(hs) == 0 {
+		return []string{"   (none)"}
+	}
+	lines := make([]string, len(hs))
+	for i, h := range hs {
+		lines[i] = fmt.Sprintf("   %s: %s", h.Name, h.Value)
+	}
 	return lines
 }
 

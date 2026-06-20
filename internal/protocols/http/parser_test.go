@@ -221,3 +221,48 @@ func TestStatusCodesWithNoBody(t *testing.T) {
 		})
 	}
 }
+
+// The parser keeps every header in wire order, preserves unknown/custom
+// headers (not just Content-Length), and trims surrounding whitespace from
+// both name and value. Continuation/obs-fold lines are out of scope (#34).
+func TestParserPreservesHeaders(t *testing.T) {
+	p := NewParser()
+	req := "GET /api HTTP/1.1\r\n" +
+		"Host: localhost:8081\r\n" +
+		"User-Agent:   curl/8.14.1  \r\n" + // padded value must be trimmed
+		"X-Custom-Trace: abc123\r\n" +
+		"Accept: */*\r\n" +
+		"\r\n"
+	got := p.Feed(makeEvent(events.SyscallWrite, 1234, 7, uint32(len(req)), []byte(req)))
+	if len(got) != 1 {
+		t.Fatalf("Feed returned %d messages, want 1", len(got))
+	}
+	want := []Header{
+		{Name: "Host", Value: "localhost:8081"},
+		{Name: "User-Agent", Value: "curl/8.14.1"},
+		{Name: "X-Custom-Trace", Value: "abc123"},
+		{Name: "Accept", Value: "*/*"},
+	}
+	if len(got[0].Headers) != len(want) {
+		t.Fatalf("got %d headers, want %d: %+v", len(got[0].Headers), len(want), got[0].Headers)
+	}
+	for i, h := range want {
+		if got[0].Headers[i] != h {
+			t.Errorf("header[%d] = %+v, want %+v", i, got[0].Headers[i], h)
+		}
+	}
+}
+
+// A message with no header lines (e.g. "HTTP/1.1 204 No Content\r\n\r\n")
+// yields an empty header slice, not a crash or a phantom entry.
+func TestParserZeroHeaders(t *testing.T) {
+	p := NewParser()
+	wire := "HTTP/1.1 204 No Content\r\n\r\n"
+	got := p.Feed(makeEvent(events.SyscallRead, 1234, 7, uint32(len(wire)), []byte(wire)))
+	if len(got) != 1 {
+		t.Fatalf("Feed returned %d messages, want 1", len(got))
+	}
+	if len(got[0].Headers) != 0 {
+		t.Errorf("want no headers, got %+v", got[0].Headers)
+	}
+}

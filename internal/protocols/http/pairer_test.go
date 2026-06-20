@@ -76,3 +76,28 @@ func TestPairerDropsOrphanResponse(t *testing.T) {
 		t.Errorf("orphan response should not pair, got %+v", pe)
 	}
 }
+
+// The pairer carries request and response headers into the PairedEvent
+// without dropping or reordering them.
+func TestPairerCarriesHeaders(t *testing.T) {
+	p := NewPairer()
+	pid, fd := uint32(42), int32(7)
+	req := Message{TsNs: 100, Pid: pid, Fd: fd, IsRequest: true,
+		Headers: []Header{{Name: "Host", Value: "x"}, {Name: "Accept", Value: "*/*"}}}
+	res := Message{TsNs: 200, Pid: pid, Fd: fd, IsRequest: false,
+		Res:     httpStatusLine{status: 200},
+		Headers: []Header{{Name: "Content-Type", Value: "application/json"}}}
+	if _, ok := p.Push(req); ok {
+		t.Fatal("request should be queued, not paired")
+	}
+	pe, ok := p.Push(res)
+	if !ok {
+		t.Fatal("response should pair with the queued request")
+	}
+	if len(pe.ReqHeaders) != 2 || pe.ReqHeaders[0].Name != "Host" || pe.ReqHeaders[1].Name != "Accept" {
+		t.Errorf("ReqHeaders = %+v, want [Host Accept] in order", pe.ReqHeaders)
+	}
+	if len(pe.ResHeaders) != 1 || pe.ResHeaders[0].Name != "Content-Type" {
+		t.Errorf("ResHeaders = %+v, want [Content-Type]", pe.ResHeaders)
+	}
+}

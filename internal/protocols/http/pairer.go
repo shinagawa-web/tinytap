@@ -29,9 +29,11 @@ type PairedEvent struct {
 	Path       string
 	ReqVersion string // request start-line HTTP version (e.g. "HTTP/1.1")
 	Status     int
-	Reason     string // response reason phrase (e.g. "OK", "Not Found")
-	ResVersion string // response start-line HTTP version
-	ResBytes   int    // response body bytes (Content-Length, post-no-body override)
+	Reason     string   // response reason phrase (e.g. "OK", "Not Found")
+	ResVersion string   // response start-line HTTP version
+	ResBytes   int      // response body bytes (Content-Length, post-no-body override)
+	ReqHeaders []Header // request headers in on-wire order
+	ResHeaders []Header // response headers in on-wire order
 }
 
 func NewPairer() *Pairer {
@@ -72,6 +74,8 @@ func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 		Reason:     e.Res.reason,
 		ResVersion: e.Res.version,
 		ResBytes:   e.ContentLength,
+		ReqHeaders: req.Headers,
+		ResHeaders: e.Headers,
 	}, true
 }
 

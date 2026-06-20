@@ -10,6 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"github.com/shinagawa-web/tinytap/internal/protocols/http"
 )
 
 func TestFitLeft(t *testing.T) {
@@ -395,8 +397,8 @@ func TestDetailHeaderTracksSelectionLive(t *testing.T) {
 	if !strings.Contains(out, "pid=1004 (proc4)") {
 		t.Errorf("divider should name the selected row, got:\n%s", out)
 	}
-	if !strings.Contains(out, detailPlaceholder) {
-		t.Error("View should show the placeholder body")
+	if !strings.Contains(out, " Request:") || !strings.Contains(out, " Response:") {
+		t.Errorf("View should show the Request/Response header sections:\n%s", out)
 	}
 	// Move the selection up; the divider must update live.
 	m = key(m, "k")
@@ -449,6 +451,120 @@ func TestViewFitsHeightWithDetailOpen(t *testing.T) {
 		m = key(m, k)
 		if got := len(strings.Split(m.View(), "\n")); got != h {
 			t.Errorf("after %q with the panel open: View() emitted %d lines, want %d", k, got, h)
+		}
+	}
+}
+
+// appendRow streams one fully-populated row into the model, as the capture
+// loop would, and returns the updated model.
+func appendRow(m model, r row) model {
+	next, _ := m.Update(rowMsg(r))
+	return next.(model)
+}
+
+// The detail panel shows the request and response start lines followed by
+// their headers, and the headers keep their on-wire order.
+func TestDetailRendersHeadersInWireOrder(t *testing.T) {
+	m := newModel(120, 60) // tall enough that every header line fits the panel
+	m = appendRow(m, row{
+		method: "GET", path: "/api", reqVersion: "HTTP/1.1",
+		status: 200, resVersion: "HTTP/1.1", reason: "OK",
+		reqHeaders: []http.Header{
+			{Name: "Host", Value: "localhost:8081"},
+			{Name: "User-Agent", Value: "curl/8.14.1"},
+			{Name: "Accept", Value: "*/*"},
+		},
+		resHeaders: []http.Header{
+			{Name: "Content-Type", Value: "application/json"},
+			{Name: "Content-Length", Value: "12"},
+		},
+	})
+	m.detailOpen = true
+	body := strings.Join(m.detailBody(), "\n")
+
+	for _, want := range []string{
+		" Request:", "GET /api HTTP/1.1",
+		"Host: localhost:8081", "User-Agent: curl/8.14.1", "Accept: */*",
+		" Response:", "HTTP/1.1 200 OK",
+		"Content-Type: application/json", "Content-Length: 12",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail body missing %q:\n%s", want, body)
+		}
+	}
+
+	// Wire order: Host before User-Agent before Accept.
+	if i, j := strings.Index(body, "Host:"), strings.Index(body, "User-Agent:"); i > j {
+		t.Errorf("Host should precede User-Agent (wire order):\n%s", body)
+	}
+	if i, j := strings.Index(body, "User-Agent:"), strings.Index(body, "Accept:"); i > j {
+		t.Errorf("User-Agent should precede Accept (wire order):\n%s", body)
+	}
+	// The Request section precedes the Response section.
+	if i, j := strings.Index(body, " Request:"), strings.Index(body, " Response:"); i > j {
+		t.Errorf("Request section should precede Response:\n%s", body)
+	}
+}
+
+// A header section with no headers renders an explicit "(none)" rather than a
+// blank gap, so a capture that genuinely had no headers reads as such.
+func TestDetailHeaderSectionShowsNoneWhenEmpty(t *testing.T) {
+	m := newModel(120, 60)
+	m = appendRow(m, row{
+		method: "GET", path: "/", reqVersion: "HTTP/1.1",
+		status: 204, resVersion: "HTTP/1.1", reason: "No Content",
+	})
+	m.detailOpen = true
+	body := strings.Join(m.detailBody(), "\n")
+	if got := strings.Count(body, "(none)"); got != 2 {
+		t.Errorf("want (none) for both empty header sections, got %d:\n%s", got, body)
+	}
+}
+
+// The body is clipped to the panel's fixed height and width: a long or numerous
+// header set must not wrap or overflow, and hidden lines are flagged.
+func TestDetailBodyClipsToPanelHeightAndWidth(t *testing.T) {
+	m := newModel(120, 24)
+	hdrs := make([]http.Header, 40)
+	for i := range hdrs {
+		hdrs[i] = http.Header{Name: fmt.Sprintf("X-Header-%02d", i), Value: strings.Repeat("v", 300)}
+	}
+	m = appendRow(m, row{
+		method: "GET", path: "/", reqVersion: "HTTP/1.1",
+		status: 200, resVersion: "HTTP/1.1", reason: "OK", reqHeaders: hdrs,
+	})
+	m.detailOpen = true
+	body := m.detailBody()
+
+	if len(body) != m.bodyLines() {
+		t.Errorf("detailBody returned %d lines, want bodyLines()=%d", len(body), m.bodyLines())
+	}
+	for i, line := range body {
+		if w := utf8.RuneCountInString(line); w > m.width {
+			t.Errorf("line %d width %d exceeds m.width %d: %q", i, w, m.width, line)
+		}
+	}
+	if !strings.Contains(strings.Join(body, "\n"), "more lines") {
+		t.Errorf("overflowing headers should flag the hidden lines:\n%s", strings.Join(body, "\n"))
+	}
+}
+
+// Even below the startup size floor (reachable only via a runtime resize, #57),
+// an open detail panel must leave at least one table row — visibleRows() can
+// never collapse to 0 — and View must still fit the terminal height exactly.
+func TestDetailKeepsOneTableRowAtAnyHeight(t *testing.T) {
+	for h := chromeLines + 1; h <= 24; h++ {
+		m := newModel(120, h)
+		m = appendRow(m, row{
+			method: "GET", path: "/", reqVersion: "HTTP/1.1",
+			status: 200, resVersion: "HTTP/1.1", reason: "OK",
+		})
+		m.detailOpen = true
+		if got := m.visibleRows(); got < 1 {
+			t.Errorf("height=%d: visibleRows()=%d with the panel open, want >= 1", h, got)
+		}
+		if got := len(strings.Split(m.View(), "\n")); got != h {
+			t.Errorf("height=%d: View() emitted %d lines, want %d", h, got, h)
 		}
 	}
 }
