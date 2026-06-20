@@ -27,6 +27,12 @@
         "hooks": [
           { "type": "command", "command": "command -v wsh >/dev/null 2>&1 && wsh badge message-question --color '#e0b956' --priority 20 --beep || true" }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "jq -r '.tool_input.command // \"\"' | grep -Eq '(^|&&|;)[[:space:]]*cd[[:space:]]+[^&;]*(&&|;)' && printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"cd-compound command blocked. The Bash working directory persists across calls and bare cd defeats the permission allowlist. Use an absolute path or git -C <dir>, or run cd as its own separate Bash call.\"}}' || true" }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -42,9 +48,34 @@
       "Bash(go vet *)",
       "Bash(go version *)",
       "Bash(bpftool btf *)",
-      "Bash(gofmt -l *)",
+      "Bash(gofmt *)",
       "Bash(llvm-readelf *)",
-      "Bash(llvm-objdump *)"
+      "Bash(llvm-objdump *)",
+      "Bash(ls *)",
+      "Bash(grep *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(go build *)",
+      "Bash(go test *)",
+      "Bash(go doc *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(git checkout *)",
+      "Bash(git branch *)",
+      "Bash(git worktree *)",
+      "Bash(git merge *)",
+      "Bash(git stash *)",
+      "Bash(git restore *)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git check-ignore *)",
+      "Bash(gh pr *)",
+      "Bash(gh issue *)",
+      "Bash(gh repo *)"
     ]
   }
 }
