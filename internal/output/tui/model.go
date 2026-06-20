@@ -33,6 +33,18 @@ const (
 const fixedWidth = colTime + colPID + colComm + colMethod + colStatus + colBytes + colLatency
 const separators = 7 // single spaces between the 8 columns
 
+// markerCol is the one-column left gutter carrying the ▸ selection marker
+// (blank on unselected rows). It eats into PATH's flexible width so each line
+// still fills exactly m.width and nothing wraps.
+const markerCol = 1
+
+// Gutter contents. ▸ is a single left-pointing arrow (not box-drawing),
+// matching the borderless pgincident style.
+const (
+	markerSelected = "▸"
+	markerBlank    = " "
+)
+
 // chromeLines is the non-row height of the table view: top divider, column
 // header, header divider, bottom divider, and the footer help line.
 const chromeLines = 5
@@ -68,13 +80,18 @@ func newRow(pe http.PairedEvent, when time.Time) row {
 type rowMsg row
 
 type model struct {
-	rows   []row
-	width  int
-	height int
+	rows     []row
+	width    int
+	height   int
+	selected int  // index into rows of the ▸ row; 0 when rows is empty
+	top      int  // index of the first visible row (the scroll anchor)
+	follow   bool // when true, selection tracks the newest row as rows arrive
 }
 
 func newModel(width, height int) model {
-	return model{width: width, height: height}
+	// Start in follow mode so the table tracks the live tail until the user
+	// scrolls up to inspect.
+	return model{width: width, height: height, follow: true}
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -88,6 +105,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "up", "k":
+			// Moving off the newest row means the user wants to inspect, so
+			// stop letting new rows steal the selection.
+			if m.selected > 0 {
+				m.selected--
+			}
+			m.follow = false
+		case "down", "j":
+			if m.selected < len(m.rows)-1 {
+				m.selected++
+			}
+			// Re-arm follow once the selection is back on the newest row.
+			if m.selected == len(m.rows)-1 {
+				m.follow = true
+			}
+		case "g":
+			m.selected = 0
+			m.follow = false
+		case "G":
+			if len(m.rows) > 0 {
+				m.selected = len(m.rows) - 1
+			}
+			m.follow = true
 		}
 	case rowMsg:
 		// Append until full, then shift in place so the backing array stays
@@ -97,9 +137,59 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			copy(m.rows, m.rows[1:])
 			m.rows[maxRows-1] = row(msg)
+			// The drop slid every row down one index. While inspecting, follow
+			// the same logical row down; if that row was the one dropped, clamp
+			// to the new oldest.
+			if !m.follow && m.selected > 0 {
+				m.selected--
+			}
+		}
+		if m.follow {
+			m.selected = len(m.rows) - 1
 		}
 	}
+	// Reconcile the scroll anchor after any selection / row-count / size
+	// change so the selected row stays inside the visible window.
+	m.clampScroll()
 	return m, nil
+}
+
+// visibleRows is how many table rows fit above the chrome at the current
+// height (top divider, header, header divider, bottom divider, footer).
+func (m model) visibleRows() int {
+	v := m.height - chromeLines
+	if v < 0 {
+		v = 0
+	}
+	return v
+}
+
+// clampScroll moves the scroll anchor only when the selection has left the
+// visible window — scrolling up when it rises above `top`, down when it falls
+// below the last visible row — and otherwise leaves `top` put. This is what
+// keeps the ▸ row stationary on screen while the user steps through rows,
+// rather than pinning it to an edge. `top` is then clamped to a valid range.
+func (m *model) clampScroll() {
+	visible := m.visibleRows()
+	if visible <= 0 {
+		m.top = 0
+		return
+	}
+	if m.selected < m.top {
+		m.top = m.selected
+	} else if m.selected >= m.top+visible {
+		m.top = m.selected - visible + 1
+	}
+	maxTop := len(m.rows) - visible
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if m.top > maxTop {
+		m.top = maxTop
+	}
+	if m.top < 0 {
+		m.top = 0
+	}
 }
 
 func (m model) View() string {
@@ -107,27 +197,29 @@ func (m model) View() string {
 		return ""
 	}
 
-	pathWidth := m.width - fixedWidth - separators
+	// PATH absorbs the slack left after the marker gutter, the fixed columns,
+	// and their separators.
+	pathWidth := m.width - markerCol - fixedWidth - separators
 	if pathWidth < 1 {
 		pathWidth = 1
 	}
 	divider := strings.Repeat("─", m.width)
 
-	// Tail of the ring buffer that fits above the chrome; selection is
-	// pinned to the newest row, so we always show the most recent rows.
-	visible := m.height - chromeLines
-	if visible < 0 {
-		visible = 0
-	}
-	start := len(m.rows) - visible
-	if start < 0 {
-		start = 0
+	// The scroll anchor (m.top) is maintained in Update; here we just render
+	// the window [top, top+visible). Capping at `visible` rows keeps the
+	// output within the terminal height so the alt-screen never scrolls and
+	// pushes the header off the top.
+	visible := m.visibleRows()
+	start := m.top
+	end := start + visible
+	if end > len(m.rows) {
+		end = len(m.rows)
 	}
 
 	lines := make([]string, 0, visible+3)
 	lines = append(lines, divider, headerLine(pathWidth), divider)
-	for _, r := range m.rows[start:] {
-		lines = append(lines, rowLine(r, pathWidth))
+	for i := start; i < end; i++ {
+		lines = append(lines, rowLine(m.rows[i], pathWidth, i == m.selected))
 	}
 	lines = append(lines, divider)
 	table := strings.Join(lines, "\n")
@@ -135,25 +227,40 @@ func (m model) View() string {
 	// Split-pane scaffold: table on top, detail panel below collapsed to
 	// zero height (its content lands in #40). Joining only the non-empty
 	// sections keeps the collapsed panel from costing a blank line.
-	footer := " q: quit"
+	footer := " ↑↓/jk: navigate │ g/G: top/bottom │ q: quit"
 	return lipgloss.JoinVertical(lipgloss.Left, table, footer)
 }
 
 func headerLine(pathWidth int) string {
-	return strings.Join([]string{
+	// Numeric columns (STATUS / BYTES / LATENCY) carry right-aligned values,
+	// so their labels are right-aligned too — otherwise a label narrower than
+	// its column (e.g. BYTES in an 8-wide field) drifts left of the digits.
+	return markerBlank + strings.Join([]string{
 		fitLeft("TIME", colTime),
 		fitLeft("PID", colPID),
 		fitLeft("COMM", colComm),
 		fitLeft("METHOD", colMethod),
 		fitLeft("PATH", pathWidth),
-		fitLeft("STATUS", colStatus),
-		fitLeft("BYTES", colBytes),
-		fitLeft("LATENCY", colLatency),
+		fitRight("STATUS", colStatus),
+		fitRight("BYTES", colBytes),
+		fitRight("LATENCY", colLatency),
 	}, " ")
 }
 
-func rowLine(r row, pathWidth int) string {
-	return strings.Join([]string{
+// selectedStyle renders the ▸ row in reverse video so the selection reads at a
+// glance even where the marker glyph is easy to miss.
+var selectedStyle = lipgloss.NewStyle().Reverse(true)
+
+// rowLine renders one exchange. The leading gutter holds ▸ when selected
+// (blank otherwise); the selected row is also reverse-styled. The returned
+// line is exactly m.width display columns wide before styling so the columns
+// stay aligned regardless of selection.
+func rowLine(r row, pathWidth int, selected bool) string {
+	marker := markerBlank
+	if selected {
+		marker = markerSelected
+	}
+	line := marker + strings.Join([]string{
 		fitLeft(r.time, colTime),
 		fitLeft(strconv.FormatUint(uint64(r.pid), 10), colPID),
 		fitLeft(r.comm, colComm),
@@ -163,6 +270,10 @@ func rowLine(r row, pathWidth int) string {
 		fitRight(strconv.Itoa(r.bytes), colBytes),
 		fitRight(latencyStr(r.latency), colLatency),
 	}, " ")
+	if selected {
+		return selectedStyle.Render(line)
+	}
+	return line
 }
 
 // latencyStr keeps the value inside the 7-column LATENCY budget: "999.9ms"
