@@ -1,6 +1,6 @@
 BIN := tinytap
 
-.PHONY: all generate build run run-raw clean
+.PHONY: all generate build run run-raw test-e2e clean
 
 all: generate build
 
@@ -15,6 +15,9 @@ run: build
 
 run-raw: build
 	sudo ./$(BIN) --output stdout
+
+test-e2e:
+	@bash scripts/test-e2e.sh
 
 clean:
 	rm -f $(BIN) internal/loader/bpf/tinytap_bpf*.go internal/loader/bpf/tinytap_bpf*.o

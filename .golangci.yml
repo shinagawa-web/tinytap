@@ -1,0 +1,15 @@
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - gosimple
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
