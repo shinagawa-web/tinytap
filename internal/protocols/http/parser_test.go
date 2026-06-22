@@ -1007,3 +1007,52 @@ func TestRenderMessageResponse(t *testing.T) {
 		t.Errorf("RenderMessage response: unexpected output %q", out)
 	}
 }
+
+// --- Defensive guard coverage --------------------------------------------
+
+// Feed clamps PayloadLen to len(e.Payload) when the field exceeds the array
+// size. This guard is unreachable via normal BPF events but must not panic.
+func TestFeedPayloadLenExceedsArray(t *testing.T) {
+	req := "GET / HTTP/1.1\r\nHost: x\r\n\r\n"
+	e := &events.Event{
+		Pid:        1,
+		Fd:         1,
+		Bytes:      uint32(len(req)),
+		PayloadLen: events.MaxPayload + 100, // beyond array bounds
+		Syscall:    events.SyscallWrite,
+	}
+	copy(e.Payload[:], req)
+
+	p := NewParser()
+	_ = p.Feed(e) // must not panic
+}
+
+// When e.Bytes < e.PayloadLen the wire-byte count understates the payload.
+// bodyAlready = wireBytesSinceMessageStart - wireBytesConsumed goes negative;
+// the clamp at bodyAlready < 0 must hold it at zero.
+func TestFeedWireBytesLessThanPayloadClampsBodyAlready(t *testing.T) {
+	headers := "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
+	e := &events.Event{
+		Pid:        2,
+		Fd:         2,
+		Bytes:      3, // far fewer wire bytes than actual payload
+		PayloadLen: uint32(len(headers)),
+		Syscall:    events.SyscallWrite,
+	}
+	copy(e.Payload[:], headers)
+
+	p := NewParser()
+	_ = p.Feed(e) // must not panic; bodyAlready clamp applied
+}
+
+// advance returns immediately when the stream is in stateNeedBody.
+// Body draining is Feed's responsibility; this branch is a defensive catch
+// for internal-contract violations.
+func TestAdvanceStateNeedBodyReturnsEmpty(t *testing.T) {
+	p := NewParser()
+	s := &stream{state: stateNeedBody, bodyRemaining: 100}
+	msgs := p.advance(s, 1, "test", 0)
+	if len(msgs) != 0 {
+		t.Errorf("advance in stateNeedBody returned %d messages, want 0", len(msgs))
+	}
+}
