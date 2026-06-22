@@ -86,6 +86,12 @@ func TestLookup(t *testing.T) {
 			pid:     9999,
 			want:    "",
 		},
+		{
+			name:    "malformed comm with embedded null byte",
+			entries: map[uint32]procEntry{55: {comm: "ap\x00p\n"}},
+			pid:     55,
+			want:    "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -100,7 +106,9 @@ func TestLookup(t *testing.T) {
 }
 
 func TestLookup_DefaultRoot(t *testing.T) {
-	// Passing "" uses /proc, which exists on Linux. PID 1 always has a comm.
+	if _, err := os.Open("/proc/1/comm"); err != nil {
+		t.Skipf("/proc/1/comm not accessible in this environment: %v", err)
+	}
 	got := proc.Lookup("", 1)
 	if got == "" {
 		t.Error("Lookup(\"\", 1) returned empty; expected a process name from the live /proc")
@@ -196,7 +204,9 @@ func TestLookupCmdline(t *testing.T) {
 }
 
 func TestLookupCmdline_DefaultRoot(t *testing.T) {
-	// PID 1 always has a cmdline on Linux.
+	if _, err := os.Open("/proc/1/cmdline"); err != nil {
+		t.Skipf("/proc/1/cmdline not accessible in this environment: %v", err)
+	}
 	got := proc.LookupCmdline("", 1)
 	if got == "" {
 		t.Error("LookupCmdline(\"\", 1) returned empty; expected cmdline from live /proc")

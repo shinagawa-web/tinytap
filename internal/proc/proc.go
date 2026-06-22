@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
 )
 
 const defaultRoot = "/proc"
@@ -23,7 +24,12 @@ func Lookup(root string, pid uint32) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimRight(string(data), "\n\x00")
+	s := strings.TrimRight(string(data), "\n\x00")
+	// Reject malformed content: the kernel only writes printable ASCII task names.
+	if strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
+		return ""
+	}
+	return s
 }
 
 // LookupCmdline returns the full command line for the given pid, with
