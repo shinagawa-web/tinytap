@@ -1,7 +1,9 @@
 package http
 
 import (
+	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/shinagawa-web/tinytap/internal/events"
@@ -409,5 +411,599 @@ func TestBodyPerMessageBudget(t *testing.T) {
 	}
 	if len(got[0].BodySample) != maxBodyBytes {
 		t.Errorf("retained %d bytes, want the cap %d", len(got[0].BodySample), maxBodyBytes)
+	}
+}
+
+// --- Status code matrix ---------------------------------------------------
+
+// Every 2xx/3xx/4xx/5xx status that carries a body is parsed with a
+// non-zero Content-Length and a follow-up 200 to confirm framing closed.
+func TestStatusCodeMatrix(t *testing.T) {
+	cases := []struct {
+		status  int
+		hasBody bool
+	}{
+		{200, true},
+		{201, true},
+		{301, true},
+		{302, true},
+		{304, false}, // no body per RFC 7230 §3.3.3
+		{400, true},
+		{401, true},
+		{403, true},
+		{404, true},
+		{500, true},
+		{502, true},
+		{503, true},
+	}
+	body := strings.Repeat("x", 7)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(fmt.Sprintf("%d", tc.status), func(t *testing.T) {
+			p := NewParser()
+			var resp1 []byte
+			if tc.hasBody {
+				resp1 = []byte(fmt.Sprintf("HTTP/1.1 %d Reason\r\nContent-Length: 7\r\n\r\n%s", tc.status, body))
+			} else {
+				resp1 = []byte(fmt.Sprintf("HTTP/1.1 %d Reason\r\nContent-Length: 7\r\n\r\n", tc.status))
+			}
+			resp2 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+			wire := append(append([]byte{}, resp1...), resp2...)
+			got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+			if len(got) != 2 {
+				t.Fatalf("want 2 messages, got %d: %+v", len(got), got)
+			}
+			if got[0].Res.status != tc.status {
+				t.Errorf("status: got %d, want %d", got[0].Res.status, tc.status)
+			}
+			if got[1].Res.status != 200 {
+				t.Errorf("follow-up: got %d, want 200", got[1].Res.status)
+			}
+			if tc.hasBody && got[0].ContentLength != 7 {
+				t.Errorf("status %d: ContentLength = %d, want 7", tc.status, got[0].ContentLength)
+			}
+			if !tc.hasBody && got[0].ContentLength != 0 {
+				t.Errorf("status %d: ContentLength should be 0 (no-body), got %d", tc.status, got[0].ContentLength)
+			}
+		})
+	}
+}
+
+// --- Method matrix --------------------------------------------------------
+
+// All common request methods are parsed correctly. Non-HEAD responses keep
+// their body framing — method tracking must not accidentally apply HEAD
+// semantics to other verbs.
+func TestMethodMatrix(t *testing.T) {
+	methods := []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"}
+	for _, method := range methods {
+		method := method
+		t.Run(method, func(t *testing.T) {
+			p := NewParser()
+			pid, fd := uint32(1), int32(1)
+			req := []byte(fmt.Sprintf("%s /path HTTP/1.1\r\nHost: x\r\n\r\n", method))
+			got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(req)), req))
+			if len(got) != 1 || !got[0].IsRequest || got[0].Req.method != method {
+				t.Fatalf("request: want 1 %s event, got %+v", method, got)
+			}
+			resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc")
+			got = p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(resp)), resp))
+			if len(got) != 1 || got[0].ContentLength != 3 {
+				t.Fatalf("%s response: want ContentLength=3, got %+v", method, got)
+			}
+		})
+	}
+}
+
+// HEAD request paired with its response. The response must have no body
+// even with Content-Length present.
+func TestMethodHEAD(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+	req := []byte("HEAD /file HTTP/1.1\r\nHost: x\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(req)), req))
+	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n")
+	next := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	wire := append(append([]byte{}, resp...), next...)
+	got := p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(wire)), wire))
+	if len(got) != 2 {
+		t.Fatalf("want [HEAD-resp, next-200], got %d: %+v", len(got), got)
+	}
+	if got[0].ContentLength != 0 {
+		t.Errorf("HEAD response ContentLength should be 0, got %d", got[0].ContentLength)
+	}
+}
+
+// --- Body-size boundaries -------------------------------------------------
+
+// bodySizeTest feeds a response with the given body size as a single
+// syscall (header + body together) and returns the emitted messages.
+func feedBodySize(t *testing.T, bodySize int) []Message {
+	t.Helper()
+	body := bytes.Repeat([]byte("B"), bodySize)
+	hdr := []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n", bodySize))
+	wire := append(append([]byte{}, hdr...), body...)
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	return got
+}
+
+func TestBodySizeExactlySampleCap(t *testing.T) {
+	got := feedBodySize(t, 256) // exactly MaxPayload
+	if len(got) != 1 {
+		t.Fatalf("want 1 message, got %d", len(got))
+	}
+	// headers consume most of the sample so body is likely truncated, but the
+	// message is emitted and body size is correct on the wire.
+	if got[0].ContentLength != 256 {
+		t.Errorf("ContentLength = %d, want 256", got[0].ContentLength)
+	}
+}
+
+func TestBodySizeOneOverSampleCap(t *testing.T) {
+	got := feedBodySize(t, 257)
+	if len(got) != 1 {
+		t.Fatalf("want 1 message, got %d", len(got))
+	}
+	if got[0].ContentLength != 257 {
+		t.Errorf("ContentLength = %d, want 257", got[0].ContentLength)
+	}
+}
+
+func TestBodySizeTypicalHeaderLimit(t *testing.T) {
+	// 8192 bytes — typical server header limit, body across many syscalls.
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+	const total = 8192
+	hdr := []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n", total))
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(hdr)), hdr))
+	var out []Message
+	for sent := 0; sent < total; {
+		n := 200
+		if n > total-sent {
+			n = total - sent
+		}
+		out = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(n), bytes.Repeat([]byte("x"), n)))
+		sent += n
+	}
+	if len(out) != 1 || out[0].ContentLength != total {
+		t.Fatalf("want 1 message with ContentLength=%d, got %+v", total, out)
+	}
+}
+
+func TestBodySizeAbandonThresholdPlusOne(t *testing.T) {
+	// 16 KiB + 1: body split across syscalls that each carry <=256 sample bytes.
+	// This tests the multi-event drain path for very large bodies.
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+	const total = maxBufBytes + 1
+	hdr := []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n", total))
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(hdr)), hdr))
+	var out []Message
+	for sent := 0; sent < total; {
+		n := 200
+		if n > total-sent {
+			n = total - sent
+		}
+		out = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(n), bytes.Repeat([]byte("z"), n)))
+		sent += n
+	}
+	if len(out) != 1 || out[0].ContentLength != total {
+		t.Fatalf("want 1 message with ContentLength=%d, got %+v", total, out)
+	}
+	if !out[0].BodyTruncated {
+		t.Error("body > maxBodyBytes should be truncated")
+	}
+}
+
+// Body arrives in a single syscall where wire bytes > body remaining — the
+// debit cap is exercised inside Feed's stateNeedBody block.
+func TestBodyDebitCap(t *testing.T) {
+	// Response: Content-Length: 50, but the final syscall delivers 200 wire
+	// bytes (body tail + a pipelined next message compressed in one event).
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+	hdr := []byte("HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(hdr)), hdr))
+
+	// First event: 30 of the 50 body bytes.
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, 30, bytes.Repeat([]byte("A"), 30)))
+
+	// Second event: 200 wire bytes but only 20 are body (remainder is next msg).
+	next := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+	tailBody := bytes.Repeat([]byte("B"), 20)
+	payload := append(append([]byte{}, tailBody...), next...)
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, 200, payload))
+	// The 200-body message should complete on this event.
+	statuses := make([]int, len(got))
+	for i, m := range got {
+		statuses[i] = m.Res.status
+	}
+	found200 := false
+	for _, s := range statuses {
+		if s == 200 {
+			found200 = true
+		}
+	}
+	if !found200 {
+		t.Fatalf("want the 200 message to complete; got statuses=%v", statuses)
+	}
+}
+
+// Body straddles the header boundary: the syscall carrying the headers also
+// carries the first N bytes of the body; remaining bytes come in the next event.
+func TestBodyStraddlesHeaderBoundary(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+	// Single syscall: full headers + first 10 of 30 body bytes.
+	partial := []byte("HTTP/1.1 200 OK\r\nContent-Length: 30\r\n\r\n" + strings.Repeat("A", 10))
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(partial)), partial))
+
+	// Remaining 20 body bytes in the next syscall.
+	rest := bytes.Repeat([]byte("B"), 20)
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, 20, rest))
+	if len(got) != 1 || got[0].ContentLength != 30 {
+		t.Fatalf("want 1 message with ContentLength=30, got %+v", got)
+	}
+}
+
+// --- Malformed input ------------------------------------------------------
+
+// Partial start-line: stream is closed before \r\n arrives — parser must
+// not crash or emit spurious events.
+func TestMalformedPartialStartLine(t *testing.T) {
+	p := NewParser()
+	p.Feed(makeEvent(events.SyscallWrite, 1, 1, 5, []byte("GET /")))
+	p.Close(1, 1)
+	// No assertion needed beyond "no panic" — the stream is evicted cleanly.
+}
+
+// Garbage bytes before HTTP: must abandon the stream (not crash, not emit).
+func TestMalformedGarbageBeforeHTTP(t *testing.T) {
+	p := NewParser()
+	garbage := bytes.Repeat([]byte{0xDE, 0xAD, 0xBE, 0xEF}, 5)
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(garbage)), garbage))
+	if len(got) != 0 {
+		t.Fatalf("garbage input: want no events, got %+v", got)
+	}
+}
+
+// Header line missing colon: the bad line is silently skipped; the message
+// is still emitted and valid headers around it are preserved.
+func TestMalformedHeaderMissingColon(t *testing.T) {
+	p := NewParser()
+	wire := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-Bad-Header-No-Colon\r\nX-Good: yes\r\n\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 1 || got[0].Res.status != 200 {
+		t.Fatalf("want 1 message with status 200, got %+v", got)
+	}
+	// The bad header is dropped; X-Good must survive.
+	found := false
+	for _, h := range got[0].Headers {
+		if h.Name == "X-Good" && h.Value == "yes" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("X-Good header not found in %+v", got[0].Headers)
+	}
+}
+
+// Oversized header block trips the maxBufBytes cap and marks the stream abandoned.
+func TestMalformedOversizedHeaderTripsAbandoned(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+	// Feed non-HTTP data past maxBufBytes in chunks to trigger the abandoned flag.
+	chunk := bytes.Repeat([]byte("X"), 4096)
+	for i := 0; i < 5; i++ {
+		p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(chunk)), chunk))
+	}
+	// Stream is now abandoned; further data must produce no events.
+	valid := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(valid)), valid))
+	if len(got) != 0 {
+		t.Fatalf("abandoned stream: want no events after maxBufBytes, got %+v", got)
+	}
+}
+
+// Content-Length with a non-numeric value is ignored (treated as zero).
+func TestMalformedContentLengthNonNumeric(t *testing.T) {
+	p := NewParser()
+	wire := []byte("HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 1 || got[0].ContentLength != 0 {
+		t.Fatalf("non-numeric CL: want ContentLength=0, got %+v", got)
+	}
+}
+
+// Negative Content-Length is rejected; message is still emitted with zero body.
+func TestMalformedContentLengthNegative(t *testing.T) {
+	p := NewParser()
+	wire := []byte("HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 1 || got[0].ContentLength != 0 {
+		t.Fatalf("negative CL: want ContentLength=0, got %+v", got)
+	}
+}
+
+// Content-Length in hex is not a valid decimal integer; treated as zero.
+func TestMalformedContentLengthHex(t *testing.T) {
+	p := NewParser()
+	wire := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0xFF\r\n\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 1 || got[0].ContentLength != 0 {
+		t.Fatalf("hex CL: want ContentLength=0, got %+v", got)
+	}
+}
+
+// Malformed response start-line (not enough fields) causes the parser to
+// give up on the stream without panicking.
+func TestMalformedResponseStartLineTooFewFields(t *testing.T) {
+	p := NewParser()
+	wire := []byte("HTTP/1.1\r\n\r\n") // only one field, no status code
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 0 {
+		t.Fatalf("malformed status line: want no events, got %+v", got)
+	}
+}
+
+// Malformed response where status field is not a number.
+func TestMalformedResponseStatusNotNumber(t *testing.T) {
+	p := NewParser()
+	wire := []byte("HTTP/1.1 TWO-HUNDRED OK\r\n\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 0 {
+		t.Fatalf("non-numeric status: want no events, got %+v", got)
+	}
+}
+
+// Malformed request start-line (only two fields, no HTTP version).
+func TestMalformedRequestStartLineTooFewFields(t *testing.T) {
+	p := NewParser()
+	wire := []byte("GET /path\r\n\r\n") // missing version
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 0 {
+		t.Fatalf("malformed request line: want no events, got %+v", got)
+	}
+}
+
+// Request line with no HTTP/ prefix in the third field is rejected.
+func TestMalformedRequestNoHTTPVersion(t *testing.T) {
+	p := NewParser()
+	wire := []byte("GET /path GOPHER/1.0\r\n\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 0 {
+		t.Fatalf("non-HTTP version: want no events, got %+v", got)
+	}
+}
+
+// --- Non-HTTP streams -----------------------------------------------------
+
+// ELF magic followed by binary data: stream must be abandoned without events.
+func TestNonHTTPELFMagic(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+	elf := []byte{0x7f, 'E', 'L', 'F', 0x02, 0x01, 0x01, 0x00}
+	pad := bytes.Repeat([]byte{0x00}, 4096*5) // push past maxBufBytes
+	wire := append(append([]byte{}, elf...), pad...)
+	for i := 0; i < len(wire); i += 256 {
+		end := i + 256
+		if end > len(wire) {
+			end = len(wire)
+		}
+		chunk := wire[i:end]
+		got := p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(chunk)), chunk))
+		if len(got) != 0 {
+			t.Fatalf("ELF stream: unexpected event at offset %d: %+v", i, got)
+		}
+	}
+}
+
+// JSON-only stream (no HTTP envelope): must abandon cleanly.
+func TestNonHTTPJSONOnly(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+	// Enough JSON-ish data to exceed maxBufBytes without \r\n\r\n.
+	json := bytes.Repeat([]byte(`{"key":"value","other":"data"}`), 600)
+	for i := 0; i < len(json); i += 256 {
+		end := i + 256
+		if end > len(json) {
+			end = len(json)
+		}
+		chunk := json[i:end]
+		got := p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(chunk)), chunk))
+		if len(got) != 0 {
+			t.Fatalf("JSON stream: unexpected event at offset %d: %+v", i, got)
+		}
+	}
+}
+
+// Raw binary stream: same check.
+func TestNonHTTPRawBinary(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+	binary := bytes.Repeat([]byte{0x01, 0x02, 0x03, 0x04}, 4096*2)
+	for i := 0; i < len(binary); i += 200 {
+		end := i + 200
+		if end > len(binary) {
+			end = len(binary)
+		}
+		chunk := binary[i:end]
+		p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(chunk)), chunk))
+	}
+	// After abandonment, a valid HTTP message on the same stream must be ignored.
+	valid := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	got := p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(valid)), valid))
+	if len(got) != 0 {
+		t.Fatalf("abandoned binary stream: want no events, got %+v", got)
+	}
+}
+
+// --- Stream lifecycle / Close ---------------------------------------------
+
+// Close evicts both direction streams for the given (pid, fd).
+func TestCloseEvictsStreams(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(42), int32(9)
+
+	// Plant a partial message on the outgoing direction.
+	partial := []byte("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(partial)), partial))
+
+	// Plant a partial message on the incoming direction.
+	req := []byte("POST /upload HTTP/1.1\r\nContent-Length: 50\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(req)), req))
+
+	if len(p.streams) == 0 {
+		t.Fatal("expected streams to be populated before Close")
+	}
+
+	p.Close(pid, fd)
+
+	// Both direction entries must be gone.
+	if _, ok := p.streams[connKey{pid: pid, fd: fd, dir: dirIncoming}]; ok {
+		t.Error("Close: incoming stream not evicted")
+	}
+	if _, ok := p.streams[connKey{pid: pid, fd: fd, dir: dirOutgoing}]; ok {
+		t.Error("Close: outgoing stream not evicted")
+	}
+}
+
+// Close evicts the pendingMethods queue for the given (pid, fd).
+func TestCloseEvictsPendingMethods(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(42), int32(9)
+
+	// Queue a request method.
+	req := []byte("GET /foo HTTP/1.1\r\nHost: x\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(req)), req))
+
+	if len(p.pendingMethods) == 0 {
+		t.Fatal("expected pendingMethods to be populated before Close")
+	}
+
+	p.Close(pid, fd)
+
+	if _, ok := p.pendingMethods[pidFd{pid: pid, fd: fd}]; ok {
+		t.Error("Close: pendingMethods entry not evicted")
+	}
+}
+
+// Closing an fd that was never used is a no-op (no panic).
+func TestCloseUnknownFdIsNoop(t *testing.T) {
+	p := NewParser()
+	p.Close(999, 999) // must not panic
+}
+
+// After Close, feeding the same (pid, fd) starts a fresh stream.
+func TestCloseAllowsReuseOfFd(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(5)
+
+	req := []byte("GET /old HTTP/1.1\r\nHost: x\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(req)), req))
+	p.Close(pid, fd)
+
+	req2 := []byte("GET /new HTTP/1.1\r\nHost: x\r\n\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(req2)), req2))
+	if len(got) != 1 || got[0].Req.path != "/new" {
+		t.Fatalf("after Close, want fresh /new request, got %+v", got)
+	}
+}
+
+// Headers split across two events: the first event contains the start line
+// and a partial header block (no \r\n\r\n yet). The parser must buffer and
+// wait for the terminator rather than emitting a bogus message.
+func TestHeadersSplitAcrossTwoEvents(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+
+	// First event: start line + incomplete headers (no \r\n\r\n terminator).
+	part1 := []byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Foo: bar")
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(part1)), part1))
+	if len(got) != 0 {
+		t.Fatalf("partial headers: want no events yet, got %+v", got)
+	}
+
+	// Second event: terminator + body.
+	part2 := []byte("\r\n\r\nhello")
+	got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(part2)), part2))
+	if len(got) != 1 || got[0].Res.status != 200 || string(got[0].BodySample) != "hello" {
+		t.Fatalf("after header completion: want status=200 body=hello, got %+v", got)
+	}
+}
+
+// --- Feed edge cases ------------------------------------------------------
+
+// Event with Bytes == 0 produces no output.
+func TestFeedZeroWireBytes(t *testing.T) {
+	p := NewParser()
+	e := makeEvent(events.SyscallWrite, 1, 1, 0, []byte("HTTP/1.1 200 OK\r\n\r\n"))
+	e.Bytes = 0
+	got := p.Feed(e)
+	if len(got) != 0 {
+		t.Fatalf("zero-wire-byte event: want no events, got %+v", got)
+	}
+}
+
+// Unknown syscall type produces no output.
+func TestFeedUnknownSyscall(t *testing.T) {
+	p := NewParser()
+	e := makeEvent(99, 1, 1, 10, []byte("HTTP/1.1 200 OK\r\n\r\n"))
+	got := p.Feed(e)
+	if len(got) != 0 {
+		t.Fatalf("unknown syscall: want no events, got %+v", got)
+	}
+}
+
+// All valid incoming syscall types are accepted.
+func TestFeedIncomingSyscalls(t *testing.T) {
+	wire := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	for _, sc := range []uint32{events.SyscallRead, events.SyscallRecvfrom, events.SyscallRecvmsg} {
+		p := NewParser()
+		got := p.Feed(makeEvent(sc, 1, 1, uint32(len(wire)), wire))
+		if len(got) != 1 {
+			t.Errorf("syscall %d: want 1 event, got %d", sc, len(got))
+		}
+	}
+}
+
+// All valid outgoing syscall types are accepted.
+func TestFeedOutgoingSyscalls(t *testing.T) {
+	wire := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	for _, sc := range []uint32{events.SyscallWrite, events.SyscallSendto, events.SyscallSendmsg} {
+		p := NewParser()
+		got := p.Feed(makeEvent(sc, 1, 1, uint32(len(wire)), wire))
+		if len(got) != 1 {
+			t.Errorf("syscall %d: want 1 event, got %d", sc, len(got))
+		}
+	}
+}
+
+// --- RenderMessage --------------------------------------------------------
+
+func TestRenderMessageRequest(t *testing.T) {
+	msg := Message{
+		Pid:       123,
+		Comm:      "curl",
+		IsRequest: true,
+		Req:       httpRequestLine{method: "GET", path: "/foo", version: "HTTP/1.1"},
+	}
+	out := RenderMessage(msg)
+	if !strings.Contains(out, "request") || !strings.Contains(out, "GET") || !strings.Contains(out, "/foo") {
+		t.Errorf("RenderMessage request: unexpected output %q", out)
+	}
+}
+
+func TestRenderMessageResponse(t *testing.T) {
+	msg := Message{
+		Pid:       456,
+		Comm:      "nginx",
+		IsRequest: false,
+		Res:       httpStatusLine{version: "HTTP/1.1", status: 200, reason: "OK"},
+	}
+	out := RenderMessage(msg)
+	if !strings.Contains(out, "response") || !strings.Contains(out, "200") || !strings.Contains(out, "OK") {
+		t.Errorf("RenderMessage response: unexpected output %q", out)
 	}
 }
