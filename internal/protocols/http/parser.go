@@ -161,6 +161,11 @@ type Parser struct {
 	// correctly when the request was a HEAD (response has no body even
 	// when Content-Length is present, per RFC 7230 §3.3.3).
 	pendingMethods map[pidFd][]string
+	// resolve maps a PID to a display name. When non-nil it is called
+	// instead of reading Comm from the BPF event, so callers can supply
+	// the full cmdline (e.g. "python3 manage.py runserver") in place of
+	// the kernel's 15-char truncated task name.
+	resolve func(pid uint32) string
 }
 
 func NewParser() *Parser {
@@ -168,6 +173,15 @@ func NewParser() *Parser {
 		streams:        make(map[connKey]*stream),
 		pendingMethods: make(map[pidFd][]string),
 	}
+}
+
+// NewParserWithResolve returns a Parser that calls resolve(pid) to obtain the
+// process display name. Falls back to the BPF event's Comm field when resolve
+// returns "".
+func NewParserWithResolve(resolve func(pid uint32) string) *Parser {
+	p := NewParser()
+	p.resolve = resolve
+	return p
 }
 
 // Feed processes a BPF event. Returns the HTTP events whose headers
@@ -272,7 +286,13 @@ func (p *Parser) Feed(e *events.Event) []Message {
 	s.buf = append(s.buf, payload...)
 	s.wireBytesSinceMessageStart += wireBytes
 
-	comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
+	comm := ""
+	if p.resolve != nil {
+		comm = p.resolve(e.Pid)
+	}
+	if comm == "" {
+		comm = string(bytes.TrimRight(e.Comm[:], "\x00"))
+	}
 	out = append(out, p.advance(s, e.Pid, comm, e.TsNs)...)
 
 	// If the stream is accumulating without finding HTTP structure, abandon

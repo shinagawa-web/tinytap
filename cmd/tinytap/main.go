@@ -24,6 +24,7 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/output"
 	"github.com/shinagawa-web/tinytap/internal/output/stdout"
 	"github.com/shinagawa-web/tinytap/internal/output/tui"
+	"github.com/shinagawa-web/tinytap/internal/proc"
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
 )
 
@@ -176,7 +177,9 @@ func closeSink(sink output.Sink) {
 // OnMessage / OnPaired for whatever that event completed. It returns when the
 // reader is closed (Ctrl-C path) or hits an unrecoverable read error.
 func capture(tt *loader.Tinytap, sink output.Sink) {
-	parser := http.NewParser()
+	parser := http.NewParserWithResolve(func(pid uint32) string {
+		return proc.LookupCmdline("", pid)
+	})
 	pairer := http.NewPairer()
 
 	var e events.Event
