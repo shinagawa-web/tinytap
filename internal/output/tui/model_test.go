@@ -949,3 +949,95 @@ func TestPanelScrollReachesLastLine(t *testing.T) {
 		t.Errorf("no down indicator once the bottom is reached:\n%s", body)
 	}
 }
+
+// WindowSizeMsg updates the model dimensions and reconciles the scroll anchor
+// so the selected row stays visible after a resize. The interesting case is a
+// shrink: the selection is parked near the bottom with follow disabled, so
+// reducing the height forces top to advance.
+func TestWindowSizeMsgUpdatesLayout(t *testing.T) {
+	const startH = 40
+	m := newModel(120, startH)
+	for i := 0; i < 30; i++ {
+		next, _ := m.Update(rowMsg(row{path: "/"}))
+		m = next.(model)
+	}
+	// Park the selection one row above the tail with follow off, so it sits
+	// well inside the current visible window but close enough to the bottom
+	// that a shrink must push top forward to keep it visible.
+	m = key(m, "G")
+	m = key(m, "k")
+	parked := m.selected
+	if m.follow {
+		t.Fatal("expected follow to be off after moving up")
+	}
+
+	// Shrink to a height where top must move for selected to stay visible.
+	const newH = 10
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: newH})
+	m = next.(model)
+
+	if m.width != 120 || m.height != newH {
+		t.Errorf("after resize: width=%d height=%d, want 120/%d", m.width, m.height, newH)
+	}
+	// The selection must be unchanged.
+	if m.selected != parked {
+		t.Errorf("selected changed from %d to %d after resize", parked, m.selected)
+	}
+	// The selected row must be inside the new visible window.
+	visible := m.visibleRows()
+	if m.selected < m.top || m.selected >= m.top+visible {
+		t.Errorf("selected row %d outside visible window [%d, %d) after shrink", m.selected, m.top, m.top+visible)
+	}
+	// top must have advanced to make room.
+	if m.top == 0 {
+		t.Error("top should have advanced after the shrink, not stayed at 0")
+	}
+	// View must fit the new height exactly.
+	if got := len(strings.Split(m.View(), "\n")); got != newH {
+		t.Errorf("View() emitted %d lines after resize to height %d, want %d", got, newH, newH)
+	}
+}
+
+// Once the ring buffer reaches maxRows the oldest row is dropped on every new
+// arrival: the buffer length stays at maxRows, the oldest row is gone, and
+// when inspecting (follow off) the selected index shifts down by one to track
+// the same logical row.
+func TestRingBufferDropsOldestAtCapacity(t *testing.T) {
+	m := newModel(120, 24)
+	for i := 0; i < maxRows; i++ {
+		m = appendRow(m, row{path: fmt.Sprintf("/%d", i)})
+	}
+	if len(m.rows) != maxRows {
+		t.Fatalf("rows = %d, want %d", len(m.rows), maxRows)
+	}
+	// Park the selection on row 5 (not following) so we can watch it shift.
+	m = key(m, "g")
+	for i := 0; i < 5; i++ {
+		m = key(m, "j")
+	}
+	if m.selected != 5 {
+		t.Fatalf("selected = %d, want 5", m.selected)
+	}
+	wantPath := m.rows[5].path // remember the logical row we are on
+
+	// One more row pushes the oldest off the front.
+	m = appendRow(m, row{path: "/new"})
+	if len(m.rows) != maxRows {
+		t.Errorf("rows = %d after overflow, want %d", len(m.rows), maxRows)
+	}
+	// The oldest row (path "/0") is gone; "/1" is now the new head.
+	if m.rows[0].path != "/1" {
+		t.Errorf("rows[0].path = %q after drop, want /1", m.rows[0].path)
+	}
+	// The selection shifted down by one to stay on the same logical row.
+	if m.selected != 4 {
+		t.Errorf("selected = %d after drop, want 4", m.selected)
+	}
+	if m.rows[m.selected].path != wantPath {
+		t.Errorf("rows[selected].path = %q, want %q", m.rows[m.selected].path, wantPath)
+	}
+	// The newest appended row is at the tail.
+	if m.rows[maxRows-1].path != "/new" {
+		t.Errorf("tail path = %q, want /new", m.rows[maxRows-1].path)
+	}
+}
