@@ -27,4 +27,4 @@ jobs:
           cache: true
 
       - name: Run e2e tests
-        run: sudo -E PATH="$PATH" bash scripts/test-e2e.sh
+        run: bash scripts/test-e2e.sh

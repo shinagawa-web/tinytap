@@ -14,7 +14,6 @@ TT_OUT=/tmp/tinytap-e2e.log
 PY_LOG=/tmp/tinytap-e2e-py.log
 
 PY_PID=""
-TT_PID=""
 FAILURES=0
 
 cleanup() {
@@ -66,17 +65,19 @@ echo "==> python3 -m http.server ${PORT}"
 python3 -m http.server "${PORT}" >"${PY_LOG}" 2>&1 &
 PY_PID=$!
 wait_for_port localhost "${PORT}" || { echo "FAIL: http.server did not listen on ${PORT}"; exit 1; }
+kill -0 "${PY_PID}" 2>/dev/null || { echo "FAIL: http.server exited immediately (port ${PORT} already in use?)"; exit 1; }
 
 echo "==> sudo /tmp/tinytap-e2e --output stdout"
 : >"${TT_OUT}"
 sudo /tmp/tinytap-e2e --output stdout >"${TT_OUT}" 2>&1 &
-TT_PID=$!
 wait_for_tinytap || { echo "FAIL: tinytap did not become ready"; exit 1; }
 
 echo "==> firing requests"
-curl -fsS "${URL}" >/dev/null
-curl -fsS -I "${URL}" >/dev/null
-curl -fsS -X POST "${URL}" -d "hello" >/dev/null || true  # python returns 501
+curl -fsS --retry 3 --retry-delay 0 "${URL}" >/dev/null
+curl -fsS --retry 3 --retry-delay 0 -I "${URL}" >/dev/null
+post_exit=0
+curl -fsS -X POST "${URL}" -d "hello" >/dev/null || post_exit=$?
+[[ ${post_exit} -eq 0 || ${post_exit} -eq 22 ]] || exit "${post_exit}"
 
 sleep 1
 
@@ -85,9 +86,9 @@ trap - EXIT
 
 echo
 echo "=== assertions ==="
-assert_contains "GET / paired with 200"   "GET[[:space:]]+/[[:space:]]+200"
-assert_contains "HEAD / paired with 200"  "HEAD[[:space:]]+/[[:space:]]+200"
-assert_contains "POST / captured"         "POST[[:space:]]+/"
+assert_contains "GET / paired with 200"   "python3\[${PY_PID}\].*GET[[:space:]]+/[[:space:]].*200"
+assert_contains "HEAD / paired with 200"  "python3\[${PY_PID}\].*HEAD[[:space:]]+/[[:space:]].*200"
+assert_contains "POST / captured"         "python3\[${PY_PID}\].*POST[[:space:]]+/"
 
 echo
 if [[ "${FAILURES}" -eq 0 ]]; then
