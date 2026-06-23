@@ -18,9 +18,7 @@ TT_PID=""
 FAILURES=0
 
 cleanup() {
-    if [[ -n "${TT_PID}" ]]; then
-        sudo kill -INT "${TT_PID}" 2>/dev/null || true
-    fi
+    sudo pkill -INT -x tinytap-e2e 2>/dev/null || true
     if [[ -n "${PY_PID}" ]]; then
         kill "${PY_PID}" 2>/dev/null || true
     fi
