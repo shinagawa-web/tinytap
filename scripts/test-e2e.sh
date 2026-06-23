@@ -86,9 +86,9 @@ trap - EXIT
 
 echo
 echo "=== assertions ==="
-assert_contains "GET / paired with 200"   "python3\[${PY_PID}\].*GET[[:space:]]+/[[:space:]].*200"
-assert_contains "HEAD / paired with 200"  "python3\[${PY_PID}\].*HEAD[[:space:]]+/[[:space:]].*200"
-assert_contains "POST / captured"         "python3\[${PY_PID}\].*POST[[:space:]]+/"
+assert_contains "GET / paired with 200"   "\[${PY_PID}\].*GET[[:space:]]+/[[:space:]].*200"
+assert_contains "HEAD / paired with 200"  "\[${PY_PID}\].*HEAD[[:space:]]+/[[:space:]].*200"
+assert_contains "POST / captured"         "\[${PY_PID}\].*POST[[:space:]]+/"
 
 echo
 if [[ "${FAILURES}" -eq 0 ]]; then
