@@ -20,8 +20,10 @@ run-raw: build
 test-e2e:
 	@bash scripts/test-e2e.sh
 
+GOBIN := $(shell go env GOROOT)/bin/go
+
 test-integration:
-	sudo env PATH="$(PATH)" go test -tags=privileged -v ./internal/loader/
+	sudo $(GOBIN) test -tags=privileged -v ./internal/loader/
 
 clean:
 	rm -f $(BIN) internal/loader/bpf/tinytap_bpf*.go internal/loader/bpf/tinytap_bpf*.o
