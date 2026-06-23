@@ -576,7 +576,7 @@ func TestBodySizeAbandonThresholdPlusOne(t *testing.T) {
 	// This tests the multi-event drain path for very large bodies.
 	p := NewParser()
 	pid, fd := uint32(1), int32(1)
-	const total = maxBufBytes + 1
+	const total = maxBodyBytes + 1
 	hdr := []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n", total))
 	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(hdr)), hdr))
 	var out []Message
@@ -609,11 +609,13 @@ func TestBodyDebitCap(t *testing.T) {
 	// First event: 30 of the 50 body bytes.
 	p.Feed(makeEvent(events.SyscallWrite, pid, fd, 30, bytes.Repeat([]byte("A"), 30)))
 
-	// Second event: 200 wire bytes but only 20 are body (remainder is next msg).
+	// Second event: payload carries the last 20 body bytes plus the next message.
+	// wire bytes == len(payload); the debit cap fires because bodyRemaining(20) <
+	// wireBytes, not because wireBytes is inflated.
 	next := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
 	tailBody := bytes.Repeat([]byte("B"), 20)
 	payload := append(append([]byte{}, tailBody...), next...)
-	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, 200, payload))
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(payload)), payload))
 	// The 200-body message should complete on this event.
 	statuses := make([]int, len(got))
 	for i, m := range got {
@@ -694,8 +696,10 @@ func TestMalformedOversizedHeaderTripsAbandoned(t *testing.T) {
 	p := NewParser()
 	pid, fd := uint32(1), int32(1)
 	// Feed non-HTTP data past maxBufBytes in chunks to trigger the abandoned flag.
-	chunk := bytes.Repeat([]byte("X"), 4096)
-	for i := 0; i < 5; i++ {
+	// makeEvent truncates each chunk to events.MaxPayload bytes, so we need
+	// ceil(maxBufBytes/events.MaxPayload)+1 events to reliably exceed the cap.
+	chunk := bytes.Repeat([]byte("X"), events.MaxPayload)
+	for i := 0; i < maxBufBytes/events.MaxPayload+1; i++ {
 		p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(chunk)), chunk))
 	}
 	// Stream is now abandoned; further data must produce no events.
