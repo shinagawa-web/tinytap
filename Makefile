@@ -1,6 +1,6 @@
 BIN := tinytap
 
-.PHONY: all generate build run run-raw test-e2e test-integration clean
+.PHONY: all generate build run run-raw test-e2e test-integration install-hooks clean
 
 all: generate build
 
@@ -24,6 +24,9 @@ GOBIN := $(shell go env GOROOT)/bin/go
 
 test-integration:
 	sudo $(GOBIN) test -tags=privileged -v ./internal/loader/
+
+install-hooks:
+	ln -sf "$(PWD)/scripts/pre-push" .git/hooks/pre-push
 
 clean:
 	rm -f $(BIN) internal/loader/bpf/tinytap_bpf*.go internal/loader/bpf/tinytap_bpf*.o

@@ -339,13 +339,8 @@ func (m model) bodyLines() int {
 	if avail <= 0 {
 		return 0
 	}
+	// detailMaxFraction < 1 guarantees max < avail, so at least one table row always remains.
 	max := int(float64(avail) * detailMaxFraction)
-	if max > avail-1 {
-		max = avail - 1 // leave at least one table row
-	}
-	if max < 0 {
-		max = 0
-	}
 	want := 1
 	if len(m.rows) > 0 {
 		want = m.detailLineCount()

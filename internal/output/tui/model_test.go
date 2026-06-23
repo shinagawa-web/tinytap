@@ -1041,3 +1041,171 @@ func TestRingBufferDropsOldestAtCapacity(t *testing.T) {
 		t.Errorf("tail path = %q, want /new", m.rows[maxRows-1].path)
 	}
 }
+
+// fitLeft with n=1 keeps the single leading rune without appending an ellipsis.
+func TestFitLeftWidthOne(t *testing.T) {
+	if got, want := fitLeft("ab", 1), "a"; got != want {
+		t.Errorf("fitLeft(%q, 1) = %q, want %q", "ab", got, want)
+	}
+}
+
+// fitRight with n=1 keeps the single trailing rune without a leading ellipsis.
+func TestFitRightWidthOne(t *testing.T) {
+	if got, want := fitRight("ab", 1), "b"; got != want {
+		t.Errorf("fitRight(%q, 1) = %q, want %q", "ab", got, want)
+	}
+}
+
+// Init is the Bubble Tea initialiser; it always returns nil.
+func TestInitReturnsNil(t *testing.T) {
+	if cmd := newModel(120, 24).Init(); cmd != nil {
+		t.Errorf("Init() = %v, want nil", cmd)
+	}
+}
+
+// Pressing q returns a non-nil tea.Quit command.
+func TestQuitKeyReturnsCmd(t *testing.T) {
+	_, cmd := newModel(120, 24).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd == nil {
+		t.Error("q should return a non-nil quit cmd")
+	}
+}
+
+// newRow maps every PairedEvent field to the corresponding row field.
+func TestNewRowMapsFields(t *testing.T) {
+	pe := http.PairedEvent{
+		Pid:    1234,
+		Comm:   "curl",
+		Method: "GET",
+		Path:   "/api",
+		Status: 200,
+	}
+	r := newRow(pe, time.Time{})
+	if r.pid != 1234 || r.comm != "curl" || r.method != "GET" || r.path != "/api" || r.status != 200 {
+		t.Errorf("newRow mapped fields incorrectly: %+v", r)
+	}
+}
+
+// detailLineCount returns 0 when there are no rows, even with the panel open.
+func TestDetailLineCountEmptyRows(t *testing.T) {
+	m := newModel(120, 24)
+	m.detailOpen = true
+	if got := m.detailLineCount(); got != 0 {
+		t.Errorf("detailLineCount with no rows = %d, want 0", got)
+	}
+}
+
+// clampDetailOffset clamps a detailOffset that overshoots maxDetailOffset.
+func TestClampDetailOffsetClampsToMax(t *testing.T) {
+	m := withScrollablePanel()
+	m.detailOffset = 99999
+	m.clampDetailOffset()
+	if want := m.maxDetailOffset(); m.detailOffset != want {
+		t.Errorf("clampDetailOffset: offset=%d, want max=%d", m.detailOffset, want)
+	}
+}
+
+// visibleRows clamps to 0 when the terminal height leaves no room for rows.
+func TestVisibleRowsZeroOnTinyTerminal(t *testing.T) {
+	// height < chromeLines forces v < 0 inside visibleRows, clamped to 0.
+	if got := newModel(120, chromeLines-1).visibleRows(); got != 0 {
+		t.Errorf("visibleRows on height=%d = %d, want 0", chromeLines-1, got)
+	}
+}
+
+// bodyLines returns 0 when the terminal is too short to host the panel body.
+func TestBodyLinesZeroOnTinyTerminal(t *testing.T) {
+	m := newModel(120, chromeLines)
+	m.detailOpen = true
+	if got := m.bodyLines(); got != 0 {
+		t.Errorf("bodyLines on height=%d with open panel = %d, want 0", chromeLines, got)
+	}
+}
+
+// clampScroll sets top=0 when visibleRows() is zero.
+func TestClampScrollZeroVisible(t *testing.T) {
+	m := newModel(120, chromeLines)
+	m.top = 5
+	m.clampScroll()
+	if m.top != 0 {
+		t.Errorf("clampScroll with visibleRows=0: top=%d, want 0", m.top)
+	}
+}
+
+// clampScroll clamps top to 0 when it goes negative (defensive guard).
+func TestClampScrollTopNegative(t *testing.T) {
+	// Directly corrupt top to a negative value; clampScroll must sanitise it.
+	m := newModel(120, 10) // visible = 10 - 5 = 5
+	m.top = -5
+	m.clampScroll()
+	if m.top != 0 {
+		t.Errorf("clampScroll with top=-5: top=%d, want 0", m.top)
+	}
+}
+
+// View returns an empty string when either dimension is zero or negative.
+func TestViewEmptyOnZeroDimensions(t *testing.T) {
+	if got := newModel(0, 24).View(); got != "" {
+		t.Errorf("View(width=0) = %q, want empty string", got)
+	}
+	if got := newModel(120, 0).View(); got != "" {
+		t.Errorf("View(height=0) = %q, want empty string", got)
+	}
+}
+
+// View clamps pathWidth to 1 when the terminal is narrower than the fixed columns.
+func TestViewPathWidthClampedToOne(t *testing.T) {
+	m := newModel(1, 24)
+	for i := 0; i < 3; i++ {
+		m = appendRow(m, row{path: "/api/v1"})
+	}
+	if out := m.View(); out == "" {
+		t.Error("View with width=1 should produce output, not an empty string")
+	}
+}
+
+// detailDivider truncates to m.width when the pid/comm label would overflow.
+func TestDetailDividerTruncatesLongLabel(t *testing.T) {
+	m := newModel(15, 24)
+	m = appendRow(m, row{pid: 99999, comm: "very-long-comm"})
+	m.detailOpen = true
+	div := m.detailDivider()
+	if w := utf8.RuneCountInString(div); w != 15 {
+		t.Errorf("detailDivider width = %d, want 15 (model width)", w)
+	}
+}
+
+// detailBody returns blank placeholder lines when the panel is open but rows is empty.
+func TestDetailBodyEmptyRows(t *testing.T) {
+	m := newModel(120, 24)
+	m.detailOpen = true
+	lines := m.detailBody()
+	if len(lines) == 0 {
+		t.Fatal("detailBody with no rows should return placeholder lines")
+	}
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) != "" {
+			t.Errorf("detailBody with no rows: want blank lines, got %q", ln)
+		}
+	}
+}
+
+// detailBody clamps a positive out-of-range offset to maxDetailOffset internally.
+func TestDetailBodyOffsetClampedAboveMax(t *testing.T) {
+	m := withScrollablePanel()
+	m.detailOffset = 99999
+	body := strings.Join(m.detailBody(), "\n")
+	if strings.Contains(body, "↓") {
+		t.Errorf("at clamped max offset there should be no ↓ hint:\n%s", body)
+	}
+}
+
+// detailBody clamps a negative offset to 0 internally.
+func TestDetailBodyOffsetClampedBelowZero(t *testing.T) {
+	m := withScrollablePanel()
+	m.detailOffset = -5
+	body := strings.Join(m.detailBody(), "\n")
+	if strings.Contains(body, "↑") {
+		t.Errorf("at clamped zero offset there should be no ↑ hint:\n%s", body)
+	}
+}
