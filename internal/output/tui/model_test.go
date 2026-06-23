@@ -949,3 +949,69 @@ func TestPanelScrollReachesLastLine(t *testing.T) {
 		t.Errorf("no down indicator once the bottom is reached:\n%s", body)
 	}
 }
+
+// WindowSizeMsg updates the model dimensions and reconciles the scroll anchor
+// so the selected row stays visible after a resize.
+func TestWindowSizeMsgUpdatesLayout(t *testing.T) {
+	m := withRows(30)
+	m = key(m, "g") // jump to row 0, follow off
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = next.(model)
+	if m.width != 160 || m.height != 40 {
+		t.Errorf("after resize: width=%d height=%d, want 160/40", m.width, m.height)
+	}
+	// After the resize the selected row must still be inside the visible window.
+	visible := m.visibleRows()
+	if m.selected < m.top || m.selected >= m.top+visible {
+		t.Errorf("selected row %d outside visible window [%d, %d)", m.selected, m.top, m.top+visible)
+	}
+	// View must fit the new height exactly.
+	if got := len(strings.Split(m.View(), "\n")); got != 40 {
+		t.Errorf("View() emitted %d lines after resize to height 40, want 40", got)
+	}
+}
+
+// Once the ring buffer reaches maxRows the oldest row is dropped on every new
+// arrival: the buffer length stays at maxRows, the oldest row is gone, and
+// when inspecting (follow off) the selected index shifts down by one to track
+// the same logical row.
+func TestRingBufferDropsOldestAtCapacity(t *testing.T) {
+	m := newModel(120, 24)
+	for i := 0; i < maxRows; i++ {
+		m = appendRow(m, row{path: fmt.Sprintf("/%d", i)})
+	}
+	if len(m.rows) != maxRows {
+		t.Fatalf("rows = %d, want %d", len(m.rows), maxRows)
+	}
+	// Park the selection on row 5 (not following) so we can watch it shift.
+	m = key(m, "g")
+	for i := 0; i < 5; i++ {
+		m = key(m, "j")
+	}
+	if m.selected != 5 {
+		t.Fatalf("selected = %d, want 5", m.selected)
+	}
+	wantPath := m.rows[5].path // remember the logical row we are on
+
+	// One more row pushes the oldest off the front.
+	m = appendRow(m, row{path: "/new"})
+	if len(m.rows) != maxRows {
+		t.Errorf("rows = %d after overflow, want %d", len(m.rows), maxRows)
+	}
+	// The oldest row (path "/0") is gone; "/1" is now at index 0.
+	if m.rows[0].path == "/0" {
+		t.Error("oldest row should have been dropped")
+	}
+	// The selection shifted down by one to stay on the same logical row.
+	if m.selected != 4 {
+		t.Errorf("selected = %d after drop, want 4", m.selected)
+	}
+	if m.rows[m.selected].path != wantPath {
+		t.Errorf("rows[selected].path = %q, want %q", m.rows[m.selected].path, wantPath)
+	}
+	// The newest appended row is at the tail.
+	if m.rows[maxRows-1].path != "/new" {
+		t.Errorf("tail path = %q, want /new", m.rows[maxRows-1].path)
+	}
+}
