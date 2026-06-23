@@ -1,6 +1,6 @@
 BIN := tinytap
 
-.PHONY: all generate build run run-raw test-e2e clean
+.PHONY: all generate build run run-raw test-e2e install-hooks clean
 
 all: generate build
 
@@ -18,6 +18,9 @@ run-raw: build
 
 test-e2e:
 	@bash scripts/test-e2e.sh
+
+install-hooks:
+	ln -sf "$(PWD)/scripts/pre-push" .git/hooks/pre-push
 
 clean:
 	rm -f $(BIN) internal/loader/bpf/tinytap_bpf*.go internal/loader/bpf/tinytap_bpf*.o

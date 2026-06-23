@@ -1060,3 +1060,22 @@ func TestAdvanceStateNeedBodyReturnsEmpty(t *testing.T) {
 		t.Errorf("advance in stateNeedBody returned %d messages, want 0", len(msgs))
 	}
 }
+
+// NewParserWithResolve wires a custom process-name resolver; when it returns
+// a non-empty string that name is used instead of the BPF Comm field.
+func TestNewParserWithResolve(t *testing.T) {
+	resolved := "my-server"
+	p := NewParserWithResolve(func(pid uint32) string { return resolved })
+
+	wire := []byte("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	ev := makeEvent(events.SyscallWrite, 42, 3, uint32(len(wire)), wire)
+	copy(ev.Comm[:], "old-comm\x00")
+
+	got := p.Feed(ev)
+	if len(got) != 1 {
+		t.Fatalf("want 1 event, got %d", len(got))
+	}
+	if got[0].Comm != resolved {
+		t.Errorf("Comm = %q, want %q (resolver should override Comm field)", got[0].Comm, resolved)
+	}
+}
