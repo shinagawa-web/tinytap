@@ -130,3 +130,28 @@ func TestPairerCarriesBodies(t *testing.T) {
 		t.Errorf("ReqBytes=%d ResBytes=%d, want 5 and 4", pe.ReqBytes, pe.ResBytes)
 	}
 }
+
+// Close drops the pending request for the given (pid, fd); a response
+// arriving after Close must not pair.
+func TestPairerCloseDropsPending(t *testing.T) {
+	p := NewPairer()
+	pid, fd := uint32(7), int32(3)
+
+	req := Message{TsNs: 1, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/x", version: "HTTP/1.1"}}
+	p.Push(req)
+
+	p.Close(pid, fd)
+
+	res := Message{TsNs: 2, Pid: pid, Fd: fd, IsRequest: false,
+		Res: httpStatusLine{version: "HTTP/1.1", status: 200, reason: "OK"}}
+	if _, ok := p.Push(res); ok {
+		t.Error("response after Close should not pair with the evicted request")
+	}
+}
+
+// Close on an unknown (pid, fd) is a no-op.
+func TestPairerCloseUnknownIsNoop(t *testing.T) {
+	p := NewPairer()
+	p.Close(999, 999)
+}
