@@ -1,11 +1,12 @@
 BIN := tinytap
 
-.PHONY: all generate build run run-raw test-e2e clean
+.PHONY: all generate build run run-raw test-e2e test-integration clean
 
 all: generate build
 
 generate:
 	cd internal/loader/bpf && go generate
+	cd internal/loader/bpf/fixture && go generate
 
 build:
 	go build -o $(BIN) ./cmd/tinytap
@@ -19,5 +20,9 @@ run-raw: build
 test-e2e:
 	@bash scripts/test-e2e.sh
 
+test-integration:
+	sudo $(shell which go) test -tags=privileged -v ./internal/loader/
+
 clean:
 	rm -f $(BIN) internal/loader/bpf/tinytap_bpf*.go internal/loader/bpf/tinytap_bpf*.o
+	rm -f internal/loader/bpf/fixture/fixture_bpf*.go internal/loader/bpf/fixture/fixture_bpf*.o
