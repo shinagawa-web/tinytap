@@ -26,8 +26,5 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install kernel headers
-        run: sudo apt-get install -y linux-headers-$(uname -r)
-
       - name: Run e2e tests
         run: sudo -E PATH="$PATH" bash scripts/test-e2e.sh
