@@ -21,7 +21,7 @@ test-e2e:
 	@bash scripts/test-e2e.sh
 
 test-integration:
-	sudo go test -tags=privileged -v ./internal/loader/
+	sudo $(shell which go) test -tags=privileged -v ./internal/loader/
 
 clean:
 	rm -f $(BIN) internal/loader/bpf/tinytap_bpf*.go internal/loader/bpf/tinytap_bpf*.o
