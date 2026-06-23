@@ -3,7 +3,9 @@
 package loader_test
 
 import (
+	"bytes"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -17,9 +19,8 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/loader"
 )
 
-// TestLoaderLoadAttachClose verifies that Load() attaches all tracepoints and
-// opens the ringbuf without error, and that Close() tears everything down
-// cleanly with no leaked links, maps, or fds.
+// TestLoaderLoadAttachClose verifies that Load() and Close() both return nil.
+// It exercises the full attach/detach path through the real tinytap BPF object.
 func TestLoaderLoadAttachClose(t *testing.T) {
 	tt, err := loader.Load(uint32(os.Getpid()))
 	if err != nil {
@@ -46,7 +47,11 @@ func TestFixtureRingbufDecode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load fixture spec: %v", err)
 	}
-	if err := spec.Variables["target_pid"].Set(pid); err != nil {
+	v, ok := spec.Variables["target_pid"]
+	if !ok || v == nil {
+		t.Fatal("target_pid variable not found in fixture spec")
+	}
+	if err := v.Set(pid); err != nil {
 		t.Fatalf("set target_pid: %v", err)
 	}
 
@@ -81,11 +86,14 @@ func TestFixtureRingbufDecode(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
+	if e.TsNs == 0 {
+		t.Error("TsNs: got 0, want > 0")
+	}
 	if e.Pid != pid {
 		t.Errorf("Pid: got %d, want %d", e.Pid, pid)
 	}
-	if e.TsNs == 0 {
-		t.Error("TsNs: got 0, want > 0")
+	if e.Tid == 0 {
+		t.Error("Tid: got 0, want > 0")
 	}
 	if e.Fd != 42 {
 		t.Errorf("Fd: got %d, want 42", e.Fd)
@@ -99,7 +107,14 @@ func TestFixtureRingbufDecode(t *testing.T) {
 	if e.PayloadLen != 5 {
 		t.Errorf("PayloadLen: got %d, want 5", e.PayloadLen)
 	}
+	comm := strings.TrimRight(string(e.Comm[:]), "\x00")
+	if comm == "" {
+		t.Error("Comm: got empty string, want process name")
+	}
 	if string(e.Payload[:5]) != "hello" {
 		t.Errorf("Payload[:5]: got %q, want \"hello\"", e.Payload[:5])
+	}
+	if !bytes.Equal(e.Payload[5:], make([]byte, len(e.Payload)-5)) {
+		t.Error("Payload[5:]: got non-zero bytes, want all zeros")
 	}
 }
