@@ -951,24 +951,50 @@ func TestPanelScrollReachesLastLine(t *testing.T) {
 }
 
 // WindowSizeMsg updates the model dimensions and reconciles the scroll anchor
-// so the selected row stays visible after a resize.
+// so the selected row stays visible after a resize. The interesting case is a
+// shrink: the selection is parked near the bottom with follow disabled, so
+// reducing the height forces top to advance.
 func TestWindowSizeMsgUpdatesLayout(t *testing.T) {
-	m := withRows(30)
-	m = key(m, "g") // jump to row 0, follow off
-
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
-	m = next.(model)
-	if m.width != 160 || m.height != 40 {
-		t.Errorf("after resize: width=%d height=%d, want 160/40", m.width, m.height)
+	const startH = 40
+	m := newModel(120, startH)
+	for i := 0; i < 30; i++ {
+		next, _ := m.Update(rowMsg(row{path: "/"}))
+		m = next.(model)
 	}
-	// After the resize the selected row must still be inside the visible window.
+	// Park the selection one row above the tail with follow off, so it sits
+	// well inside the current visible window but close enough to the bottom
+	// that a shrink must push top forward to keep it visible.
+	m = key(m, "G")
+	m = key(m, "k")
+	parked := m.selected
+	if m.follow {
+		t.Fatal("expected follow to be off after moving up")
+	}
+
+	// Shrink to a height where top must move for selected to stay visible.
+	const newH = 10
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: newH})
+	m = next.(model)
+
+	if m.width != 120 || m.height != newH {
+		t.Errorf("after resize: width=%d height=%d, want 120/%d", m.width, m.height, newH)
+	}
+	// The selection must be unchanged.
+	if m.selected != parked {
+		t.Errorf("selected changed from %d to %d after resize", parked, m.selected)
+	}
+	// The selected row must be inside the new visible window.
 	visible := m.visibleRows()
 	if m.selected < m.top || m.selected >= m.top+visible {
-		t.Errorf("selected row %d outside visible window [%d, %d)", m.selected, m.top, m.top+visible)
+		t.Errorf("selected row %d outside visible window [%d, %d) after shrink", m.selected, m.top, m.top+visible)
+	}
+	// top must have advanced to make room.
+	if m.top == 0 {
+		t.Error("top should have advanced after the shrink, not stayed at 0")
 	}
 	// View must fit the new height exactly.
-	if got := len(strings.Split(m.View(), "\n")); got != 40 {
-		t.Errorf("View() emitted %d lines after resize to height 40, want 40", got)
+	if got := len(strings.Split(m.View(), "\n")); got != newH {
+		t.Errorf("View() emitted %d lines after resize to height %d, want %d", got, newH, newH)
 	}
 }
 
@@ -999,9 +1025,9 @@ func TestRingBufferDropsOldestAtCapacity(t *testing.T) {
 	if len(m.rows) != maxRows {
 		t.Errorf("rows = %d after overflow, want %d", len(m.rows), maxRows)
 	}
-	// The oldest row (path "/0") is gone; "/1" is now at index 0.
-	if m.rows[0].path == "/0" {
-		t.Error("oldest row should have been dropped")
+	// The oldest row (path "/0") is gone; "/1" is now the new head.
+	if m.rows[0].path != "/1" {
+		t.Errorf("rows[0].path = %q after drop, want /1", m.rows[0].path)
 	}
 	// The selection shifted down by one to stay on the same logical row.
 	if m.selected != 4 {
