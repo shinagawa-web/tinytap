@@ -1,4 +1,4 @@
-name: test
+name: e2e
 
 permissions:
   contents: read
@@ -10,9 +10,9 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  e2e:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -26,11 +26,5 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build
-        run: go build ./...
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test ./...
+      - name: Run e2e tests
+        run: bash scripts/test-e2e.sh
