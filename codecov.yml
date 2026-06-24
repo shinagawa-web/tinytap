@@ -2,3 +2,4 @@ coverage:
   ignore:
     - "**/*_bpfel.go"
     - "**/*_bpfeb.go"
+    - "internal/loader/load.go"
