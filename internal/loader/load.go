@@ -1,6 +1,7 @@
 package loader
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/cilium/ebpf"
@@ -52,16 +53,14 @@ func Load(ownPid uint32) (*Tinytap, error) {
 	for _, a := range attaches {
 		tp, err := link.Tracepoint("syscalls", a.name, a.prog, nil)
 		if err != nil {
-			tt.Close()
-			return nil, fmt.Errorf("attach %s: %w", a.name, err)
+			return nil, fmt.Errorf("attach %s: %w", a.name, errors.Join(err, tt.Close()))
 		}
 		tt.tracepoints = append(tt.tracepoints, tp)
 	}
 
 	rd, err := ringbuf.NewReader(tt.objs.Events)
 	if err != nil {
-		tt.Close()
-		return nil, fmt.Errorf("open ringbuf: %w", err)
+		return nil, fmt.Errorf("open ringbuf: %w", errors.Join(err, tt.Close()))
 	}
 	tt.Reader = rd
 
