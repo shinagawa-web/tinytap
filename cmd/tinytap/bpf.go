@@ -17,9 +17,12 @@ type tinytapSession struct {
 func (s *tinytapSession) reader() ringbufCloser { return s.rd }
 func (s *tinytapSession) Close() error          { return s.closer.Close() }
 
+// loaderLoad is the real loader.Load; tests can replace it with a fake.
+var loaderLoad = loader.Load
+
 func init() {
 	loadBPF = func(pid uint32) (bpfSession, error) {
-		tt, err := loader.Load(pid)
+		tt, err := loaderLoad(pid)
 		if err != nil {
 			return nil, err
 		}
