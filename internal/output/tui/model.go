@@ -406,7 +406,7 @@ func (m model) View() string {
 	// The reverse-video focus bar sits on the table's selected row unless focus
 	// has moved into the detail panel, in which case it moves to the panel's
 	// divider (below) so it is always obvious which region the keys drive.
-	tableFocused := !(m.detailOpen && m.panelFocus)
+	tableFocused := !m.detailOpen || !m.panelFocus
 
 	lines := make([]string, 0, m.height)
 	lines = append(lines, divider, headerLine(pathWidth), divider)
