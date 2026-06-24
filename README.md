@@ -157,6 +157,15 @@ echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 source ~/.bashrc
 ```
 
+### Git hooks
+
+A pre-push hook runs the full test suite and enforces 100% coverage before every push.
+Activate it once after cloning:
+
+```bash
+make install-hooks
+```
+
 ## 5. Roadmap
 
 Moved to [#19](https://github.com/shinagawa-web/tinytap/issues/19) and pinned.
