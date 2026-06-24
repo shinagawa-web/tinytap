@@ -1,8 +1,3 @@
-// Package loader owns the BPF program lifecycle: lock memory, load the
-// generated bindings, attach every tracepoint the program declares, and
-// expose a ringbuf.Reader for userspace consumption. Callers see this as
-// "give me an attached, running BPF and a Reader to drain it" — they
-// never touch cilium/ebpf directly.
 package loader
 
 import (
@@ -16,17 +11,6 @@ import (
 
 	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
 )
-
-// Tinytap owns the loaded BPF objects, the tracepoint attachments, and
-// the ringbuf reader. Close releases everything in the reverse order it
-// was set up.
-type Tinytap struct {
-	objs        bpf.TinytapObjects
-	tracepoints []link.Link
-	// Reader drains the BPF ringbuf. Each record is the raw bytes of a
-	// `struct event` (see internal/events.Event for the matching Go type).
-	Reader *ringbuf.Reader
-}
 
 // Load locks memory, loads the BPF spec, sets the `own_pid` variable so
 // the BPF side can skip events from this process (and avoid a logging
@@ -46,6 +30,7 @@ func Load(ownPid uint32) (*Tinytap, error) {
 	}
 
 	tt := &Tinytap{}
+	tt.objsCloser = &tt.objs
 	if err := spec.LoadAndAssign(&tt.objs, nil); err != nil {
 		return nil, fmt.Errorf("load objects: %w", err)
 	}
@@ -69,41 +54,17 @@ func Load(ownPid uint32) (*Tinytap, error) {
 	for _, a := range attaches {
 		tp, err := link.Tracepoint("syscalls", a.name, a.prog, nil)
 		if err != nil {
-			tt.Close()
-			return nil, fmt.Errorf("attach %s: %w", a.name, err)
+			return nil, fmt.Errorf("attach %s: %w", a.name, errors.Join(err, tt.Close()))
 		}
 		tt.tracepoints = append(tt.tracepoints, tp)
 	}
 
 	rd, err := ringbuf.NewReader(tt.objs.Events)
 	if err != nil {
-		tt.Close()
-		return nil, fmt.Errorf("open ringbuf: %w", err)
+		return nil, fmt.Errorf("open ringbuf: %w", errors.Join(err, tt.Close()))
 	}
 	tt.Reader = rd
+	tt.readerCloser = rd
 
 	return tt, nil
-}
-
-// Close detaches every tracepoint, closes the ringbuf reader, and
-// releases the loaded BPF objects. Safe to call on a partially
-// initialised Tinytap (after a failed Load). All teardown errors are
-// joined and returned so a single failing component doesn't silently
-// hide its sibling's failures.
-func (t *Tinytap) Close() error {
-	var errs []error
-	if t.Reader != nil {
-		if err := t.Reader.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close ringbuf reader: %w", err))
-		}
-	}
-	for i, tp := range t.tracepoints {
-		if err := tp.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close tracepoint %d: %w", i, err))
-		}
-	}
-	if err := t.objs.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("close objects: %w", err))
-	}
-	return errors.Join(errs...)
 }
