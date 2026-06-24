@@ -1,14 +1,21 @@
 package main
 
 import (
+	"io"
+
 	"github.com/shinagawa-web/tinytap/internal/loader"
 )
 
-// tinytapSession wraps *loader.Tinytap to satisfy bpfSession.
-type tinytapSession struct{ tt *loader.Tinytap }
+// tinytapSession implements bpfSession using a separate reader and closer so
+// neither field carries an eBPF dependency and the struct can be tested with
+// plain fakes.
+type tinytapSession struct {
+	rd     ringbufCloser
+	closer io.Closer
+}
 
-func (s *tinytapSession) reader() ringbufCloser { return s.tt.Reader }
-func (s *tinytapSession) Close() error          { return s.tt.Close() }
+func (s *tinytapSession) reader() ringbufCloser { return s.rd }
+func (s *tinytapSession) Close() error          { return s.closer.Close() }
 
 func init() {
 	loadBPF = func(pid uint32) (bpfSession, error) {
@@ -16,6 +23,6 @@ func init() {
 		if err != nil {
 			return nil, err
 		}
-		return &tinytapSession{tt}, nil
+		return &tinytapSession{rd: tt.Reader, closer: tt}, nil
 	}
 }

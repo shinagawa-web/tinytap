@@ -69,6 +69,30 @@ func (f *fakeTUISink) Quit()                          { f.quit = true }
 var _ output.Sink = (*fakeTUISink)(nil)
 var _ tuiSink = (*fakeTUISink)(nil)
 
+// --- tinytapSession ---
+
+func TestTinytapSession_Reader(t *testing.T) {
+	rd := newFakeRC()
+	s := &tinytapSession{rd: rd, closer: &fakeSink{}}
+	if s.reader() != rd {
+		t.Error("want the injected reader")
+	}
+}
+
+func TestTinytapSession_Close(t *testing.T) {
+	s := &tinytapSession{rd: newFakeRC(), closer: &fakeSink{}}
+	if err := s.Close(); err != nil {
+		t.Fatalf("want nil error, got %v", err)
+	}
+}
+
+func TestTinytapSession_CloseError(t *testing.T) {
+	s := &tinytapSession{rd: newFakeRC(), closer: &fakeSink{closeErr: errors.New("boom")}}
+	if err := s.Close(); err == nil {
+		t.Error("want error from closer")
+	}
+}
+
 // --- defaultNewTUISink / defaultNewStdoutSink ---
 
 func TestDefaultNewTUISink(t *testing.T) {
