@@ -66,7 +66,9 @@ func runStdout(tt *loader.Tinytap, verbose bool) {
 	signal.Notify(stop, os.Interrupt)
 	go func() {
 		<-stop
-		tt.Reader.Close()
+		if err := tt.Reader.Close(); err != nil {
+			log.Printf("close reader: %v", err)
+		}
 	}()
 
 	capture(tt.Reader, sink)
@@ -97,7 +99,9 @@ func runTUI(tt *loader.Tinytap, width, height int) {
 	}()
 
 	runErr := sink.Run()
-	tt.Reader.Close()
+	if err := tt.Reader.Close(); err != nil {
+		log.Printf("close reader: %v", err)
+	}
 	<-done
 
 	log.SetOutput(prev)
