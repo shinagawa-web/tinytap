@@ -31,12 +31,13 @@ type fakeSink struct {
 	eventCount   int
 	messageCount int
 	pairedCount  int
+	closeErr     error
 }
 
 func (s *fakeSink) OnEvent(*events.Event)         { s.eventCount++ }
 func (s *fakeSink) OnMessage(httpproto.Message)    { s.messageCount++ }
 func (s *fakeSink) OnPaired(httpproto.PairedEvent) { s.pairedCount++ }
-func (s *fakeSink) Close() error                   { return nil }
+func (s *fakeSink) Close() error                   { return s.closeErr }
 
 var _ output.Sink = (*fakeSink)(nil)
 
@@ -96,6 +97,40 @@ func TestCapture_CloseEvent(t *testing.T) {
 	capture(rd, sink)
 	if sink.eventCount != 1 {
 		t.Errorf("want 1 event, got %d", sink.eventCount)
+	}
+}
+
+func httpEvent(syscall uint32, pid uint32, fd int32, payload []byte) events.Event {
+	e := events.Event{
+		Syscall: syscall,
+		Pid:     pid,
+		Fd:      fd,
+		Bytes:   uint32(len(payload)),
+	}
+	n := copy(e.Payload[:], payload)
+	e.PayloadLen = uint32(n)
+	return e
+}
+
+func TestCapture_HTTPExchange(t *testing.T) {
+	const pid, fd = uint32(1), int32(3)
+	req := []byte("GET / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+
+	rd := &fakeReader{
+		records: []ringbuf.Record{
+			{RawSample: marshalEvent(t, httpEvent(events.SyscallWrite, pid, fd, req))},
+			{RawSample: marshalEvent(t, httpEvent(events.SyscallRead, pid, fd, resp))},
+		},
+	}
+	sink := &fakeSink{}
+	capture(rd, sink)
+
+	if sink.messageCount != 2 {
+		t.Errorf("want 2 messages, got %d", sink.messageCount)
+	}
+	if sink.pairedCount != 1 {
+		t.Errorf("want 1 paired event, got %d", sink.pairedCount)
 	}
 }
 
