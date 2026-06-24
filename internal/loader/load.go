@@ -30,6 +30,7 @@ func Load(ownPid uint32) (*Tinytap, error) {
 	}
 
 	tt := &Tinytap{}
+	tt.objsCloser = &tt.objs
 	if err := spec.LoadAndAssign(&tt.objs, nil); err != nil {
 		return nil, fmt.Errorf("load objects: %w", err)
 	}
@@ -63,6 +64,7 @@ func Load(ownPid uint32) (*Tinytap, error) {
 		return nil, fmt.Errorf("open ringbuf: %w", errors.Join(err, tt.Close()))
 	}
 	tt.Reader = rd
+	tt.readerCloser = rd
 
 	return tt, nil
 }

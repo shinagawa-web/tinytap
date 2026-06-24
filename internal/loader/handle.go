@@ -19,8 +19,10 @@ import (
 // the ringbuf reader. Close releases everything in the reverse order it
 // was set up.
 type Tinytap struct {
-	objs        bpf.TinytapObjects
-	tracepoints []io.Closer
+	objs         bpf.TinytapObjects
+	objsCloser   io.Closer // &objs at runtime; injectable in tests
+	tracepoints  []io.Closer
+	readerCloser io.Closer // Reader at runtime; injectable in tests
 	// Reader drains the BPF ringbuf. Each record is the raw bytes of a
 	// `struct event` (see internal/events.Event for the matching Go type).
 	Reader *ringbuf.Reader
@@ -33,8 +35,8 @@ type Tinytap struct {
 // hide its sibling's failures.
 func (t *Tinytap) Close() error {
 	var errs []error
-	if t.Reader != nil {
-		if err := t.Reader.Close(); err != nil {
+	if t.readerCloser != nil {
+		if err := t.readerCloser.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close ringbuf reader: %w", err))
 		}
 	}
@@ -43,8 +45,10 @@ func (t *Tinytap) Close() error {
 			errs = append(errs, fmt.Errorf("close tracepoint %d: %w", i, err))
 		}
 	}
-	if err := t.objs.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("close objects: %w", err))
+	if t.objsCloser != nil {
+		if err := t.objsCloser.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close objects: %w", err))
+		}
 	}
 	return errors.Join(errs...)
 }
