@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"log"
 
 	"github.com/cilium/ebpf/ringbuf"
@@ -13,6 +14,11 @@ import (
 
 type ringbufReader interface {
 	Read() (ringbuf.Record, error)
+}
+
+type ringbufCloser interface {
+	ringbufReader
+	io.Closer
 }
 
 // capture drains the ringbuf, decodes each event, feeds the HTTP parser and
