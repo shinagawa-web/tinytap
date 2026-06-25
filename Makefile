@@ -3,7 +3,7 @@ COVERAGE_THRESHOLD ?= 100
 COVFILE            := /tmp/tinytap-cover.out
 FILTERED           := /tmp/tinytap-cover-filtered.out
 
-.PHONY: all generate build run run-raw check test-e2e test-integration install install-hooks clean
+.PHONY: all generate build run run-raw lint check test-e2e test-integration install install-hooks clean
 
 all: generate build
 
@@ -19,6 +19,9 @@ run: build
 
 run-raw: build
 	sudo ./$(BIN) --output stdout
+
+lint:
+	golangci-lint run
 
 check:
 	go test ./... -coverprofile=$(COVFILE) -covermode=atomic
