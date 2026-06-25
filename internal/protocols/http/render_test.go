@@ -46,6 +46,22 @@ func TestRenderPairedDetailHasStartLinesAndHeaders(t *testing.T) {
 	}
 }
 
+func TestRenderAbandonedFormat(t *testing.T) {
+	pe := PairedEvent{
+		Pid: 1234, Comm: "curl",
+		Method: "GET", Path: "/api",
+		Latency:       12_300 * time.Microsecond,
+		Abandoned:     true,
+		AbandonReason: AbandonReasonClosed,
+	}
+	when := time.Date(2026, 6, 8, 12, 47, 57, 5_000_000, time.UTC)
+	got := RenderAbandoned(pe, when)
+	want := "12:47:57.005  curl[1234]       GET   /api                     ABANDONED       12.3ms  (peer closed)"
+	if got != want {
+		t.Errorf("\n got: %q\nwant: %q", got, want)
+	}
+}
+
 // TimeAnchor must extrapolate correctly for events whose ktime is before
 // (smaller than) the anchor — a request that landed slightly earlier than
 // its response, where we anchor on the response.

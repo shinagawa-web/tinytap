@@ -48,9 +48,13 @@ func (s *Sink) OnEvent(_ *events.Event) {}
 // request/response details, so the per-message lines are redundant here.
 func (s *Sink) OnMessage(_ http.Message) {}
 
-// OnPaired prints the one-line summary for a matched request/response
-// exchange, plus its detail lines when verbose.
+// OnPaired prints the one-line summary for a paired exchange, or an abandoned
+// line when the request never received a response.
 func (s *Sink) OnPaired(pe http.PairedEvent) {
+	if pe.Abandoned {
+		_, _ = fmt.Fprintln(s.w, http.RenderAbandoned(pe, s.anchor.WallTime(pe.ReqTsNs)))
+		return
+	}
 	_, _ = fmt.Fprintln(s.w, http.RenderPaired(pe, s.anchor.WallTime(pe.ReqTsNs)))
 	if s.verbose {
 		for _, line := range http.RenderPairedDetail(pe) {
