@@ -138,7 +138,7 @@ echo "=== assertions ==="
 assert_contains "GET / paired with 200"   "\[${PY_PID}\].*GET[[:space:]]+/[[:space:]].*200"
 assert_contains "HEAD / paired with 200"  "\[${PY_PID}\].*HEAD[[:space:]]+/[[:space:]].*200"
 assert_contains "POST / captured"         "\[${PY_PID}\].*POST[[:space:]]+/"
-assert_contains "abandoned: peer closed"  "ABANDONED|peer closed"
+assert_contains "abandoned: peer closed"  "ABANDONED.*peer closed"
 
 echo
 if [[ "${FAILURES}" -eq 0 ]]; then

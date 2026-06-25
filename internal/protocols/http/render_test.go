@@ -56,7 +56,7 @@ func TestRenderAbandonedFormat(t *testing.T) {
 	}
 	when := time.Date(2026, 6, 8, 12, 47, 57, 5_000_000, time.UTC)
 	got := RenderAbandoned(pe, when)
-	want := "12:47:57.005  curl[1234]       GET   /api                        12.3ms  (peer closed)"
+	want := "12:47:57.005  curl[1234]       GET   /api                     ABANDONED       12.3ms  (peer closed)"
 	if got != want {
 		t.Errorf("\n got: %q\nwant: %q", got, want)
 	}

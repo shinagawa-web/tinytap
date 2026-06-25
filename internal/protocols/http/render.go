@@ -48,17 +48,18 @@ func RenderPaired(p PairedEvent, when time.Time) string {
 }
 
 // RenderAbandoned returns the one-line summary for a request that never
-// received a response. Columns align with RenderPaired so the two formats
-// mix naturally in stdout output.
+// received a response. Columns align with RenderPaired: the status+bytes
+// field (12 chars) is replaced by the literal "ABANDONED".
 //
-//	12:47:57.005  curl[1234]       GET   /api                     ABANDONED  12.3ms  (peer closed)
+//	12:47:57.005  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
 func RenderAbandoned(p PairedEvent, when time.Time) string {
 	latencyMs := float64(p.Latency) / float64(time.Millisecond)
 	who := fmt.Sprintf("%s[%d]", p.Comm, p.Pid)
-	return fmt.Sprintf("%s  %-16s %-5s %-24s %9s  (%s)",
+	return fmt.Sprintf("%s  %-16s %-5s %-24s %-12s %9s  (%s)",
 		when.Format("15:04:05.000"),
 		who,
 		p.Method, p.Path,
+		"ABANDONED",
 		fmt.Sprintf("%.1fms", latencyMs),
 		p.AbandonReason)
 }
