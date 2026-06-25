@@ -51,10 +51,10 @@ func (s *Sink) OnMessage(_ http.Message) {}
 // OnPaired prints the one-line summary for a matched request/response
 // exchange, plus its detail lines when verbose.
 func (s *Sink) OnPaired(pe http.PairedEvent) {
-	fmt.Fprintln(s.w, http.RenderPaired(pe, s.anchor.WallTime(pe.ReqTsNs)))
+	_, _ = fmt.Fprintln(s.w, http.RenderPaired(pe, s.anchor.WallTime(pe.ReqTsNs)))
 	if s.verbose {
 		for _, line := range http.RenderPairedDetail(pe) {
-			fmt.Fprintln(s.w, line)
+			_, _ = fmt.Fprintln(s.w, line)
 		}
 	}
 }
