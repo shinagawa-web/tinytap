@@ -7,7 +7,7 @@ echo "==> Running lint..."
 make lint
 
 echo "==> Running tests with coverage check..."
-make check
+make check-coverage
 
 echo "==> Running integration tests..."
 make test-integration

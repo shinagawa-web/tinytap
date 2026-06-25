@@ -3,7 +3,7 @@ COVERAGE_THRESHOLD ?= 100
 COVFILE            := /tmp/tinytap-cover.out
 FILTERED           := /tmp/tinytap-cover-filtered.out
 
-.PHONY: all generate build run run-raw lint check test-e2e test-integration install install-hooks clean
+.PHONY: all generate build run run-raw lint check-coverage test-e2e test-integration install install-hooks clean
 
 all: generate build
 
@@ -23,7 +23,7 @@ run-raw: build
 lint:
 	golangci-lint run
 
-check:
+check-coverage:
 	go test ./... -coverprofile=$(COVFILE) -covermode=atomic
 	grep -vE '(_bpfel\.go|_bpfeb\.go|internal/loader/load\.go)' $(COVFILE) > $(FILTERED)
 	@awk 'NR>1 { total+=$$2; if($$3>0) covered+=$$2 } END { \
