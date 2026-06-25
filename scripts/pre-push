@@ -6,7 +6,10 @@ set -e
 echo "==> Running lint..."
 make lint
 
-echo "==> Running tests with coverage check..."
+echo "==> Running unit tests..."
+make test
+
+echo "==> Checking coverage..."
 make check-coverage
 
 echo "==> Running integration tests..."
