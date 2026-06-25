@@ -1480,7 +1480,7 @@ func TestChunkedPartialChunkWireExceedsSample(t *testing.T) {
 		if n > remaining {
 			n = remaining
 		}
-		got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(n), chunk[:n]))
+		p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(n), chunk[:n]))
 		remaining -= n
 	}
 
