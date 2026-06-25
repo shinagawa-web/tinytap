@@ -24,7 +24,7 @@ lint:
 	$(GOLINT) run
 
 test-unit:
-	go test ./... -coverprofile=$(COVFILE) -covermode=atomic
+	go test -coverprofile=$(COVFILE) -covermode=atomic ./...
 
 check-coverage:
 	grep -vE '(_bpfel\.go|_bpfeb\.go|internal/loader/load\.go)' $(COVFILE) > $(FILTERED)
