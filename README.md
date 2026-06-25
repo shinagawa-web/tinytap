@@ -160,10 +160,10 @@ source ~/.bashrc
 ### Git hooks
 
 A pre-push hook runs the full test suite and enforces 100% coverage before every push.
-Activate it once after cloning:
+Activate it once per worktree after cloning or creating a new worktree:
 
 ```bash
-make install-hooks
+make install
 ```
 
 ## 5. Roadmap

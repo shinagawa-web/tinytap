@@ -1,22 +1,5 @@
 #!/usr/bin/env bash
-# pre-push: run tests and enforce 100% coverage (matching codecov.yml exclusions) before push.
+# pre-push: delegate to `make check` so the coverage logic stays in one place.
 set -euo pipefail
 
-COVFILE=$(mktemp /tmp/tinytap-prepush-XXXXXX.out)
-FILTERED=$(mktemp /tmp/tinytap-prepush-filtered-XXXXXX.out)
-trap 'rm -f "${COVFILE}" "${FILTERED}"' EXIT
-
-echo "==> Running tests..."
-go test ./... -coverprofile="${COVFILE}" -covermode=atomic || { echo "FAIL: tests failed"; exit 1; }
-
-# Apply the same file exclusions as codecov.yml
-grep -v -E "(_bpfel\.go|_bpfeb\.go|internal/loader/load\.go)" "${COVFILE}" > "${FILTERED}"
-
-total=$(go tool cover -func="${FILTERED}" | tail -1 | awk '{print $3}')
-if [[ "${total}" != "100.0%" ]]; then
-    echo "FAIL: coverage ${total}, want 100.0%"
-    go tool cover -func="${FILTERED}" | grep -v "100.0%"
-    exit 1
-fi
-
-echo "PASS: coverage ${total}"
+make check
