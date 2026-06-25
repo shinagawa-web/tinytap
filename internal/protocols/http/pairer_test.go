@@ -131,29 +131,118 @@ func TestPairerCarriesBodies(t *testing.T) {
 	}
 }
 
-// Close drops the pending request for the given (pid, fd); a response
-// arriving after Close must not pair.
-func TestPairerCloseDropsPending(t *testing.T) {
+// Close returns an abandoned PairedEvent for each pending request and removes
+// them; a response arriving after Close must not pair.
+func TestPairerCloseEmitsAbandoned(t *testing.T) {
 	p := NewPairer()
 	pid, fd := uint32(7), int32(3)
 
-	req := Message{TsNs: 1, Pid: pid, Fd: fd, IsRequest: true,
+	req := Message{TsNs: 100, Pid: pid, Fd: fd, IsRequest: true,
 		Req: httpRequestLine{method: "GET", path: "/x", version: "HTTP/1.1"}}
 	p.Push(req)
 
-	p.Close(pid, fd)
+	abandoned := p.Close(pid, fd, 200)
+	if len(abandoned) != 1 {
+		t.Fatalf("want 1 abandoned event, got %d", len(abandoned))
+	}
+	ab := abandoned[0]
+	if !ab.Abandoned {
+		t.Error("Abandoned must be true")
+	}
+	if ab.AbandonReason != AbandonReasonClosed {
+		t.Errorf("AbandonReason = %q, want %q", ab.AbandonReason, AbandonReasonClosed)
+	}
+	if ab.Method != "GET" || ab.Path != "/x" {
+		t.Errorf("method/path = %q %q, want GET /x", ab.Method, ab.Path)
+	}
+	if ab.Latency != 100 {
+		t.Errorf("Latency = %v, want 100ns (closeTsNs - reqTsNs)", ab.Latency)
+	}
 
-	res := Message{TsNs: 2, Pid: pid, Fd: fd, IsRequest: false,
+	res := Message{TsNs: 300, Pid: pid, Fd: fd, IsRequest: false,
 		Res: httpStatusLine{version: "HTTP/1.1", status: 200, reason: "OK"}}
 	if _, ok := p.Push(res); ok {
 		t.Error("response after Close should not pair with the evicted request")
 	}
 }
 
+// Close with two pipelined requests emits two abandoned events in FIFO order.
+func TestPairerClosePipeliningAbandoned(t *testing.T) {
+	p := NewPairer()
+	pid, fd := uint32(7), int32(3)
+
+	p.Push(Message{TsNs: 1, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/a"}})
+	p.Push(Message{TsNs: 2, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/b"}})
+
+	abandoned := p.Close(pid, fd, 100)
+	if len(abandoned) != 2 {
+		t.Fatalf("want 2 abandoned events, got %d", len(abandoned))
+	}
+	if abandoned[0].Path != "/a" || abandoned[1].Path != "/b" {
+		t.Errorf("want /a /b order, got %q %q", abandoned[0].Path, abandoned[1].Path)
+	}
+}
+
 // Close on an unknown (pid, fd) is a no-op.
 func TestPairerCloseUnknownIsNoop(t *testing.T) {
 	p := NewPairer()
-	p.Close(999, 999)
+	if got := p.Close(999, 999, 0); len(got) != 0 {
+		t.Errorf("want nil, got %v", got)
+	}
+}
+
+// Sweep evicts requests older than the timeout and returns abandoned events.
+func TestPairerSweepAbandonsTimedOut(t *testing.T) {
+	now := time.Now()
+	p := newPairerWithClock(func() time.Time { return now })
+
+	pid, fd := uint32(1), int32(1)
+	p.Push(Message{TsNs: 1, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/slow"}})
+
+	// advance clock past the timeout
+	now = now.Add(31 * time.Second)
+	abandoned := p.Sweep(30 * time.Second)
+	if len(abandoned) != 1 {
+		t.Fatalf("want 1 abandoned, got %d", len(abandoned))
+	}
+	if abandoned[0].AbandonReason != AbandonReasonTimeout {
+		t.Errorf("AbandonReason = %q, want %q", abandoned[0].AbandonReason, AbandonReasonTimeout)
+	}
+	if abandoned[0].Path != "/slow" {
+		t.Errorf("Path = %q, want /slow", abandoned[0].Path)
+	}
+	if len(p.pending) != 0 {
+		t.Error("pending should be empty after sweep")
+	}
+}
+
+// Sweep keeps requests that have not yet reached the timeout.
+func TestPairerSweepKeepsFreshRequests(t *testing.T) {
+	now := time.Now()
+	p := newPairerWithClock(func() time.Time { return now })
+
+	pid, fd := uint32(1), int32(1)
+	p.Push(Message{TsNs: 1, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/fast"}})
+
+	now = now.Add(29 * time.Second)
+	if abandoned := p.Sweep(30 * time.Second); len(abandoned) != 0 {
+		t.Errorf("want no abandoned events, got %v", abandoned)
+	}
+	if len(p.pending) != 1 {
+		t.Error("fresh request should still be pending")
+	}
+}
+
+// Sweep on an empty pairer returns nil without panicking.
+func TestPairerSweepEmptyNoop(t *testing.T) {
+	p := NewPairer()
+	if got := p.Sweep(30 * time.Second); len(got) != 0 {
+		t.Errorf("want nil, got %v", got)
+	}
 }
 
 // After Close, a new request on the same (pid, fd) pairs cleanly with

@@ -83,6 +83,28 @@ func TestOnPairedVerbose(t *testing.T) {
 	}
 }
 
+func TestOnPairedAbandoned(t *testing.T) {
+	var buf bytes.Buffer
+	s := &Sink{w: &buf}
+	pe := http.PairedEvent{
+		Pid: 5, Comm: "curl",
+		Method: "GET", Path: "/slow",
+		Latency:       10 * time.Millisecond,
+		Abandoned:     true,
+		AbandonReason: http.AbandonReasonClosed,
+	}
+	s.OnPaired(pe)
+	out := buf.String()
+	for _, want := range []string{"GET", "/slow", "peer closed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("abandoned output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "200") {
+		t.Errorf("abandoned output should not contain status code:\n%s", out)
+	}
+}
+
 func TestCloseReturnsNil(t *testing.T) {
 	if err := New(false).Close(); err != nil {
 		t.Errorf("Close() = %v, want nil", err)

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf/ringbuf"
 
@@ -131,6 +132,95 @@ func TestCapture_HTTPExchange(t *testing.T) {
 	}
 	if sink.pairedCount != 1 {
 		t.Errorf("want 1 paired event, got %d", sink.pairedCount)
+	}
+}
+
+// TestCapture_CloseEmitsAbandoned verifies that a request with no response
+// followed by a close event surfaces as an abandoned PairedEvent via OnPaired.
+func TestCapture_CloseEmitsAbandoned(t *testing.T) {
+	const pid, fd = uint32(5), int32(9)
+	req := []byte("GET /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+
+	// request arrives, then the fd is closed with no response
+	rd := &fakeReader{
+		records: []ringbuf.Record{
+			{RawSample: marshalEvent(t, httpEvent(events.SyscallWrite, pid, fd, req))},
+			{RawSample: marshalEvent(t, events.Event{Syscall: events.SyscallClose, Pid: pid, Fd: fd})},
+		},
+	}
+	sink := &abandonedSink{}
+	capture(rd, sink)
+
+	if len(sink.paired) != 1 {
+		t.Fatalf("want 1 paired (abandoned) event, got %d", len(sink.paired))
+	}
+	pe := sink.paired[0]
+	if !pe.Abandoned {
+		t.Error("PairedEvent.Abandoned must be true")
+	}
+	if pe.AbandonReason != httpproto.AbandonReasonClosed {
+		t.Errorf("AbandonReason = %q, want %q", pe.AbandonReason, httpproto.AbandonReasonClosed)
+	}
+	if pe.Method != "GET" || pe.Path != "/slow" {
+		t.Errorf("method/path = %q %q, want GET /slow", pe.Method, pe.Path)
+	}
+}
+
+type abandonedSink struct {
+	paired []httpproto.PairedEvent
+}
+
+func (s *abandonedSink) OnEvent(*events.Event)             {}
+func (s *abandonedSink) OnMessage(httpproto.Message)       {}
+func (s *abandonedSink) OnPaired(pe httpproto.PairedEvent) { s.paired = append(s.paired, pe) }
+func (s *abandonedSink) Close() error                      { return nil }
+
+// slowReader returns the given records then blocks until the ticker fires,
+// simulating a hung connection.  After the delay it returns EOF.
+type slowReader struct {
+	records []ringbuf.Record
+	idx     int
+	delay   time.Duration
+}
+
+func (r *slowReader) Read() (ringbuf.Record, error) {
+	if r.idx < len(r.records) {
+		rec := r.records[r.idx]
+		r.idx++
+		return rec, nil
+	}
+	time.Sleep(r.delay)
+	return ringbuf.Record{}, errors.New("EOF")
+}
+
+// TestCapture_SweepEmitsAbandoned verifies that the sweeper goroutine evicts a
+// pending request that has been waiting longer than the timeout.
+func TestCapture_SweepEmitsAbandoned(t *testing.T) {
+	const pid, fd = uint32(9), int32(4)
+	req := []byte("GET /hang HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+
+	sink := &abandonedSink{}
+	// interval=1ms, timeout=1ms: the sweeper fires almost immediately and
+	// the request (added at t=0) is already older than 1ms.
+	rd := &slowReader{
+		records: []ringbuf.Record{
+			{RawSample: marshalEvent(t, httpEvent(events.SyscallWrite, pid, fd, req))},
+		},
+		delay: 20 * time.Millisecond, // keep capture alive long enough for sweep
+	}
+	captureWithOptions(rd, sink, 1*time.Millisecond, 1*time.Millisecond)
+
+	var abandoned []httpproto.PairedEvent
+	for _, pe := range sink.paired {
+		if pe.Abandoned {
+			abandoned = append(abandoned, pe)
+		}
+	}
+	if len(abandoned) == 0 {
+		t.Fatal("want at least 1 abandoned event from sweeper, got 0")
+	}
+	if abandoned[0].AbandonReason != httpproto.AbandonReasonTimeout {
+		t.Errorf("AbandonReason = %q, want %q", abandoned[0].AbandonReason, httpproto.AbandonReasonTimeout)
 	}
 }
 
