@@ -266,7 +266,7 @@ func TestViewportPansToSelection(t *testing.T) {
 	// The newest row's latency-less placeholder isn't distinctive, so assert
 	// the marker sits on the first data line (row 0) after the header chrome.
 	lines := strings.Split(out, "\n")
-	var markerLine int = -1
+	markerLine := -1
 	for i, ln := range lines {
 		if strings.Contains(ln, markerSelected) {
 			markerLine = i

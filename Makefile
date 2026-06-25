@@ -21,7 +21,7 @@ run-raw: build
 	sudo ./$(BIN) --output stdout
 
 lint:
-	golangci-lint run
+	$(GOLINT) run
 
 test-unit:
 	go test ./... -coverprofile=$(COVFILE) -covermode=atomic
@@ -39,7 +39,8 @@ check-coverage:
 test-e2e:
 	@bash scripts/test-e2e.sh
 
-GOBIN := $(shell go env GOROOT)/bin/go
+GOBIN   := $(shell go env GOROOT)/bin/go
+GOLINT  := $(shell go env GOPATH)/bin/golangci-lint
 
 test-integration:
 	sudo $(GOBIN) test -tags=privileged -v ./internal/loader/
