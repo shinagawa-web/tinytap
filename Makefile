@@ -1,6 +1,7 @@
-BIN      := tinytap
-COVFILE  := /tmp/tinytap-cover.out
-FILTERED := /tmp/tinytap-cover-filtered.out
+BIN                := tinytap
+COVERAGE_THRESHOLD ?= 100
+COVFILE            := /tmp/tinytap-cover.out
+FILTERED           := /tmp/tinytap-cover-filtered.out
 
 .PHONY: all generate build run run-raw check test-e2e test-integration install install-hooks clean
 
@@ -22,13 +23,13 @@ run-raw: build
 check:
 	go test ./... -coverprofile=$(COVFILE) -covermode=atomic
 	grep -vE '(_bpfel\.go|_bpfeb\.go|internal/loader/load\.go)' $(COVFILE) > $(FILTERED)
-	@total=$$(go tool cover -func=$(FILTERED) | tail -1 | awk '{print $$3}'); \
-	if [ "$$total" != "100.0%" ]; then \
-	    echo "FAIL: coverage $$total, want 100.0%"; \
-	    go tool cover -func=$(FILTERED) | grep -v '100.0%'; \
-	    exit 1; \
-	fi
-	@echo "PASS: coverage 100.0%"
+	@awk 'NR>1 { total+=$$2; if($$3>0) covered+=$$2 } END { \
+		printf "Total coverage: %d/%d statements\n", covered, total; \
+		if (covered * 100 < total * $(COVERAGE_THRESHOLD)) { \
+			printf "FAIL: %d uncovered statement(s), below threshold $(COVERAGE_THRESHOLD)%%\n", total-covered; exit 1 \
+		} \
+	}' $(FILTERED)
+	@echo "PASS: coverage $(COVERAGE_THRESHOLD)%"
 
 test-e2e:
 	@bash scripts/test-e2e.sh
@@ -41,7 +42,11 @@ test-integration:
 install: install-hooks
 
 install-hooks:
-	ln -sf "$(PWD)/scripts/pre-push" $$(git rev-parse --git-common-dir)/hooks/pre-push
+	@HOOKS_DIR=$$(git rev-parse --git-path hooks); \
+	mkdir -p "$$HOOKS_DIR"; \
+	cp scripts/pre-push "$$HOOKS_DIR/pre-push"; \
+	chmod +x "$$HOOKS_DIR/pre-push"; \
+	echo "pre-push hook installed to $$HOOKS_DIR/pre-push."
 
 clean:
 	rm -f $(BIN) internal/loader/bpf/tinytap_bpf*.go internal/loader/bpf/tinytap_bpf*.o
