@@ -16,7 +16,7 @@ The hook runs lint, unit tests with 100% coverage enforcement, integration tests
 |---|---|
 | `make build` | Build the binary |
 | `make lint` | Run golangci-lint |
-| `make test` | Run unit tests and generate coverage profile |
+| `make test-unit` | Run unit tests and generate coverage profile |
 | `make check-coverage` | Enforce 100% coverage on the generated profile |
 | `make test-integration` | Run eBPF integration tests (requires root) |
 | `make test-e2e` | Run end-to-end tests |
