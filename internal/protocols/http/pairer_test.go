@@ -254,7 +254,7 @@ func TestPairerCloseAllowsReuseOfFd(t *testing.T) {
 	// First request queued, then fd closed before any response.
 	p.Push(Message{TsNs: 1, Pid: pid, Fd: fd, IsRequest: true,
 		Req: httpRequestLine{method: "GET", path: "/old"}})
-	p.Close(pid, fd)
+	p.Close(pid, fd, 2)
 
 	// New request on the same (pid, fd) after reuse.
 	p.Push(Message{TsNs: 2, Pid: pid, Fd: fd, IsRequest: true,
@@ -333,7 +333,7 @@ func TestPairerLeakSmokeTest(t *testing.T) {
 			Req: httpRequestLine{method: "GET", path: "/x"}})
 		p.Push(Message{TsNs: uint64(i*2 + 1), Pid: pid, Fd: fd, IsRequest: false,
 			Res: httpStatusLine{status: 200}})
-		p.Close(pid, fd)
+		p.Close(pid, fd, 0)
 	}
 
 	if len(p.pending) != 0 {
