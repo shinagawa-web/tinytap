@@ -1079,3 +1079,87 @@ func TestNewParserWithResolve(t *testing.T) {
 		t.Errorf("Comm = %q, want %q (resolver should override Comm field)", got[0].Comm, resolved)
 	}
 }
+
+// --- Lifecycle: concurrent connections and isolation ----------------------
+
+// One pid holding two fds simultaneously: each fd has an independent
+// stream; messages on one fd must not affect the other.
+func TestParserConcurrentFdsSamePid(t *testing.T) {
+	p := NewParser()
+	pid := uint32(42)
+	fd4, fd5 := int32(4), int32(5)
+
+	// Plant partial responses on both fds (no body yet → streams stay open).
+	hdr := []byte("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd4, uint32(len(hdr)), hdr))
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd5, uint32(len(hdr)), hdr))
+
+	if _, ok := p.streams[connKey{pid: pid, fd: fd4, dir: dirOutgoing}]; !ok {
+		t.Error("fd4 stream missing")
+	}
+	if _, ok := p.streams[connKey{pid: pid, fd: fd5, dir: dirOutgoing}]; !ok {
+		t.Error("fd5 stream missing")
+	}
+
+	// Closing fd4 must leave fd5 intact.
+	p.Close(pid, fd4)
+
+	if _, ok := p.streams[connKey{pid: pid, fd: fd4, dir: dirOutgoing}]; ok {
+		t.Error("fd4 stream should be evicted after Close")
+	}
+	if _, ok := p.streams[connKey{pid: pid, fd: fd5, dir: dirOutgoing}]; !ok {
+		t.Error("fd5 stream should survive fd4 Close")
+	}
+}
+
+// Two processes with the same fd number must be tracked independently.
+// (42, fd=4) and (43, fd=4) are distinct connKey entries.
+func TestParserSameFdDifferentPids(t *testing.T) {
+	p := NewParser()
+	fd := int32(4)
+	pid42, pid43 := uint32(42), uint32(43)
+
+	hdr := []byte("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid42, fd, uint32(len(hdr)), hdr))
+	p.Feed(makeEvent(events.SyscallWrite, pid43, fd, uint32(len(hdr)), hdr))
+
+	if _, ok := p.streams[connKey{pid: pid42, fd: fd, dir: dirOutgoing}]; !ok {
+		t.Error("pid42 stream missing")
+	}
+	if _, ok := p.streams[connKey{pid: pid43, fd: fd, dir: dirOutgoing}]; !ok {
+		t.Error("pid43 stream missing")
+	}
+
+	// Closing one pid must not evict the other.
+	p.Close(pid42, fd)
+
+	if _, ok := p.streams[connKey{pid: pid42, fd: fd, dir: dirOutgoing}]; ok {
+		t.Error("pid42 stream should be evicted after Close")
+	}
+	if _, ok := p.streams[connKey{pid: pid43, fd: fd, dir: dirOutgoing}]; !ok {
+		t.Error("pid43 stream should survive pid42 Close")
+	}
+}
+
+// 1000 keep-alive cycles: complete request + response + Close. Verifies
+// that no entries remain in streams or pendingMethods after the burst.
+func TestParserLeakSmokeTest(t *testing.T) {
+	p := NewParser()
+	pid := uint32(1)
+	req := []byte("GET /x HTTP/1.1\r\nHost: x\r\n\r\n")
+	res := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+
+	for i := range 1000 {
+		fd := int32(i % 10)
+		p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(req)), req))
+		p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(res)), res))
+		p.Close(pid, fd)
+	}
+
+	if n := len(p.streams); n != 0 {
+		t.Errorf("leak: %d stream entries remain after 1000 cycles", n)
+	}
+	if n := len(p.pendingMethods); n != 0 {
+		t.Errorf("leak: %d pendingMethods entries remain after 1000 cycles", n)
+	}
+}
