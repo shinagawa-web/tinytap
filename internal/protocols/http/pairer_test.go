@@ -155,3 +155,99 @@ func TestPairerCloseUnknownIsNoop(t *testing.T) {
 	p := NewPairer()
 	p.Close(999, 999)
 }
+
+// After Close, a new request on the same (pid, fd) pairs cleanly with
+// its response; no phantom state from the evicted request leaks through.
+func TestPairerCloseAllowsReuseOfFd(t *testing.T) {
+	p := NewPairer()
+	pid, fd := uint32(7), int32(3)
+
+	// First request queued, then fd closed before any response.
+	p.Push(Message{TsNs: 1, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/old"}})
+	p.Close(pid, fd)
+
+	// New request on the same (pid, fd) after reuse.
+	p.Push(Message{TsNs: 2, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/new"}})
+	pe, ok := p.Push(Message{TsNs: 3, Pid: pid, Fd: fd, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	if !ok {
+		t.Fatal("response should pair with the new request")
+	}
+	if pe.Path != "/new" {
+		t.Errorf("want path /new, got %q — old request bled through", pe.Path)
+	}
+}
+
+// Two fds on the same pid must be isolated: closing or pairing on one
+// must not affect the other.
+func TestPairerConcurrentFdsSamePid(t *testing.T) {
+	p := NewPairer()
+	pid := uint32(42)
+	fd4, fd5 := int32(4), int32(5)
+
+	p.Push(Message{TsNs: 1, Pid: pid, Fd: fd4, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/fd4"}})
+	p.Push(Message{TsNs: 2, Pid: pid, Fd: fd5, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/fd5"}})
+
+	// Pair fd5 first; fd4 must still be pending.
+	pe5, ok := p.Push(Message{TsNs: 3, Pid: pid, Fd: fd5, IsRequest: false,
+		Res: httpStatusLine{status: 201}})
+	if !ok || pe5.Path != "/fd5" || pe5.Status != 201 {
+		t.Errorf("fd5 pair: got %+v ok=%v", pe5, ok)
+	}
+
+	// fd4 queue must be unaffected.
+	pe4, ok := p.Push(Message{TsNs: 4, Pid: pid, Fd: fd4, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	if !ok || pe4.Path != "/fd4" || pe4.Status != 200 {
+		t.Errorf("fd4 pair: got %+v ok=%v", pe4, ok)
+	}
+}
+
+// Two processes that happen to use the same fd number must not
+// cross-contaminate: (42, fd=4) and (43, fd=4) are distinct streams.
+func TestPairerSameFdDifferentPids(t *testing.T) {
+	p := NewPairer()
+	fd := int32(4)
+	pid42, pid43 := uint32(42), uint32(43)
+
+	p.Push(Message{TsNs: 1, Pid: pid42, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/pid42"}})
+	p.Push(Message{TsNs: 2, Pid: pid43, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/pid43"}})
+
+	pe43, ok := p.Push(Message{TsNs: 3, Pid: pid43, Fd: fd, IsRequest: false,
+		Res: httpStatusLine{status: 201}})
+	if !ok || pe43.Path != "/pid43" {
+		t.Errorf("pid43 pair: got %+v ok=%v", pe43, ok)
+	}
+
+	pe42, ok := p.Push(Message{TsNs: 4, Pid: pid42, Fd: fd, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	if !ok || pe42.Path != "/pid42" {
+		t.Errorf("pid42 pair: got %+v ok=%v", pe42, ok)
+	}
+}
+
+// 1000 short keep-alive cycles: request + response + Close. No pending
+// entries must survive after the burst.
+func TestPairerLeakSmokeTest(t *testing.T) {
+	p := NewPairer()
+	pid := uint32(1)
+
+	for i := range 1000 {
+		fd := int32(i % 10)
+		p.Push(Message{TsNs: uint64(i*2), Pid: pid, Fd: fd, IsRequest: true,
+			Req: httpRequestLine{method: "GET", path: "/x"}})
+		p.Push(Message{TsNs: uint64(i*2 + 1), Pid: pid, Fd: fd, IsRequest: false,
+			Res: httpStatusLine{status: 200}})
+		p.Close(pid, fd)
+	}
+
+	if len(p.pending) != 0 {
+		t.Errorf("leak after 1000 cycles: %d pending entries remain", len(p.pending))
+	}
+}
