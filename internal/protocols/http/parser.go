@@ -28,9 +28,8 @@ import (
 //   - "GET / HTTP/1.1"      → request
 //   - "HTTP/1.0 200 OK"     → response
 //
-// Body length comes from Content-Length. Chunked encoding is out of
-// scope for #14 (deferred). Messages with no Content-Length header are
-// treated as having a zero-byte body.
+// Body length comes from Content-Length or Transfer-Encoding: chunked.
+// Messages with neither are treated as having a zero-byte body.
 
 type httpParseState int
 
@@ -38,6 +37,10 @@ const (
 	stateNeedStartLine httpParseState = iota
 	stateNeedHeaders
 	stateNeedBody
+	stateNeedChunkSize // parse "HEX[;ext]\r\n"
+	stateNeedChunkData // drain chunk wire bytes (Feed-side accounting)
+	stateNeedChunkCRLF // consume "\r\n" after chunk data
+	stateNeedTrailer   // consume optional trailer headers + final "\r\n"
 )
 
 type direction int
@@ -90,6 +93,8 @@ type stream struct {
 	state         httpParseState
 	abandoned     bool // marked true if buf grew past maxBufBytes without progress
 	isRequest     bool // set when the start line is parsed
+	chunked       bool // Transfer-Encoding: chunked detected for this message
+	chunkRemaining int // wire bytes of current chunk still to drain
 	contentLength int
 	bodyRemaining int // wire bytes of body still to drain (not sample bytes)
 	req           httpRequestLine
@@ -223,6 +228,39 @@ func (p *Parser) Feed(e *events.Event) []Message {
 	wireBytes := int(e.Bytes)
 
 	var out []Message
+
+	// If the stream is mid-chunk, debit wire bytes from chunkRemaining first.
+	// Same rationale as stateNeedBody: body bytes are opaque, so we account
+	// for them by wire count rather than buffering. Both wireBytesConsumed and
+	// wireBytesSinceMessageStart are advanced by the debit so that the
+	// chunkDataArrived formula in advance() stays consistent across events.
+	if s.state == stateNeedChunkData {
+		debit := wireBytes
+		if debit > s.chunkRemaining {
+			debit = s.chunkRemaining
+		}
+		s.chunkRemaining -= debit
+		s.wireBytesConsumed += debit
+		s.wireBytesSinceMessageStart += debit
+		bodyInSample := debit
+		if bodyInSample > len(payload) {
+			bodyInSample = len(payload)
+		}
+		s.appendBody(payload[:bodyInSample])
+		if debit > bodyInSample {
+			s.bodyTruncated = true
+		}
+		if debit < len(payload) {
+			payload = payload[debit:]
+		} else {
+			payload = nil
+		}
+		wireBytes -= debit
+		if s.chunkRemaining > 0 {
+			return out
+		}
+		s.state = stateNeedChunkCRLF
+	}
 
 	// If the stream is mid-body, debit wire bytes from bodyRemaining first.
 	// We don't append the body to buf — body content is opaque to this
@@ -415,6 +453,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			s.buf = s.buf[consume:]
 			s.wireBytesConsumed += consume
 
+			var chunked bool
 			var headers []Header
 			for _, h := range strings.Split(headerBlock, "\r\n") {
 				colon := strings.Index(h, ":")
@@ -431,6 +470,10 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 					if n, err := strconv.Atoi(value); err == nil && n >= 0 {
 						s.contentLength = n
 					}
+				}
+				if strings.EqualFold(name, "Transfer-Encoding") &&
+					strings.EqualFold(strings.TrimSpace(value), "chunked") {
+					chunked = true
 				}
 			}
 
@@ -458,8 +501,10 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				}
 				if hasNoBody(s.res.status, method) {
 					s.contentLength = 0
+					chunked = false // no-body status overrides Transfer-Encoding
 				}
 			}
+			s.chunked = chunked
 
 			msg := Message{
 				TsNs:          s.messageStartTs,
@@ -473,6 +518,20 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				Headers:       headers,
 			}
 
+			if s.chunked {
+				// Chunked body: park the header-complete message and start
+				// consuming chunks. wireBytesConsumed already reflects the
+				// start-line + headers; stateNeedChunkSize uses the same
+				// wireBytesSinceMessageStart - wireBytesConsumed formula to
+				// know how many chunk-data wire bytes have already arrived.
+				s.pendingMsg = msg
+				s.pendingValid = true
+				s.state = stateNeedChunkSize
+				// Fall through to stateNeedChunkSize in the same loop iteration.
+				continue
+			}
+
+			// Content-Length path (existing logic).
 			// Recover how much of the body has already arrived in wire bytes.
 			// Buf positions consumed by start-line + headers map 1:1 to wire
 			// positions (a truncation gap inside that prefix would have
@@ -546,6 +605,118 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			// state machine only re-enters this branch defensively when an
 			// internal contract is violated.
 			return out
+
+		case stateNeedChunkSize:
+			// Parse "HEX[;ext]\r\n". Strip chunk extensions (RFC 7230 §4.1.1);
+			// they carry no information relevant to framing.
+			idx := bytes.Index(s.buf, []byte("\r\n"))
+			if idx < 0 {
+				return out
+			}
+			line := string(s.buf[:idx])
+			if semi := strings.Index(line, ";"); semi >= 0 {
+				line = line[:semi]
+			}
+			line = strings.TrimSpace(line)
+			size64, err := strconv.ParseInt(line, 16, 64)
+			if err != nil || size64 < 0 {
+				s.abandoned = true
+				s.buf = nil
+				return out
+			}
+			s.wireBytesConsumed += idx + 2
+			s.buf = s.buf[idx+2:]
+
+			if size64 == 0 {
+				s.state = stateNeedTrailer
+				continue
+			}
+			chunkSize := int(size64)
+
+			// How many wire bytes of this chunk's data have already arrived?
+			// wireBytesSinceMessageStart accumulates every event's Bytes;
+			// wireBytesConsumed tracks all framing + drained chunk data bytes.
+			// Their difference is the wire bytes still "unaccounted for",
+			// i.e. chunk data that has arrived but not yet been consumed.
+			chunkDataArrived := s.wireBytesSinceMessageStart - s.wireBytesConsumed
+			if chunkDataArrived < 0 {
+				chunkDataArrived = 0
+			}
+
+			// Capture the sample bytes available for this chunk from buf.
+			bodyInBuf := chunkSize
+			if bodyInBuf > len(s.buf) {
+				bodyInBuf = len(s.buf)
+			}
+			s.appendBody(s.buf[:bodyInBuf])
+
+			if chunkDataArrived >= chunkSize {
+				// All wire bytes of this chunk have arrived. The sample may
+				// be shorter than the chunk if any syscall exceeded MaxPayload.
+				if bodyInBuf < chunkSize {
+					s.bodyTruncated = true
+				}
+				s.buf = s.buf[bodyInBuf:]
+				s.wireBytesConsumed += chunkSize
+				s.state = stateNeedChunkCRLF
+			} else {
+				// Chunk still arriving across future events; Feed will debit
+				// the remainder via stateNeedChunkData wire-byte accounting.
+				if chunkDataArrived > bodyInBuf {
+					s.bodyTruncated = true
+				}
+				s.buf = nil
+				s.wireBytesConsumed += chunkDataArrived
+				s.chunkRemaining = chunkSize - chunkDataArrived
+				s.state = stateNeedChunkData
+				return out
+			}
+
+		case stateNeedChunkCRLF:
+			// Consume the "\r\n" that follows each chunk's data.
+			if len(s.buf) < 2 {
+				return out
+			}
+			if s.buf[0] != '\r' || s.buf[1] != '\n' {
+				s.abandoned = true
+				s.buf = nil
+				return out
+			}
+			s.wireBytesConsumed += 2
+			s.buf = s.buf[2:]
+			s.state = stateNeedChunkSize
+
+		case stateNeedTrailer:
+			// Trailer section: zero or more header fields followed by a blank
+			// line. We ignore trailer field values (RFC 7230 §4.1.2 limits
+			// what can appear there anyway).
+			var trailerConsumed int
+			if len(s.buf) >= 2 && s.buf[0] == '\r' && s.buf[1] == '\n' {
+				trailerConsumed = 2
+				s.buf = s.buf[2:]
+			} else {
+				tidx := bytes.Index(s.buf, []byte("\r\n\r\n"))
+				if tidx < 0 {
+					return out
+				}
+				trailerConsumed = tidx + 4
+				s.buf = s.buf[trailerConsumed:]
+			}
+			s.wireBytesConsumed += trailerConsumed
+			carryOver := s.wireBytesSinceMessageStart - s.wireBytesConsumed
+			if carryOver < 0 {
+				carryOver = 0
+			}
+			out = append(out, s.takeBody(s.pendingMsg))
+			s.chunked = false
+			s.chunkRemaining = 0
+			s.state = stateNeedStartLine
+			s.wireBytesSinceMessageStart = carryOver
+			s.wireBytesConsumed = 0
+			s.messageStartTs = 0
+			if len(s.buf) > 0 {
+				s.messageStartTs = currentEventTs
+			}
 		}
 	}
 }

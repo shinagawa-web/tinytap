@@ -1163,3 +1163,419 @@ func TestParserLeakSmokeTest(t *testing.T) {
 		t.Errorf("leak: %d pendingMethods entries remain after 1000 cycles", n)
 	}
 }
+
+// --- Transfer-Encoding: chunked ------------------------------------------
+
+// buildChunked assembles a valid chunked body from the given string chunks.
+// The returned byte slice is: each chunk as "HEX\r\n<data>\r\n", then "0\r\n\r\n".
+func buildChunked(chunks ...string) []byte {
+	var b []byte
+	for _, c := range chunks {
+		b = append(b, []byte(fmt.Sprintf("%x\r\n%s\r\n", len(c), c))...)
+	}
+	b = append(b, []byte("0\r\n\r\n")...)
+	return b
+}
+
+// Single-chunk chunked response delivered in one syscall.
+func TestChunkedSingleChunk(t *testing.T) {
+	body := buildChunked("hello")
+	wire := append([]byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"), body...)
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 1 || got[0].Res.status != 200 {
+		t.Fatalf("want 1×200, got %+v", got)
+	}
+	if string(got[0].BodySample) != "hello" {
+		t.Errorf("body = %q, want \"hello\"", got[0].BodySample)
+	}
+	if got[0].BodyTruncated {
+		t.Error("small body must not be truncated")
+	}
+}
+
+// Multiple chunks in one syscall — body is the concatenation of all chunks.
+func TestChunkedMultipleChunks(t *testing.T) {
+	body := buildChunked("foo", "bar", "baz")
+	wire := append([]byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"), body...)
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 1 {
+		t.Fatalf("want 1 message, got %d", len(got))
+	}
+	if string(got[0].BodySample) != "foobarbaz" {
+		t.Errorf("body = %q, want \"foobarbaz\"", got[0].BodySample)
+	}
+}
+
+// Zero-length (empty) chunked body: "0\r\n\r\n" immediately after headers.
+func TestChunkedEmptyBody(t *testing.T) {
+	wire := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 1 || got[0].Res.status != 200 {
+		t.Fatalf("want 1×200, got %+v", got)
+	}
+	if len(got[0].BodySample) != 0 {
+		t.Errorf("empty chunked body: want 0 bytes, got %d", len(got[0].BodySample))
+	}
+}
+
+// Chunk size line with an extension (";q=1") — the extension is stripped.
+func TestChunkedChunkExtensionStripped(t *testing.T) {
+	wire := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+		"5;q=1\r\nhello\r\n0\r\n\r\n")
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 1 || string(got[0].BodySample) != "hello" {
+		t.Fatalf("chunk extension: want body=\"hello\", got %+v", got)
+	}
+}
+
+// Trailer header after the last chunk is accepted and consumed without crashing.
+func TestChunkedTrailerHeader(t *testing.T) {
+	wire := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+		"5\r\nhello\r\n0\r\nX-Checksum: abc123\r\n\r\n")
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 1 || string(got[0].BodySample) != "hello" {
+		t.Fatalf("trailer: want 1 message body=hello, got %+v", got)
+	}
+}
+
+// Chunk boundary split across two syscalls: chunk data arrives in a second event.
+func TestChunkedChunkSplitAcrossSyscalls(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+
+	// First event: headers + chunk size line + first part of data.
+	// "hello world" = 11 bytes = 0xb.
+	part1 := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nb\r\nhello")
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(part1)), part1))
+	if len(got) != 0 {
+		t.Fatalf("mid-chunk: want no messages yet, got %+v", got)
+	}
+
+	// Second event: remainder of chunk data + CRLF + terminator.
+	part2 := []byte(" world\r\n0\r\n\r\n")
+	got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(part2)), part2))
+	if len(got) != 1 || string(got[0].BodySample) != "hello world" {
+		t.Fatalf("after completion: want body=\"hello world\", got %+v", got)
+	}
+}
+
+// Large chunk that forces stateNeedChunkData wire-byte debiting across events.
+func TestChunkedLargeChunkAcrossMultipleEvents(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+
+	// Headers + chunk size for 1000 bytes.
+	hdr := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3e8\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(hdr)), hdr))
+	if len(got) != 0 {
+		t.Fatalf("headers+size: want 0 messages, got %d", len(got))
+	}
+
+	// Three events of 333 + 333 + 334 wire bytes.
+	for i, n := range []int{333, 333, 334} {
+		chunk := bytes.Repeat([]byte("X"), n)
+		got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(n), chunk))
+		if i < 2 && len(got) != 0 {
+			t.Fatalf("chunk event %d: want 0 messages, got %d", i, len(got))
+		}
+	}
+
+	// Final event: chunk CRLF + terminator.
+	tail := []byte("\r\n0\r\n\r\n")
+	got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(tail)), tail))
+	if len(got) != 1 || got[0].Res.status != 200 {
+		t.Fatalf("after terminator: want 1×200, got %+v", got)
+	}
+}
+
+// Pipelined chunked response followed by a Content-Length response.
+func TestChunkedFollowedByContentLengthResponse(t *testing.T) {
+	body := buildChunked("hello")
+	resp1 := append([]byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"), body...)
+	resp2 := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+	wire := append(resp1, resp2...)
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 2 || got[0].Res.status != 200 || got[1].Res.status != 204 {
+		t.Fatalf("want [200, 204], got %+v", got)
+	}
+}
+
+// Chunked request body: POST with Transfer-Encoding: chunked.
+func TestChunkedRequestBody(t *testing.T) {
+	body := buildChunked(`{"name":"Alice"}`)
+	wire := append([]byte("POST /users HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"), body...)
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 1 || !got[0].IsRequest {
+		t.Fatalf("want 1 request, got %+v", got)
+	}
+	if string(got[0].BodySample) != `{"name":"Alice"}` {
+		t.Errorf("req body = %q, want json", got[0].BodySample)
+	}
+}
+
+// Chunked response to a HEAD request: no body (RFC 7230 §3.3.3).
+func TestChunkedHeadResponseHasNoBody(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+	req := []byte("HEAD /file HTTP/1.1\r\nHost: x\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(req)), req))
+
+	// HEAD response with Transfer-Encoding but no body.
+	resp := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+	next := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+	wire := append(resp, next...)
+	got := p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(wire)), wire))
+	if len(got) != 2 || got[0].Res.status != 200 || got[1].Res.status != 204 {
+		t.Fatalf("HEAD+chunked: want [200, 204], got %+v", got)
+	}
+}
+
+// Malformed chunk size (non-hex characters) causes the stream to be abandoned.
+func TestChunkedMalformedChunkSizeAbandonsStream(t *testing.T) {
+	wire := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nZZZZ\r\nhello\r\n0\r\n\r\n")
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 0 {
+		t.Fatalf("malformed chunk size: want no events, got %+v", got)
+	}
+	// Further data on the same stream must be ignored.
+	next := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	got = p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(next)), next))
+	if len(got) != 0 {
+		t.Fatalf("after malformed chunk: abandoned stream should emit nothing, got %+v", got)
+	}
+}
+
+// Malformed chunk terminator (not "\r\n") causes the stream to be abandoned.
+func TestChunkedMalformedChunkCRLFAbandonsStream(t *testing.T) {
+	// Chunk size says 5, data is "hello", but terminator is "\n\n" not "\r\n".
+	wire := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\n\n0\r\n\r\n")
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire))
+	if len(got) != 0 {
+		t.Fatalf("malformed CRLF: want no events, got %+v", got)
+	}
+}
+
+// Chunked body truncated by the sample cap: large chunk data beyond MaxPayload
+// is flagged as truncated.
+func TestChunkedBodyTruncatedBySampleCap(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+
+	// Headers + chunk size for 500 bytes.
+	hdr := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1f4\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(hdr)), hdr))
+
+	// Single event: 500 wire bytes but sample capped at MaxPayload (256).
+	body := bytes.Repeat([]byte("X"), 500)
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, 500, body[:256]))
+	if len(got) != 0 {
+		t.Fatalf("mid-chunk (500 wire, 256 sample): want 0 messages, got %d", len(got))
+	}
+
+	// Terminator arrives in the next event.
+	tail := []byte("\r\n0\r\n\r\n")
+	got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(tail)), tail))
+	if len(got) != 1 {
+		t.Fatalf("want 1 message after terminator, got %d", len(got))
+	}
+	if !got[0].BodyTruncated {
+		t.Error("chunked body larger than sample cap must be truncated")
+	}
+}
+
+// --- Chunked edge cases (defensive guards and split framing) ---------------
+
+// Chunk-size line split across two syscalls: "\r\n" arrives in the second event.
+// Covers the stateNeedChunkSize idx < 0 guard.
+func TestChunkedChunkSizeLineSplitAcrossSyscalls(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+
+	// First event: headers + "5" (partial chunk-size, no \r\n yet).
+	part1 := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5")
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(part1)), part1))
+	if len(got) != 0 {
+		t.Fatalf("partial chunk-size line: want 0 messages, got %+v", got)
+	}
+
+	// Second event: "\r\nhello\r\n0\r\n\r\n" completes the chunk.
+	part2 := []byte("\r\nhello\r\n0\r\n\r\n")
+	got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(part2)), part2))
+	if len(got) != 1 || string(got[0].BodySample) != "hello" {
+		t.Fatalf("after chunk-size completion: want body=\"hello\", got %+v", got)
+	}
+}
+
+// All chunk wire bytes arrived in one oversized syscall, sample too short.
+// Covers bodyTruncated in the chunkDataArrived >= chunkSize branch (line 656)
+// and the stateNeedChunkCRLF len < 2 guard (line 677).
+func TestChunkedAllWireBytesArrivedSampleTooShort(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+
+	// Event 1: headers alone (fully sampled).
+	hdr := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(hdr)), hdr))
+
+	// Event 2: chunk size "1f4\r\n" (5 bytes) + 500 bytes of data, but sample
+	// is capped at 256 — so chunkDataArrived (500) >= chunkSize (500) but
+	// bodyInBuf (251) < chunkSize (500), triggering the truncation flag.
+	// After consuming all sample bytes the buf is empty, so stateNeedChunkCRLF
+	// fires the len < 2 guard and returns immediately.
+	chunkHdr := []byte("1f4\r\n")
+	body := bytes.Repeat([]byte("X"), 500)
+	sample := append(chunkHdr, body[:251]...) // 256 bytes total sample
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(chunkHdr)+len(body)), sample))
+	if len(got) != 0 {
+		t.Fatalf("mid-chunk: want 0 messages, got %d", len(got))
+	}
+
+	// Event 3: CRLF after chunk + terminating chunk.
+	tail := []byte("\r\n0\r\n\r\n")
+	got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(tail)), tail))
+	if len(got) != 1 {
+		t.Fatalf("after terminator: want 1 message, got %d", len(got))
+	}
+	if !got[0].BodyTruncated {
+		t.Error("body must be truncated when sample < chunk wire size")
+	}
+}
+
+// Chunk partially arrived and wire bytes of chunk exceed sample bytes.
+// Covers bodyTruncated in the chunkDataArrived < chunkSize else-branch (line 665).
+func TestChunkedPartialChunkWireExceedsSample(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+
+	// Event 1: headers alone.
+	hdr := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(hdr)), hdr))
+
+	// Event 2: chunk size "3e8\r\n" (1000 bytes) + 200 wire bytes of data, but
+	// sample carries only chunk-size bytes + 95 data bytes (100 total).
+	// chunkDataArrived = 200, chunkSize = 1000, bodyInBuf = 95.
+	// Since 200 > 95, bodyTruncated is set in the else branch.
+	chunkHdr := []byte("3e8\r\n")
+	data := bytes.Repeat([]byte("Y"), 200)
+	sample := append(chunkHdr, data[:95]...) // 100 bytes total sample
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, 205, sample))
+	if len(got) != 0 {
+		t.Fatalf("mid-large-chunk: want 0 messages, got %d", len(got))
+	}
+
+	// Drain the remaining 800 wire bytes across further events.
+	remaining := 1000 - 200
+	chunk := bytes.Repeat([]byte("Z"), 200)
+	for remaining > 0 {
+		n := 200
+		if n > remaining {
+			n = remaining
+		}
+		got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(n), chunk[:n]))
+		remaining -= n
+	}
+
+	// Terminator.
+	tail := []byte("\r\n0\r\n\r\n")
+	got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(tail)), tail))
+	if len(got) != 1 {
+		t.Fatalf("after terminator: want 1 message, got %d", len(got))
+	}
+	if !got[0].BodyTruncated {
+		t.Error("body must be truncated when wire bytes of partial chunk exceed sample bytes")
+	}
+}
+
+// Trailer section split across two syscalls.
+// Covers the stateNeedTrailer tidx < 0 guard (line 699).
+func TestChunkedTrailerSplitAcrossSyscalls(t *testing.T) {
+	p := NewParser()
+	pid, fd := uint32(1), int32(1)
+
+	// Event 1: headers + chunk + zero-chunk + partial trailer (no final \r\n).
+	// "X-Chk: abc\r\n" arrives but the closing empty line does not.
+	part1 := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+		"5\r\nhello\r\n0\r\nX-Chk: abc\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(part1)), part1))
+	if len(got) != 0 {
+		t.Fatalf("partial trailer: want 0 messages, got %+v", got)
+	}
+
+	// Event 2: closing empty line completes the trailer section.
+	part2 := []byte("\r\n")
+	got = p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(part2)), part2))
+	if len(got) != 1 || string(got[0].BodySample) != "hello" {
+		t.Fatalf("after trailer completion: want body=\"hello\", got %+v", got)
+	}
+}
+
+// Understated Bytes field in the BPF event causes chunkDataArrived to go
+// negative inside stateNeedChunkSize; the clamp must hold it at zero.
+// Mirrors TestFeedWireBytesLessThanPayloadClampsBodyAlready for chunked paths.
+func TestChunkedWireBytesUnderstatedClampsChunkDataArrived(t *testing.T) {
+	// Headers + chunk-size line fit in the payload but Bytes is set to 3,
+	// far less than the actual byte count. After headers are consumed,
+	// wireBytesConsumed > wireBytesSinceMessageStart, so chunkDataArrived < 0.
+	hdr := "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n"
+	e := &events.Event{
+		Pid:        1,
+		Fd:         1,
+		Bytes:      3, // severely understated
+		PayloadLen: uint32(len(hdr)),
+		Syscall:    events.SyscallWrite,
+	}
+	copy(e.Payload[:], hdr)
+
+	p := NewParser()
+	_ = p.Feed(e) // must not panic; chunkDataArrived clamp applied
+}
+
+// Understated Bytes field causes carryOver to go negative inside stateNeedTrailer;
+// the clamp must hold it at zero and the message must still be emitted.
+func TestChunkedWireBytesUnderstatedClampsCarryOver(t *testing.T) {
+	// Complete minimal chunked response in one payload, but Bytes = 5.
+	// wireBytesConsumed races past wireBytesSinceMessageStart, so
+	// carryOver = wireBytesSinceMessageStart - wireBytesConsumed < 0.
+	payload := "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+	e := &events.Event{
+		Pid:        2,
+		Fd:         2,
+		Bytes:      5, // understated
+		PayloadLen: uint32(len(payload)),
+		Syscall:    events.SyscallWrite,
+	}
+	copy(e.Payload[:], payload)
+
+	p := NewParser()
+	got := p.Feed(e) // must not panic; carryOver clamp applied
+	if len(got) != 1 || got[0].Res.status != 200 {
+		t.Fatalf("understated Bytes + empty chunked body: want 1×200, got %+v", got)
+	}
+}
+
+// TsNs for a pipelined message after a chunked response uses the correct event ts.
+func TestChunkedPipelinedTsNs(t *testing.T) {
+	body := buildChunked("hello")
+	resp1 := append([]byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"), body...)
+	resp2 := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+	wire := append(resp1, resp2...)
+	p := NewParser()
+	ev := makeEvent(events.SyscallWrite, 1, 1, uint32(len(wire)), wire)
+	ev.TsNs = 99_000_000_000
+	got := p.Feed(ev)
+	if len(got) != 2 {
+		t.Fatalf("want 2 events, got %d", len(got))
+	}
+	if got[0].TsNs != 99_000_000_000 || got[1].TsNs != 99_000_000_000 {
+		t.Errorf("TsNs: got [%d, %d], want both 99_000_000_000", got[0].TsNs, got[1].TsNs)
+	}
+}
