@@ -89,6 +89,8 @@ sudo ./tinytap
 2. Open PR against `main`
 3. One PR per issue
 
+Run `make install` once per worktree after cloning or creating a new worktree — it installs the pre-push hook that runs lint, tests, and coverage checks before every push.
+
 ## Terminology
 
 For socket I/O, prefer **process-relative** vocabulary in code comments, commit messages, PR descriptions, and issues:
