@@ -131,6 +131,28 @@ func TestPairerCarriesBodies(t *testing.T) {
 	}
 }
 
+// For chunked responses, ContentLength is zero (no Content-Length header), so
+// ResBytes must fall back to len(BodySample) to reflect the sampled body size.
+func TestPairerChunkedResBytes(t *testing.T) {
+	p := NewPairer()
+	pid, fd := uint32(10), int32(5)
+	req := Message{TsNs: 1, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/", version: "HTTP/1.1"}}
+	// ContentLength == 0 mimics a chunked response (no Content-Length header).
+	res := Message{TsNs: 2, Pid: pid, Fd: fd, IsRequest: false,
+		Res:           httpStatusLine{status: 200},
+		ContentLength: 0,
+		BodySample:    []byte("Hello chunked world!")}
+	p.Push(req)
+	pe, ok := p.Push(res)
+	if !ok {
+		t.Fatal("want paired event")
+	}
+	if pe.ResBytes != 20 {
+		t.Errorf("ResBytes = %d, want 20 (len of chunked body sample)", pe.ResBytes)
+	}
+}
+
 // Close returns an abandoned PairedEvent for each pending request and removes
 // them; a response arriving after Close must not pair.
 func TestPairerCloseEmitsAbandoned(t *testing.T) {

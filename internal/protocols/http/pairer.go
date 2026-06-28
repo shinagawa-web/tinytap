@@ -36,23 +36,23 @@ type timedMessage struct {
 // When Abandoned is true the event represents a request that never received
 // a response; Status is 0 and AbandonReason describes why.
 type PairedEvent struct {
-	ReqTsNs      uint64        // request first-byte timestamp (BPF ktime ns)
-	Latency      time.Duration // res.TsNs - req.TsNs, or elapsed wall time for abandoned
-	Pid          uint32
-	Fd           int32
-	Comm         string
-	Method       string
-	Path         string
-	ReqVersion   string // request start-line HTTP version (e.g. "HTTP/1.1")
-	Status       int
-	Reason       string   // response reason phrase (e.g. "OK", "Not Found")
-	ResVersion   string   // response start-line HTTP version
-	ResBytes     int      // response body bytes (Content-Length, post-no-body override)
-	ReqBytes     int      // request body bytes (Content-Length, post-no-body override)
-	ReqHeaders   []Header // request headers in on-wire order
-	ResHeaders   []Header // response headers in on-wire order
-	Abandoned    bool     // true when the request never received a response
-	AbandonReason string  // AbandonReasonClosed or AbandonReasonTimeout
+	ReqTsNs       uint64        // request first-byte timestamp (BPF ktime ns)
+	Latency       time.Duration // res.TsNs - req.TsNs, or elapsed wall time for abandoned
+	Pid           uint32
+	Fd            int32
+	Comm          string
+	Method        string
+	Path          string
+	ReqVersion    string // request start-line HTTP version (e.g. "HTTP/1.1")
+	Status        int
+	Reason        string   // response reason phrase (e.g. "OK", "Not Found")
+	ResVersion    string   // response start-line HTTP version
+	ResBytes      int      // response body bytes: Content-Length when present, else len(ResBody) (chunked)
+	ReqBytes      int      // request body bytes: Content-Length when present, else len(ReqBody) (chunked)
+	ReqHeaders    []Header // request headers in on-wire order
+	ResHeaders    []Header // response headers in on-wire order
+	Abandoned     bool     // true when the request never received a response
+	AbandonReason string   // AbandonReasonClosed or AbandonReasonTimeout
 	// Captured body samples (#35). Empty when the message carried no body.
 	// *Truncated marks that some body bytes were lost (sample cap or budget).
 	ReqBody          []byte
@@ -105,8 +105,8 @@ func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 		Status:     e.Res.status,
 		Reason:     e.Res.reason,
 		ResVersion: e.Res.version,
-		ResBytes:   e.ContentLength,
-		ReqBytes:   req.ContentLength,
+		ResBytes:   bodyBytes(e.ContentLength, e.BodySample),
+		ReqBytes:   bodyBytes(req.ContentLength, req.BodySample),
 		ReqHeaders: req.Headers,
 		ResHeaders: e.Headers,
 
@@ -115,6 +115,15 @@ func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 		ResBody:          e.BodySample,
 		ResBodyTruncated: e.BodyTruncated,
 	}, true
+}
+
+// bodyBytes returns cl when cl is non-zero (Content-Length path), otherwise
+// falls back to len(sample) for chunked responses that carry no Content-Length.
+func bodyBytes(cl int, sample []byte) int {
+	if cl != 0 {
+		return cl
+	}
+	return len(sample)
 }
 
 // Close emits an abandoned PairedEvent for every pending request on the given
