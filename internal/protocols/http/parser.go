@@ -9,6 +9,7 @@ package http
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -635,13 +636,14 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				s.state = stateNeedTrailer
 				continue
 			}
-			chunkSize := int(size64)
-			if chunkSize < 0 {
-				// size64 overflowed int on this platform (32-bit): abandon.
+			if size64 > math.MaxInt32 {
+				// Chunk sizes above MaxInt32 are implausible and would overflow
+				// int on 32-bit platforms; abandon to avoid a potential panic.
 				s.abandoned = true
 				s.buf = nil
 				return out
 			}
+			chunkSize := int(size64)
 
 			// How many wire bytes of this chunk's data have already arrived?
 			// wireBytesSinceMessageStart accumulates every event's Bytes;
