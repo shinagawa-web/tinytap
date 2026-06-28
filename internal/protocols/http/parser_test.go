@@ -1579,3 +1579,72 @@ func TestChunkedPipelinedTsNs(t *testing.T) {
 		t.Errorf("TsNs: got [%d, %d], want both 99_000_000_000", got[0].TsNs, got[1].TsNs)
 	}
 }
+
+// Transfer-Encoding may be a comma-separated list (RFC 7230 allows
+// "gzip, chunked"). The parser must detect "chunked" anywhere in the list.
+func TestChunkedTransferEncodingCommaList(t *testing.T) {
+	p := NewParser()
+	payload := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n" +
+		"5\r\nhello\r\n0\r\n\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(payload)), payload))
+	if len(got) != 1 || string(got[0].BodySample) != "hello" {
+		t.Fatalf("want 1 message with body=\"hello\", got %+v", got)
+	}
+}
+
+// Chunk sizes larger than MaxInt32 would overflow int on 32-bit platforms.
+// The guard must catch negative chunkSize and abandon without panicking.
+// On 64-bit the guard does not trigger but the stream must still not crash.
+func TestChunkedOversizedChunkSizeAbandons(t *testing.T) {
+	p := NewParser()
+	// 0x80000000 = 2147483648, overflows int32 to -2147483648 on 32-bit.
+	payload := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n80000000\r\n")
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(payload)), payload))
+	if len(got) != 0 {
+		t.Fatalf("want 0 messages for oversized chunk, got %d", len(got))
+	}
+	// must not panic
+}
+
+// When chunk data exactly fills the MaxPayload sample cap, the trailing "\r\n"
+// arrives on the wire but is dropped from the sample. The parser must abandon
+// rather than stall waiting for bytes that will never appear in s.buf.
+func TestChunkedCRLFDroppedByMaxPayloadAbandons(t *testing.T) {
+	headers := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+	chunkLine := []byte("5\r\n")
+	chunkData := []byte("hello")
+	crlf := []byte("\r\n")
+	// Wire carries headers + chunk-size + chunk-data + CRLF, but sample
+	// stops after chunk-data (CRLF is wire-only).
+	sample := append(append(headers, chunkLine...), chunkData...)
+	wireBytes := uint32(len(sample) + len(crlf))
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, wireBytes, sample))
+	if len(got) != 0 {
+		t.Fatalf("want 0 messages, got %d", len(got))
+	}
+	// Stream must be abandoned — further events on same fd are silently dropped.
+	next := []byte("0\r\n\r\n")
+	got = p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(next)), next))
+	if len(got) != 0 {
+		t.Fatalf("abandoned stream must not emit messages, got %d", len(got))
+	}
+}
+
+// When the trailer terminator arrives on the wire but is dropped by the
+// MaxPayload cap, the parser must abandon rather than stall.
+func TestChunkedTrailerTerminatorDroppedByMaxPayloadAbandons(t *testing.T) {
+	headers := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+	termChunk := []byte("0\r\n")
+	trailerField := []byte("X-T: v\r\n")
+	terminator := []byte("\r\n")
+	// Wire carries headers + zero-chunk + trailer-field + blank-line, but
+	// sample stops after trailer-field (terminating blank line is wire-only).
+	sample := append(append(headers, termChunk...), trailerField...)
+	wireBytes := uint32(len(sample) + len(terminator))
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, wireBytes, sample))
+	if len(got) != 0 {
+		t.Fatalf("want 0 messages, got %d", len(got))
+	}
+}

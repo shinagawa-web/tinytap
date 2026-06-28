@@ -471,9 +471,13 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 						s.contentLength = n
 					}
 				}
-				if strings.EqualFold(name, "Transfer-Encoding") &&
-					strings.EqualFold(strings.TrimSpace(value), "chunked") {
-					chunked = true
+				if strings.EqualFold(name, "Transfer-Encoding") {
+					for _, enc := range strings.Split(value, ",") {
+						if strings.EqualFold(strings.TrimSpace(enc), "chunked") {
+							chunked = true
+							break
+						}
+					}
 				}
 			}
 
@@ -632,6 +636,12 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				continue
 			}
 			chunkSize := int(size64)
+			if chunkSize < 0 {
+				// size64 overflowed int on this platform (32-bit): abandon.
+				s.abandoned = true
+				s.buf = nil
+				return out
+			}
 
 			// How many wire bytes of this chunk's data have already arrived?
 			// wireBytesSinceMessageStart accumulates every event's Bytes;
@@ -675,6 +685,13 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 		case stateNeedChunkCRLF:
 			// Consume the "\r\n" that follows each chunk's data.
 			if len(s.buf) < 2 {
+				// If wire bytes exceed what the sample captured, the CRLF
+				// arrived on the wire but was dropped by the MaxPayload cap
+				// and will never appear in s.buf — abandon to avoid a stall.
+				if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
+					s.abandoned = true
+					s.buf = nil
+				}
 				return out
 			}
 			if s.buf[0] != '\r' || s.buf[1] != '\n' {
@@ -697,6 +714,14 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			} else {
 				tidx := bytes.Index(s.buf, []byte("\r\n\r\n"))
 				if tidx < 0 {
+					// Terminator not in sample. If wire bytes exceed what the
+					// sample captured, the terminator was dropped by the
+					// MaxPayload cap and will never appear in s.buf — abandon
+					// to avoid a permanent stall.
+					if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
+						s.abandoned = true
+						s.buf = nil
+					}
 					return out
 				}
 				trailerConsumed = tidx + 4
