@@ -19,18 +19,31 @@ import (
 )
 
 // collectSink gathers PairedEvents into a buffered channel for assertion.
+// It filters to a single pid so that unrelated system-wide HTTP traffic
+// (the BPF probes capture all processes when ownPid=0) does not fill the
+// channel and deadlock the capture loop, which calls OnPaired while holding
+// an internal mutex.  The enqueue is non-blocking for the same reason.
 type collectSink struct {
-	ch chan httpproto.PairedEvent
+	pid uint32
+	ch  chan httpproto.PairedEvent
 }
 
-func newCollectSink() *collectSink {
-	return &collectSink{ch: make(chan httpproto.PairedEvent, 128)}
+func newCollectSink(pid uint32) *collectSink {
+	return &collectSink{pid: pid, ch: make(chan httpproto.PairedEvent, 128)}
 }
 
-func (s *collectSink) OnEvent(*events.Event)               {}
-func (s *collectSink) OnMessage(httpproto.Message)         {}
-func (s *collectSink) OnPaired(pe httpproto.PairedEvent)   { s.ch <- pe }
-func (s *collectSink) Close() error                        { return nil }
+func (s *collectSink) OnEvent(*events.Event)     {}
+func (s *collectSink) OnMessage(httpproto.Message) {}
+func (s *collectSink) OnPaired(pe httpproto.PairedEvent) {
+	if pe.Pid != s.pid {
+		return
+	}
+	select {
+	case s.ch <- pe:
+	default:
+	}
+}
+func (s *collectSink) Close() error { return nil }
 
 var _ output.Sink = (*collectSink)(nil)
 
@@ -68,7 +81,7 @@ func TestE2ECapturePipeline(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = tt.Close() })
 
-	sink := newCollectSink()
+	sink := newCollectSink(uint32(os.Getpid()))
 	// sweepInterval=100ms, pendingTimeout=400ms: the abandoned sub-test relies
 	// on the sweeper; the other sub-tests complete long before 400ms.
 	go captureWithOptions(tt.Reader, sink, 100*time.Millisecond, 400*time.Millisecond)
@@ -123,8 +136,10 @@ func TestE2ECapturePipeline(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			// Omitting Content-Length causes net/http to use chunked transfer encoding.
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(chunkBody)) //nolint:errcheck
-			w.(http.Flusher).Flush()
+			_, _ = w.Write([]byte(chunkBody))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
 		}))
 		defer srv.Close()
 
