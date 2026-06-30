@@ -131,14 +131,17 @@ type model struct {
 	rows         []row
 	width        int
 	height       int
-	selected     int  // index into rows of the ▸ row; 0 when rows is empty
-	top          int  // index of the first visible row (the scroll anchor)
+	selected     int  // display index (filtered or raw) of the ▸ row; 0 when empty
+	top          int  // display index of the first visible row (the scroll anchor)
 	follow       bool // when true, selection tracks the newest row as rows arrive
 	detailOpen   bool // when true, the bottom detail panel is shown for the selection
 	panelFocus   bool // when true (and detailOpen), keys scroll the panel instead of the table
 	detailOffset int  // first visible line of the panel body when its content overflows
 	hexMode      bool // when true, body blocks render as a hex dump instead of decoded text
 	bodyBytes    int  // total retained body bytes across rows, bounded by sessionBodyBudget
+	filterMode   bool   // when true, keystrokes feed the filter input instead of navigating
+	filterTerm   string // live filter text; empty means all rows are visible
+	filtered     []int  // indices into rows for matching rows; nil when filterTerm is empty
 }
 
 func newModel(width, height int) model {
@@ -155,89 +158,115 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "tab":
-			// Toggle focus between the table and the open detail panel. A no-op
-			// when the panel is closed (there is nothing to drill into).
-			if m.detailOpen {
-				m.panelFocus = !m.panelFocus
-				if m.panelFocus {
-					// You came to read the current row — stop the tail from
-					// moving the selection out from under you.
-					m.follow = false
-				} else {
-					m.rearmFollowAtBottom()
+		if m.filterMode {
+			switch msg.Type {
+			case tea.KeyCtrlC:
+				return m, tea.Quit
+			case tea.KeyEsc:
+				m.filterMode = false
+				m.filterTerm = ""
+				m.rebuildFilter()
+			case tea.KeyEnter:
+				m.filterMode = false
+			case tea.KeyBackspace, tea.KeyDelete:
+				if r := []rune(m.filterTerm); len(r) > 0 {
+					m.filterTerm = string(r[:len(r)-1])
+					m.rebuildFilter()
 				}
+			case tea.KeyRunes:
+				m.filterTerm += string(msg.Runes)
+				m.rebuildFilter()
 			}
-		case "enter":
-			// Toggle the detail panel for the current selection. Navigation keys
-			// keep working while it is open.
-			m.detailOpen = !m.detailOpen
-			if !m.detailOpen {
-				m.panelFocus = false
+		} else {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "tab":
+				// Toggle focus between the table and the open detail panel. A no-op
+				// when the panel is closed (there is nothing to drill into).
+				if m.detailOpen {
+					m.panelFocus = !m.panelFocus
+					if m.panelFocus {
+						// You came to read the current row — stop the tail from
+						// moving the selection out from under you.
+						m.follow = false
+					} else {
+						m.rearmFollowAtBottom()
+					}
+				}
+			case "enter":
+				// Toggle the detail panel for the current selection. Navigation keys
+				// keep working while it is open.
+				m.detailOpen = !m.detailOpen
+				if !m.detailOpen {
+					m.panelFocus = false
+					m.detailOffset = 0
+				}
+			case "esc":
+				// Step out one level: panel focus → table focus (panel stays open),
+				// table focus → close panel, close panel → clear filter.
+				switch {
+				case m.detailOpen && m.panelFocus:
+					m.panelFocus = false
+					m.rearmFollowAtBottom()
+				case m.detailOpen:
+					m.detailOpen = false
+					m.detailOffset = 0
+				case m.filterTerm != "":
+					m.filterTerm = ""
+					m.rebuildFilter()
+				}
+			case "up", "k":
+				if m.panelFocus {
+					m.detailOffset-- // clamped below
+					break
+				}
+				// Moving off the newest row means the user wants to inspect, so
+				// stop letting new rows steal the selection.
+				if m.selected > 0 {
+					m.selected--
+				}
+				m.follow = false
+				m.detailOffset = 0 // the selection changed, so the panel content did too
+			case "down", "j":
+				if m.panelFocus {
+					m.detailOffset++ // clamped below
+					break
+				}
+				if m.selected < m.displayCount()-1 {
+					m.selected++
+				}
+				// Re-arm follow once the selection is back on the newest row.
+				if m.selected == m.displayCount()-1 {
+					m.follow = true
+				}
 				m.detailOffset = 0
-			}
-		case "esc":
-			// Step out one level: panel focus → table focus (panel stays open),
-			// table focus → close. A no-op in the table-only state.
-			switch {
-			case m.detailOpen && m.panelFocus:
-				m.panelFocus = false
-				m.rearmFollowAtBottom()
-			case m.detailOpen:
-				m.detailOpen = false
+			case "g":
+				if m.panelFocus {
+					m.detailOffset = 0
+					break
+				}
+				m.selected = 0
+				m.follow = false
 				m.detailOffset = 0
-			}
-		case "up", "k":
-			if m.panelFocus {
-				m.detailOffset-- // clamped below
-				break
-			}
-			// Moving off the newest row means the user wants to inspect, so
-			// stop letting new rows steal the selection.
-			if m.selected > 0 {
-				m.selected--
-			}
-			m.follow = false
-			m.detailOffset = 0 // the selection changed, so the panel content did too
-		case "down", "j":
-			if m.panelFocus {
-				m.detailOffset++ // clamped below
-				break
-			}
-			if m.selected < len(m.rows)-1 {
-				m.selected++
-			}
-			// Re-arm follow once the selection is back on the newest row.
-			if m.selected == len(m.rows)-1 {
+			case "G":
+				if m.panelFocus {
+					m.detailOffset = m.maxDetailOffset()
+					break
+				}
+				if m.displayCount() > 0 {
+					m.selected = m.displayCount() - 1
+				}
 				m.follow = true
-			}
-			m.detailOffset = 0
-		case "g":
-			if m.panelFocus {
 				m.detailOffset = 0
-				break
+			case "b", "h":
+				// Global toggle: flip every body block between decoded text and a
+				// hex dump at once (#35). Sticky as the selection moves. The line
+				// count can change with the mode, so re-clamp the panel scroll below.
+				m.hexMode = !m.hexMode
+			case "/":
+				m.filterMode = true
 			}
-			m.selected = 0
-			m.follow = false
-			m.detailOffset = 0
-		case "G":
-			if m.panelFocus {
-				m.detailOffset = m.maxDetailOffset()
-				break
-			}
-			if len(m.rows) > 0 {
-				m.selected = len(m.rows) - 1
-			}
-			m.follow = true
-			m.detailOffset = 0
-		case "b", "h":
-			// Global toggle: flip every body block between decoded text and a
-			// hex dump at once (#35). Sticky as the selection moves. The line
-			// count can change with the mode, so re-clamp the panel scroll below.
-			m.hexMode = !m.hexMode
 		}
 	case rowMsg:
 		nr := row(msg)
@@ -246,22 +275,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.rows) < maxRows {
 			m.rows = append(m.rows, nr)
 		} else {
+			// Check before the drop whether the about-to-be-removed row is
+			// currently visible — needed to adjust the display-index selection.
+			droppedVisible := m.filterTerm == "" || rowMatchesFilter(m.rows[0], strings.ToLower(m.filterTerm))
 			m.bodyBytes -= m.rows[0].bodyBytes() // the row about to fall off
 			copy(m.rows, m.rows[1:])
 			m.rows[maxRows-1] = nr
-			// The drop slid every row down one index. While inspecting, follow
-			// the same logical row down; if that row was the one dropped, clamp
-			// to the new oldest.
-			if !m.follow && m.selected > 0 {
+			// The drop slid every raw index down by one. If the removed row was
+			// visible and we are inspecting (not following), the display positions
+			// also shift, so decrement the display-index selection to stay on the
+			// same logical row.
+			if !m.follow && m.selected > 0 && droppedVisible {
 				m.selected--
 			}
 		}
+		m.rebuildFilter()
 		m.bodyBytes += nr.bodyBytes()
 		m.evictBodiesOverBudget()
 		if m.follow {
 			// Following re-pins the selection to the new tail, so the panel is
 			// showing a different exchange — reset its scroll.
-			m.selected = len(m.rows) - 1
+			if dc := m.displayCount(); dc > 0 {
+				m.selected = dc - 1
+			}
 			m.detailOffset = 0
 		}
 	}
@@ -276,7 +312,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // the newest row — used when focus returns to the table, so stepping back out of
 // the panel at the tail picks the live stream back up.
 func (m *model) rearmFollowAtBottom() {
-	if len(m.rows) > 0 && m.selected == len(m.rows)-1 {
+	if dc := m.displayCount(); dc > 0 && m.selected == dc-1 {
 		m.follow = true
 	}
 }
@@ -284,10 +320,10 @@ func (m *model) rearmFollowAtBottom() {
 // detailLineCount is the full, unclipped height of the selected row's detail
 // content (0 when there are no rows).
 func (m model) detailLineCount() int {
-	if len(m.rows) == 0 {
+	if m.displayCount() == 0 {
 		return 0
 	}
-	return len(detailContent(m.rows[m.selected], m.hexMode))
+	return len(detailContent(m.displayRow(m.selected), m.hexMode))
 }
 
 // maxDetailOffset is the furthest the panel can scroll. At the bottom the up
@@ -357,6 +393,12 @@ func (m model) bodyLines() int {
 // keeps the ▸ row stationary on screen while the user steps through rows,
 // rather than pinning it to an edge. `top` is then clamped to a valid range.
 func (m *model) clampScroll() {
+	// Clamp selected to a valid display index first.
+	if dc := m.displayCount(); dc > 0 && m.selected >= dc {
+		m.selected = dc - 1
+	} else if dc == 0 {
+		m.selected = 0
+	}
 	visible := m.visibleRows()
 	if visible <= 0 {
 		m.top = 0
@@ -367,7 +409,7 @@ func (m *model) clampScroll() {
 	} else if m.selected >= m.top+visible {
 		m.top = m.selected - visible + 1
 	}
-	maxTop := len(m.rows) - visible
+	maxTop := m.displayCount() - visible
 	if maxTop < 0 {
 		maxTop = 0
 	}
@@ -399,8 +441,8 @@ func (m model) View() string {
 	visible := m.visibleRows()
 	start := m.top
 	end := start + visible
-	if end > len(m.rows) {
-		end = len(m.rows)
+	if end > m.displayCount() {
+		end = m.displayCount()
 	}
 
 	// The reverse-video focus bar sits on the table's selected row unless focus
@@ -411,7 +453,7 @@ func (m model) View() string {
 	lines := make([]string, 0, m.height)
 	lines = append(lines, divider, headerLine(pathWidth), divider)
 	for i := start; i < end; i++ {
-		lines = append(lines, rowLine(m.rows[i], pathWidth, i == m.selected, tableFocused))
+		lines = append(lines, rowLine(m.displayRow(i), pathWidth, i == m.selected, tableFocused))
 	}
 	// Pad the table to its full row budget so the bottom line, detail panel,
 	// and footer stay pinned to the bottom even before the buffer fills.
@@ -444,8 +486,9 @@ func (m model) View() string {
 // table focus, and panel open with panel focus — each advertising the keys that
 // do something in that state.
 func (m model) footer() string {
-	// In the open states, b flips the body view; the label names what it
-	// switches *to*, matching the table-focus body toggle.
+	if m.filterMode {
+		return fmt.Sprintf(" /%s │ Enter: apply │ Esc: clear", m.filterTerm)
+	}
 	mode := "hex"
 	if m.hexMode {
 		mode = "text"
@@ -458,7 +501,10 @@ func (m model) footer() string {
 	case m.detailOpen:
 		return fmt.Sprintf(" ↑↓/jk: navigate │ Tab: inspect │ b: %s body │ Enter/Esc: close │ q: quit", mode)
 	default:
-		return " ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ q: quit"
+		if m.filterTerm != "" {
+			return fmt.Sprintf(" [/%s] ↑↓/jk: navigate │ Enter: detail │ /: edit │ Esc: clear │ q: quit", m.filterTerm)
+		}
+		return " ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ /: filter │ q: quit"
 	}
 }
 
@@ -477,8 +523,8 @@ func (m model) detailDivider() string {
 		marker = markerSelected
 	}
 	label := marker + "───── Detail ───── "
-	if len(m.rows) > 0 {
-		r := m.rows[m.selected]
+	if m.displayCount() > 0 {
+		r := m.displayRow(m.selected)
 		label += fmt.Sprintf("pid=%d (%s) ", r.pid, r.comm)
 	}
 	n := utf8.RuneCountInString(label)
@@ -506,10 +552,10 @@ func (m model) detailBody() []string {
 	for i := range lines {
 		lines[i] = fitLeft("", m.width)
 	}
-	if len(m.rows) == 0 {
+	if m.displayCount() == 0 {
 		return lines
 	}
-	content := detailContent(m.rows[m.selected], m.hexMode)
+	content := detailContent(m.displayRow(m.selected), m.hexMode)
 	offset := m.detailOffset
 	if max := m.maxDetailOffset(); offset > max {
 		offset = max
@@ -648,6 +694,47 @@ func (m *model) evictBodiesOverBudget() {
 		m.rows[i].resBody = nil
 		m.bodyBytes -= n
 	}
+}
+
+// displayCount is the number of rows currently visible under the active filter.
+func (m model) displayCount() int {
+	if m.filtered != nil {
+		return len(m.filtered)
+	}
+	return len(m.rows)
+}
+
+// displayRow returns the row at display position i, mapping through filtered
+// when a filter is active.
+func (m model) displayRow(i int) row {
+	if m.filtered != nil {
+		return m.rows[m.filtered[i]]
+	}
+	return m.rows[i]
+}
+
+// rebuildFilter regenerates m.filtered from the current rows and filterTerm.
+// Cheap when filterTerm is empty: sets filtered to nil and returns immediately.
+func (m *model) rebuildFilter() {
+	if m.filterTerm == "" {
+		m.filtered = nil
+		return
+	}
+	term := strings.ToLower(m.filterTerm)
+	result := make([]int, 0, cap(m.filtered))
+	for i, r := range m.rows {
+		if rowMatchesFilter(r, term) {
+			result = append(result, i)
+		}
+	}
+	m.filtered = result
+}
+
+// rowMatchesFilter reports whether r contains lowerTerm (already lowercased)
+// in its comm or path field.
+func rowMatchesFilter(r row, lowerTerm string) bool {
+	return strings.Contains(strings.ToLower(r.comm), lowerTerm) ||
+		strings.Contains(strings.ToLower(r.path), lowerTerm)
 }
 
 // headerLines renders one header section, one "   Name: Value" line per header
