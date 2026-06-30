@@ -204,7 +204,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "esc":
 				// Step out one level: panel focus → table focus (panel stays open),
-				// table focus → close. A no-op in the table-only state.
+				// table focus → close panel, close panel → clear filter.
 				switch {
 				case m.detailOpen && m.panelFocus:
 					m.panelFocus = false
@@ -212,6 +212,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case m.detailOpen:
 					m.detailOpen = false
 					m.detailOffset = 0
+				case m.filterTerm != "":
+					m.filterTerm = ""
+					m.rebuildFilter()
 				}
 			case "up", "k":
 				if m.panelFocus {
@@ -718,7 +721,7 @@ func (m *model) rebuildFilter() {
 		return
 	}
 	term := strings.ToLower(m.filterTerm)
-	result := m.filtered[:0]
+	result := make([]int, 0, cap(m.filtered))
 	for i, r := range m.rows {
 		if rowMatchesFilter(r, term) {
 			result = append(result, i)

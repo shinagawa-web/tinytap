@@ -1301,13 +1301,15 @@ func TestFilterCaseInsensitive(t *testing.T) {
 // In filter mode, navigation keys (j/k) feed the buffer instead of moving the selection.
 func TestFilterModeNavigationDisabled(t *testing.T) {
 	m := key(withMixedRows(), "/")
-	before := m.selected
 	m = key(m, "j")
-	if m.selected != before {
-		t.Errorf("j in filterMode moved selection from %d to %d; should be a no-op", before, m.selected)
-	}
+	// "j" is a filter character here, not a navigation key.
 	if m.filterTerm != "j" {
 		t.Errorf("j should be appended to filterTerm, got %q", m.filterTerm)
+	}
+	// The selection may be clamped by the filter narrowing the visible set, but
+	// it must not exceed the new display count.
+	if dc := m.displayCount(); m.selected > dc {
+		t.Errorf("selected=%d exceeds displayCount=%d after filtering", m.selected, dc)
 	}
 }
 
@@ -1460,5 +1462,59 @@ func TestFilterModeCtrlCQuits(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
 		t.Error("ctrl+c in filterMode should return a non-nil quit cmd")
+	}
+}
+
+// A filter term that matches no rows must not show all rows: filtered must be
+// non-nil (empty) so displayCount returns 0, not len(rows).
+func TestFilterZeroMatchesHidesAllRows(t *testing.T) {
+	m := withMixedRows()
+	m.filterTerm = "zzznomatch"
+	m.rebuildFilter()
+	if m.filtered == nil {
+		t.Error("filtered must be non-nil when filterTerm is non-empty (even with 0 matches)")
+	}
+	if m.displayCount() != 0 {
+		t.Errorf("displayCount = %d, want 0 when nothing matches", m.displayCount())
+	}
+}
+
+// Esc in the table-only state (no panel open) clears an active filter.
+func TestEscClearsFilterInTableState(t *testing.T) {
+	m := withMixedRows()
+	m.filterTerm = "nginx"
+	m.rebuildFilter()
+	if m.displayCount() != 2 {
+		t.Fatalf("precondition: displayCount = %d, want 2", m.displayCount())
+	}
+	m = press(m, tea.KeyEsc)
+	if m.filterTerm != "" {
+		t.Errorf("Esc should clear filterTerm, got %q", m.filterTerm)
+	}
+	if m.displayCount() != 5 {
+		t.Errorf("displayCount = %d after Esc, want 5 (all rows)", m.displayCount())
+	}
+}
+
+// With a panel open and a filter active, Esc closes the panel first; the
+// filter stays. A second Esc then clears the filter.
+func TestEscClosesDetailBeforeClearingFilter(t *testing.T) {
+	m := withMixedRows()
+	m.filterTerm = "nginx"
+	m.rebuildFilter()
+	m = press(m, tea.KeyEnter) // open detail panel
+	if !m.detailOpen {
+		t.Fatal("precondition: detail panel should be open")
+	}
+	m = press(m, tea.KeyEsc) // first Esc: close panel
+	if m.detailOpen {
+		t.Error("first Esc should close the detail panel")
+	}
+	if m.filterTerm == "" {
+		t.Error("first Esc should not clear the filter")
+	}
+	m = press(m, tea.KeyEsc) // second Esc: clear filter
+	if m.filterTerm != "" {
+		t.Errorf("second Esc should clear the filter, got %q", m.filterTerm)
 	}
 }
