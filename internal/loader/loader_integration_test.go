@@ -4,6 +4,7 @@ package loader_test
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -120,14 +121,15 @@ func TestFixtureRingbufDecode(t *testing.T) {
 	}
 }
 
-// TestSocketProbeEmitsWriteEvent verifies that the sys_enter_write tracepoint
-// fires and delivers a ringbuf event when this process writes to a TCP socket.
-// This confirms the socket probe attachment works end-to-end — unlike
-// TestLoaderLoadAttachClose (load+close only) and TestFixtureRingbufDecode
-// (fixture program on getpid, not socket probes).
+// TestSocketProbeEmitsWriteEvent verifies that the socket tracepoints fire and
+// deliver ringbuf events for both outgoing (sys_enter_write) and incoming
+// (sys_exit_read) syscalls on a real TCP socket. This confirms end-to-end
+// probe attachment — unlike TestLoaderLoadAttachClose (load+close only) and
+// TestFixtureRingbufDecode (fixture getpid program, not socket probes).
 func TestSocketProbeEmitsWriteEvent(t *testing.T) {
-	// ownPid=0: the BPF skips events where pid==own_pid; passing 0 means no
-	// PID is skipped, so this process's own outgoing socket writes are visible.
+	// The BPF check is `if (pid == own_pid) return`, so ownPid=0 means only
+	// PID 0 (the kernel swapper) is skipped. Our test process is never PID 0,
+	// so its socket syscall events pass through to the ringbuf.
 	tt, err := loader.Load(0)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -136,20 +138,23 @@ func TestSocketProbeEmitsWriteEvent(t *testing.T) {
 
 	pid := uint32(os.Getpid())
 
-	// Open a loopback TCP listener so we can write to a real socket fd.
+	// Open a loopback TCP listener so we can exercise real socket fds.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
 	defer ln.Close()
 
-	// Accept in background so the three-way handshake completes.
-	accepted := make(chan net.Conn, 1)
+	// Accept in background; propagate errors so the test fails deterministically
+	// instead of blocking forever if Accept stalls.
+	type acceptResult struct {
+		conn net.Conn
+		err  error
+	}
+	accepted := make(chan acceptResult, 1)
 	go func() {
 		c, err := ln.Accept()
-		if err == nil {
-			accepted <- c
-		}
+		accepted <- acceptResult{c, err}
 	}()
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
@@ -158,19 +163,42 @@ func TestSocketProbeEmitsWriteEvent(t *testing.T) {
 	}
 	defer conn.Close()
 
-	serverConn := <-accepted
+	var serverConn net.Conn
+	select {
+	case res := <-accepted:
+		if res.err != nil {
+			t.Fatalf("Accept: %v", res.err)
+		}
+		serverConn = res.conn
+	case <-time.After(5 * time.Second):
+		t.Fatal("Accept timed out")
+	}
 	defer serverConn.Close()
 
-	// Write a recognisable payload — fires sys_enter_write.
-	const marker = "tinytap-probe-test"
-	if _, err := conn.Write([]byte(marker)); err != nil {
-		t.Fatalf("Write: %v", err)
+	// --- outgoing path ---
+	// Write a recognisable marker from the client — fires sys_enter_write.
+	const outMarker = "tinytap-write-probe"
+	if _, err := conn.Write([]byte(outMarker)); err != nil {
+		t.Fatalf("client Write: %v", err)
 	}
 
-	// Drain the ringbuf until we see an outgoing write event from this process
-	// whose payload sample contains our marker, confirming the tracepoint fired.
+	// --- incoming path ---
+	// Server sends a different marker; the client read call fires
+	// sys_enter_read (stash fd+buf) and sys_exit_read (emit with filled buffer).
+	const inMarker = "tinytap-read-probe"
+	if _, err := serverConn.Write([]byte(inMarker)); err != nil {
+		t.Fatalf("server Write: %v", err)
+	}
+	readBuf := make([]byte, len(inMarker))
+	if _, err := io.ReadFull(conn, readBuf); err != nil {
+		t.Fatalf("client Read: %v", err)
+	}
+
+	// Drain the ringbuf until we see one outgoing write event carrying outMarker
+	// and one incoming read event carrying inMarker, both from this process.
+	sawWrite, sawRead := false, false
 	tt.Reader.SetDeadline(time.Now().Add(5 * time.Second))
-	for {
+	for !sawWrite || !sawRead {
 		rec, err := tt.Reader.Read()
 		if err != nil {
 			t.Fatalf("ringbuf read: %v", err)
@@ -179,19 +207,32 @@ func TestSocketProbeEmitsWriteEvent(t *testing.T) {
 		if err := events.Decode(rec.RawSample, &e); err != nil {
 			continue
 		}
-		if e.Pid != pid || e.Syscall != events.SyscallWrite {
+		if e.Pid != pid {
 			continue
 		}
-		if !bytes.Contains(e.Payload[:e.PayloadLen], []byte(marker)) {
-			continue
+		// Clamp PayloadLen to the array size before slicing.
+		n := int(e.PayloadLen)
+		if n > len(e.Payload) {
+			n = len(e.Payload)
 		}
-		// The write tracepoint fired and the payload reached userspace.
-		if e.Fd <= 0 {
-			t.Errorf("Fd = %d, want a positive socket fd", e.Fd)
+		sample := e.Payload[:n]
+		switch {
+		case e.Syscall == events.SyscallWrite && bytes.Contains(sample, []byte(outMarker)):
+			if e.Fd <= 0 {
+				t.Errorf("write event: Fd = %d, want > 0", e.Fd)
+			}
+			if e.Bytes != uint32(len(outMarker)) {
+				t.Errorf("write event: Bytes = %d, want %d", e.Bytes, len(outMarker))
+			}
+			sawWrite = true
+		case e.Syscall == events.SyscallRead && bytes.Contains(sample, []byte(inMarker)):
+			if e.Fd <= 0 {
+				t.Errorf("read event: Fd = %d, want > 0", e.Fd)
+			}
+			if e.Bytes != uint32(len(inMarker)) {
+				t.Errorf("read event: Bytes = %d, want %d", e.Bytes, len(inMarker))
+			}
+			sawRead = true
 		}
-		if e.Bytes != uint32(len(marker)) {
-			t.Errorf("Bytes = %d, want %d", e.Bytes, len(marker))
-		}
-		return
 	}
 }
