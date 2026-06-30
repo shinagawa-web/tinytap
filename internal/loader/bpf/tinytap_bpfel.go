@@ -18,6 +18,8 @@ type TinytapIncomingPending struct {
 	Syscall uint32
 	Fd      int32
 	Buf     uint64
+	Iovcnt  uint32
+	Pad     uint32
 }
 
 // LoadTinytap returns the embedded CollectionSpec for Tinytap.
