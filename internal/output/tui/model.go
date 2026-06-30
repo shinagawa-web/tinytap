@@ -487,7 +487,7 @@ func (m model) View() string {
 // do something in that state.
 func (m model) footer() string {
 	if m.filterMode {
-		return fmt.Sprintf(" /%s", m.filterTerm)
+		return fmt.Sprintf(" /%s │ Enter: apply │ Esc: clear", m.filterTerm)
 	}
 	mode := "hex"
 	if m.hexMode {

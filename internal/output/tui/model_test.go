@@ -1437,8 +1437,8 @@ func TestFilterFooterStates(t *testing.T) {
 	m = key(m, "i")
 	m = key(m, "n")
 	m = key(m, "x")
-	if got := m.footer(); got != " /nginx" {
-		t.Errorf("filterMode footer = %q, want %q", got, " /nginx")
+	if got := m.footer(); got != " /nginx │ Enter: apply │ Esc: clear" {
+		t.Errorf("filterMode footer = %q, want %q", got, " /nginx │ Enter: apply │ Esc: clear")
 	}
 	m = press(m, tea.KeyEnter) // confirm, exit filterMode
 	if got := m.footer(); !strings.Contains(got, "[/nginx]") {
