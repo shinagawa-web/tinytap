@@ -47,9 +47,14 @@ func Load(ownPid uint32) (*Tinytap, error) {
 		{"sys_enter_sendto", tt.objs.HandleSendto},
 		{"sys_enter_recvmsg", tt.objs.HandleRecvmsg},
 		{"sys_enter_sendmsg", tt.objs.HandleSendmsg},
+		{"sys_enter_writev", tt.objs.HandleWritev},
+		{"sys_enter_readv", tt.objs.HandleReadv},
+		{"sys_enter_sendfile64", tt.objs.HandleSendfile},
 		{"sys_exit_read", tt.objs.HandleExitRead},
 		{"sys_exit_recvfrom", tt.objs.HandleExitRecvfrom},
 		{"sys_exit_recvmsg", tt.objs.HandleExitRecvmsg},
+		{"sys_exit_readv", tt.objs.HandleExitReadv},
+		{"sys_exit_sendfile64", tt.objs.HandleExitSendfile},
 	}
 	for _, a := range attaches {
 		tp, err := link.Tracepoint("syscalls", a.name, a.prog, nil)

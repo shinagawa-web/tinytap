@@ -19,6 +19,9 @@ const (
 	SyscallSendto   = 6
 	SyscallRecvmsg  = 7
 	SyscallSendmsg  = 8
+	SyscallWritev   = 9
+	SyscallReadv    = 10
+	SyscallSendfile = 11
 )
 
 // MaxPayload is the payload sample cap on the BPF side (MAX_PAYLOAD in
@@ -53,6 +56,9 @@ var SyscallNames = map[uint32]string{
 	SyscallSendto:   "sendto",
 	SyscallRecvmsg:  "recvmsg",
 	SyscallSendmsg:  "sendmsg",
+	SyscallWritev:   "writev",
+	SyscallReadv:    "readv",
+	SyscallSendfile: "sendfile",
 }
 
 // Decode parses a single ringbuf record into an Event. Returns an error

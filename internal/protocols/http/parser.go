@@ -22,8 +22,8 @@ import (
 // body completion the state resets to look for the next start line.
 //
 // Direction is taken from the syscall:
-//   - read / recvfrom / recvmsg → incoming
-//   - write / sendto / sendmsg → outgoing
+//   - read / recvfrom / recvmsg / readv → incoming
+//   - write / sendto / sendmsg / writev / sendfile → outgoing
 //
 // Discrimination between request and response is by the start line:
 //   - "GET / HTTP/1.1"      → request
@@ -196,9 +196,11 @@ func NewParserWithResolve(resolve func(pid uint32) string) *Parser {
 func (p *Parser) Feed(e *events.Event) []Message {
 	var dir direction
 	switch e.Syscall {
-	case events.SyscallRead, events.SyscallRecvfrom, events.SyscallRecvmsg:
+	case events.SyscallRead, events.SyscallRecvfrom, events.SyscallRecvmsg,
+		events.SyscallReadv:
 		dir = dirIncoming
-	case events.SyscallWrite, events.SyscallSendto, events.SyscallSendmsg:
+	case events.SyscallWrite, events.SyscallSendto, events.SyscallSendmsg,
+		events.SyscallWritev, events.SyscallSendfile:
 		dir = dirOutgoing
 	default:
 		return nil

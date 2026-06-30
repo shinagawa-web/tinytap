@@ -1648,3 +1648,78 @@ func TestChunkedTrailerTerminatorDroppedByMaxPayloadAbandons(t *testing.T) {
 		t.Fatalf("want 0 messages, got %d", len(got))
 	}
 }
+
+// --- writev / readv / sendfile direction routing --------------------------
+
+// TestWritevTreatedAsOutgoing verifies that a writev event is classified as
+// outgoing and parsed identically to a write event carrying the same bytes.
+func TestWritevTreatedAsOutgoing(t *testing.T) {
+	const pid, fd = uint32(1), int32(3)
+	wire := []byte("GET /writev HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+	p := NewParser()
+	got := p.Feed(makeEvent(events.SyscallWritev, pid, fd, uint32(len(wire)), wire))
+	if len(got) != 1 {
+		t.Fatalf("want 1 message, got %d", len(got))
+	}
+	if !got[0].IsRequest || got[0].Req.method != "GET" || got[0].Req.path != "/writev" {
+		t.Errorf("unexpected message: %+v", got[0])
+	}
+}
+
+// TestReadvTreatedAsIncoming verifies that a readv event is classified as
+// incoming and parsed identically to a read event carrying the same bytes.
+func TestReadvTreatedAsIncoming(t *testing.T) {
+	const pid, fd = uint32(2), int32(5)
+	// Prime the parser with a request so the method queue is populated.
+	req := []byte("GET /readv HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	p := NewParser()
+	p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(req)), req))
+	got := p.Feed(makeEvent(events.SyscallReadv, pid, fd, uint32(len(resp)), resp))
+	if len(got) != 1 {
+		t.Fatalf("want 1 message, got %d", len(got))
+	}
+	if got[0].IsRequest || got[0].Res.status != 200 {
+		t.Errorf("unexpected message: %+v", got[0])
+	}
+}
+
+// TestSendfileAdvancesBodyAccounting verifies that a sendfile event with no
+// payload advances the wire-byte body accounting so the response is emitted
+// with BodyTruncated=true (body delivered zero-copy, no content captured).
+//
+// The scenario is from the server's perspective: the server reads the client
+// request (incoming/readv), writes the response headers (outgoing/writev),
+// then delivers the body via sendfile (outgoing, no payload).
+func TestSendfileAdvancesBodyAccounting(t *testing.T) {
+	const pid, fd = uint32(3), int32(7)
+	req := []byte("GET /sf HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+	// Response headers claim a 100-byte body; no Content-Type needed for framing.
+	headers := []byte("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+
+	p := NewParser()
+	// Server reads the incoming request — primes the method queue.
+	p.Feed(makeEvent(events.SyscallReadv, pid, fd, uint32(len(req)), req))
+	// Server writes the outgoing response headers — body still pending.
+	if got := p.Feed(makeEvent(events.SyscallWritev, pid, fd, uint32(len(headers)), headers)); len(got) != 0 {
+		t.Fatalf("want 0 messages after headers, got %d", len(got))
+	}
+	// sendfile delivers the 100-byte body kernel-to-kernel: no user-space
+	// payload, so BodySample is empty and BodyTruncated is set.
+	got := p.Feed(makeEvent(events.SyscallSendfile, pid, fd, 100, nil))
+	if len(got) != 1 {
+		t.Fatalf("want 1 message after sendfile body, got %d", len(got))
+	}
+	if got[0].IsRequest {
+		t.Error("expected response message, got request")
+	}
+	if got[0].Res.status != 200 {
+		t.Errorf("status = %d, want 200", got[0].Res.status)
+	}
+	if !got[0].BodyTruncated {
+		t.Error("BodyTruncated must be true: sendfile body has no captured content")
+	}
+	if len(got[0].BodySample) != 0 {
+		t.Errorf("BodySample must be empty for sendfile body, got %d bytes", len(got[0].BodySample))
+	}
+}
