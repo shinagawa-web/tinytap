@@ -1450,3 +1450,15 @@ func TestDefaultFooterAdvertisesFilter(t *testing.T) {
 		t.Errorf("default footer = %q, want it to advertise /: filter", got)
 	}
 }
+
+// ctrl+c quits even while filter mode is active.
+func TestFilterModeCtrlCQuits(t *testing.T) {
+	m := key(withRows(5), "/")
+	if !m.filterMode {
+		t.Fatal("expected filterMode after /")
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Error("ctrl+c in filterMode should return a non-nil quit cmd")
+	}
+}
