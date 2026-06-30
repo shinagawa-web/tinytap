@@ -4,6 +4,7 @@ package loader_test
 
 import (
 	"bytes"
+	"net"
 	"os"
 	"strings"
 	"syscall"
@@ -116,5 +117,81 @@ func TestFixtureRingbufDecode(t *testing.T) {
 	}
 	if !bytes.Equal(e.Payload[5:], make([]byte, len(e.Payload)-5)) {
 		t.Error("Payload[5:]: got non-zero bytes, want all zeros")
+	}
+}
+
+// TestSocketProbeEmitsWriteEvent verifies that the sys_enter_write tracepoint
+// fires and delivers a ringbuf event when this process writes to a TCP socket.
+// This confirms the socket probe attachment works end-to-end — unlike
+// TestLoaderLoadAttachClose (load+close only) and TestFixtureRingbufDecode
+// (fixture program on getpid, not socket probes).
+func TestSocketProbeEmitsWriteEvent(t *testing.T) {
+	// ownPid=0: the BPF skips events where pid==own_pid; passing 0 means no
+	// PID is skipped, so this process's own outgoing socket writes are visible.
+	tt, err := loader.Load(0)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer tt.Close()
+
+	pid := uint32(os.Getpid())
+
+	// Open a loopback TCP listener so we can write to a real socket fd.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer ln.Close()
+
+	// Accept in background so the three-way handshake completes.
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			accepted <- c
+		}
+	}()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+
+	serverConn := <-accepted
+	defer serverConn.Close()
+
+	// Write a recognisable payload — fires sys_enter_write.
+	const marker = "tinytap-probe-test"
+	if _, err := conn.Write([]byte(marker)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Drain the ringbuf until we see an outgoing write event from this process
+	// whose payload sample contains our marker, confirming the tracepoint fired.
+	tt.Reader.SetDeadline(time.Now().Add(5 * time.Second))
+	for {
+		rec, err := tt.Reader.Read()
+		if err != nil {
+			t.Fatalf("ringbuf read: %v", err)
+		}
+		var e events.Event
+		if err := events.Decode(rec.RawSample, &e); err != nil {
+			continue
+		}
+		if e.Pid != pid || e.Syscall != events.SyscallWrite {
+			continue
+		}
+		if !bytes.Contains(e.Payload[:e.PayloadLen], []byte(marker)) {
+			continue
+		}
+		// The write tracepoint fired and the payload reached userspace.
+		if e.Fd <= 0 {
+			t.Errorf("Fd = %d, want a positive socket fd", e.Fd)
+		}
+		if e.Bytes != uint32(len(marker)) {
+			t.Errorf("Bytes = %d, want %d", e.Bytes, len(marker))
+		}
+		return
 	}
 }
