@@ -14,6 +14,9 @@ enum syscall_id {
     SYS_SENDTO   = 6,
     SYS_RECVMSG  = 7,
     SYS_SENDMSG  = 8,
+    SYS_WRITEV   = 9,   // outgoing vectored write; payload sampled from first iovec
+    SYS_READV    = 10,  // incoming vectored read; payload sampled from first iovec at sys_exit
+    SYS_SENDFILE = 11,  // outgoing zero-copy transfer; bytes = actual transferred count, payload always empty
 };
 
 struct event {

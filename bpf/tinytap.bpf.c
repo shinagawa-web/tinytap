@@ -14,6 +14,9 @@ enum syscall_id {
     SYS_SENDTO   = 6,
     SYS_RECVMSG  = 7,
     SYS_SENDMSG  = 8,
+    SYS_WRITEV   = 9,
+    SYS_READV    = 10,
+    SYS_SENDFILE = 11,
 };
 
 struct event {
@@ -118,19 +121,53 @@ static __always_inline __u32 read_msghdr(const void *user_msghdr_ptr,
     return total;
 }
 
+// Walk a raw userspace iovec array (writev / readv). Returns the total
+// byte length across up to MAX_IOV entries; fills out_first_base /
+// out_first_len with the first entry so callers can sample its bytes.
+static __always_inline __u32 read_iov(const void *iov_user_ptr, __u32 iovcnt,
+                                      void **out_first_base,
+                                      __u32 *out_first_len)
+{
+    __u32 total = 0;
+    void *first_base = NULL;
+    __u32 first_len = 0;
+
+    #pragma unroll
+    for (int i = 0; i < MAX_IOV; i++) {
+        if ((__u64)i >= iovcnt)
+            break;
+        struct iovec_user iov;
+        if (bpf_probe_read_user(&iov, sizeof(iov),
+                                (const struct iovec_user *)iov_user_ptr + i) < 0)
+            break;
+        if (i == 0) {
+            first_base = iov.iov_base;
+            first_len  = (__u32)iov.iov_len;
+        }
+        total += (__u32)iov.iov_len;
+    }
+
+    if (out_first_base) *out_first_base = first_base;
+    if (out_first_len)  *out_first_len  = first_len;
+    return total;
+}
+
 // Per-thread state stashed at sys_enter for incoming syscalls (read,
-// recvfrom, recvmsg). At sys_enter the user buffer is empty, so we
-// remember (fd, buf) keyed by tid and consume it at the matching
+// recvfrom, recvmsg, readv). At sys_enter the user buffer is empty, so
+// we remember (fd, buf) keyed by tid and consume it at the matching
 // sys_exit, where the buffer is filled and the actual byte count is
 // available as the syscall return value.
 //
 // For read / recvfrom, `buf` is the user buffer pointer.
 // For recvmsg, `buf` is the msghdr pointer; the iov is re-walked at
 // sys_exit to find the first chunk to sample.
+// For readv, `buf` is the iov pointer and `iovcnt` is the vector count.
 struct incoming_pending {
     __u32 syscall;
     __s32 fd;
     __u64 buf;       // user pointer; pointer type would block bpf2go codegen
+    __u32 iovcnt;    // valid for SYS_READV; zero for all other syscalls
+    __u32 _pad;
 };
 
 struct {
@@ -190,6 +227,26 @@ static __always_inline void stash_incoming(__u32 syscall, __s32 fd,
     bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY);
 }
 
+// Like stash_incoming but also records the iov count for readv, so
+// submit_from_pending walks exactly the right number of entries.
+static __always_inline void stash_incoming_iov(__u32 syscall, __s32 fd,
+                                               const void *iov_ptr,
+                                               __u32 iovcnt)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    if ((__u32)(pid_tgid >> 32) == own_pid)
+        return;
+
+    __u32 tid = (__u32)pid_tgid;
+    struct incoming_pending p = {
+        .syscall = syscall,
+        .fd      = fd,
+        .buf     = (__u64)(unsigned long)iov_ptr,
+        .iovcnt  = iovcnt,
+    };
+    bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY);
+}
+
 // Look up the stashed (fd, buf) for this thread, emit the event with the
 // actual received bytes, then delete the map entry. Called from sys_exit
 // of read / recvfrom / recvmsg.
@@ -215,6 +272,25 @@ static __always_inline void submit_from_pending(long ret)
             if (to_read > first_len)
                 to_read = first_len;
             submit_event(p->syscall, p->fd, bytes, first_base, to_read);
+        } else if (p->syscall == SYS_READV) {
+            // Re-walk the iov array; buf holds the iov pointer and iovcnt
+            // holds the actual vector count, both stashed at sys_enter.
+            // Using the real iovcnt prevents reading past the end of the
+            // array when the caller passes fewer than MAX_IOV vectors.
+            void *first_base = NULL;
+            __u32 first_len = 0;
+            read_iov((const void *)(unsigned long)p->buf, p->iovcnt,
+                     &first_base, &first_len);
+            __u32 to_read = bytes;
+            if (to_read > first_len)
+                to_read = first_len;
+            submit_event(p->syscall, p->fd, bytes, first_base, to_read);
+        } else if (p->syscall == SYS_SENDFILE) {
+            // sendfile body bytes are transferred kernel-to-kernel (page
+            // cache → socket) and never pass through user space.  Emit
+            // the byte count so the pipeline can advance body accounting,
+            // but carry no payload.
+            submit_event(p->syscall, p->fd, bytes, NULL, 0);
         } else {
             // read / recvfrom: buf points directly at the receive buffer.
             submit_event(p->syscall, p->fd, bytes,
@@ -318,6 +394,55 @@ int handle_exit_recvfrom(struct sys_exit_ctx *ctx)
 
 SEC("tracepoint/syscalls/sys_exit_recvmsg")
 int handle_exit_recvmsg(struct sys_exit_ctx *ctx)
+{
+    submit_from_pending(ctx->ret);
+    return 0;
+}
+
+// writev: outgoing vectored write.  Walk the iov array for total byte
+// count and sample the first chunk, mirroring handle_sendmsg.
+SEC("tracepoint/syscalls/sys_enter_writev")
+int handle_writev(struct sys_enter_ctx *ctx)
+{
+    void *first_buf = NULL;
+    __u32 first_len = 0;
+    __u32 total = read_iov((const void *)ctx->args[1], (__u32)ctx->args[2],
+                           &first_buf, &first_len);
+    submit_event(SYS_WRITEV, (__s32)ctx->args[0], total, first_buf, first_len);
+    return 0;
+}
+
+// readv: incoming vectored read.  Stash (fd, iov, iovcnt) at sys_enter
+// so the matching sys_exit can re-walk exactly iovcnt entries for a
+// payload sample — no more, no less.
+SEC("tracepoint/syscalls/sys_enter_readv")
+int handle_readv(struct sys_enter_ctx *ctx)
+{
+    stash_incoming_iov(SYS_READV, (__s32)ctx->args[0],
+                       (const void *)ctx->args[1], (__u32)ctx->args[2]);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_readv")
+int handle_exit_readv(struct sys_exit_ctx *ctx)
+{
+    submit_from_pending(ctx->ret);
+    return 0;
+}
+
+// sendfile64: outgoing zero-copy transfer (page cache → socket).  The
+// body bytes never pass through user space, so no payload is sampled.
+// Stash the out_fd at sys_enter; emit the actual transferred byte count
+// at sys_exit so the pipeline can advance body wire-byte accounting.
+SEC("tracepoint/syscalls/sys_enter_sendfile64")
+int handle_sendfile(struct sys_enter_ctx *ctx)
+{
+    stash_incoming(SYS_SENDFILE, (__s32)ctx->args[0], NULL);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_sendfile64")
+int handle_exit_sendfile(struct sys_exit_ctx *ctx)
 {
     submit_from_pending(ctx->ret);
     return 0;

@@ -18,6 +18,8 @@ type TinytapIncomingPending struct {
 	Syscall uint32
 	Fd      int32
 	Buf     uint64
+	Iovcnt  uint32
+	Pad     uint32
 }
 
 // LoadTinytap returns the embedded CollectionSpec for Tinytap.
@@ -65,14 +67,19 @@ type TinytapProgramSpecs struct {
 	HandleAccept4      *ebpf.ProgramSpec `ebpf:"handle_accept4"`
 	HandleClose        *ebpf.ProgramSpec `ebpf:"handle_close"`
 	HandleExitRead     *ebpf.ProgramSpec `ebpf:"handle_exit_read"`
+	HandleExitReadv    *ebpf.ProgramSpec `ebpf:"handle_exit_readv"`
 	HandleExitRecvfrom *ebpf.ProgramSpec `ebpf:"handle_exit_recvfrom"`
 	HandleExitRecvmsg  *ebpf.ProgramSpec `ebpf:"handle_exit_recvmsg"`
+	HandleExitSendfile *ebpf.ProgramSpec `ebpf:"handle_exit_sendfile"`
 	HandleRead         *ebpf.ProgramSpec `ebpf:"handle_read"`
+	HandleReadv        *ebpf.ProgramSpec `ebpf:"handle_readv"`
 	HandleRecvfrom     *ebpf.ProgramSpec `ebpf:"handle_recvfrom"`
 	HandleRecvmsg      *ebpf.ProgramSpec `ebpf:"handle_recvmsg"`
+	HandleSendfile     *ebpf.ProgramSpec `ebpf:"handle_sendfile"`
 	HandleSendmsg      *ebpf.ProgramSpec `ebpf:"handle_sendmsg"`
 	HandleSendto       *ebpf.ProgramSpec `ebpf:"handle_sendto"`
 	HandleWrite        *ebpf.ProgramSpec `ebpf:"handle_write"`
+	HandleWritev       *ebpf.ProgramSpec `ebpf:"handle_writev"`
 }
 
 // TinytapMapSpecs contains maps before they are loaded into the kernel.
@@ -135,14 +142,19 @@ type TinytapPrograms struct {
 	HandleAccept4      *ebpf.Program `ebpf:"handle_accept4"`
 	HandleClose        *ebpf.Program `ebpf:"handle_close"`
 	HandleExitRead     *ebpf.Program `ebpf:"handle_exit_read"`
+	HandleExitReadv    *ebpf.Program `ebpf:"handle_exit_readv"`
 	HandleExitRecvfrom *ebpf.Program `ebpf:"handle_exit_recvfrom"`
 	HandleExitRecvmsg  *ebpf.Program `ebpf:"handle_exit_recvmsg"`
+	HandleExitSendfile *ebpf.Program `ebpf:"handle_exit_sendfile"`
 	HandleRead         *ebpf.Program `ebpf:"handle_read"`
+	HandleReadv        *ebpf.Program `ebpf:"handle_readv"`
 	HandleRecvfrom     *ebpf.Program `ebpf:"handle_recvfrom"`
 	HandleRecvmsg      *ebpf.Program `ebpf:"handle_recvmsg"`
+	HandleSendfile     *ebpf.Program `ebpf:"handle_sendfile"`
 	HandleSendmsg      *ebpf.Program `ebpf:"handle_sendmsg"`
 	HandleSendto       *ebpf.Program `ebpf:"handle_sendto"`
 	HandleWrite        *ebpf.Program `ebpf:"handle_write"`
+	HandleWritev       *ebpf.Program `ebpf:"handle_writev"`
 }
 
 func (p *TinytapPrograms) Close() error {
@@ -150,14 +162,19 @@ func (p *TinytapPrograms) Close() error {
 		p.HandleAccept4,
 		p.HandleClose,
 		p.HandleExitRead,
+		p.HandleExitReadv,
 		p.HandleExitRecvfrom,
 		p.HandleExitRecvmsg,
+		p.HandleExitSendfile,
 		p.HandleRead,
+		p.HandleReadv,
 		p.HandleRecvfrom,
 		p.HandleRecvmsg,
+		p.HandleSendfile,
 		p.HandleSendmsg,
 		p.HandleSendto,
 		p.HandleWrite,
+		p.HandleWritev,
 	)
 }
 

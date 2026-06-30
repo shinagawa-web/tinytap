@@ -36,23 +36,34 @@ func Load(ownPid uint32) (*Tinytap, error) {
 	}
 
 	attaches := []struct {
-		name string
-		prog *ebpf.Program
+		name     string
+		fallback string // alternate tracepoint name tried when name is absent
+		prog     *ebpf.Program
 	}{
-		{"sys_enter_accept4", tt.objs.HandleAccept4},
-		{"sys_enter_read", tt.objs.HandleRead},
-		{"sys_enter_write", tt.objs.HandleWrite},
-		{"sys_enter_close", tt.objs.HandleClose},
-		{"sys_enter_recvfrom", tt.objs.HandleRecvfrom},
-		{"sys_enter_sendto", tt.objs.HandleSendto},
-		{"sys_enter_recvmsg", tt.objs.HandleRecvmsg},
-		{"sys_enter_sendmsg", tt.objs.HandleSendmsg},
-		{"sys_exit_read", tt.objs.HandleExitRead},
-		{"sys_exit_recvfrom", tt.objs.HandleExitRecvfrom},
-		{"sys_exit_recvmsg", tt.objs.HandleExitRecvmsg},
+		{"sys_enter_accept4", "", tt.objs.HandleAccept4},
+		{"sys_enter_read", "", tt.objs.HandleRead},
+		{"sys_enter_write", "", tt.objs.HandleWrite},
+		{"sys_enter_close", "", tt.objs.HandleClose},
+		{"sys_enter_recvfrom", "", tt.objs.HandleRecvfrom},
+		{"sys_enter_sendto", "", tt.objs.HandleSendto},
+		{"sys_enter_recvmsg", "", tt.objs.HandleRecvmsg},
+		{"sys_enter_sendmsg", "", tt.objs.HandleSendmsg},
+		{"sys_enter_writev", "", tt.objs.HandleWritev},
+		{"sys_enter_readv", "", tt.objs.HandleReadv},
+		// sendfile tracepoint name varies by kernel: most expose sendfile64,
+		// but some kernels (older or with different config) expose sendfile.
+		{"sys_enter_sendfile64", "sys_enter_sendfile", tt.objs.HandleSendfile},
+		{"sys_exit_read", "", tt.objs.HandleExitRead},
+		{"sys_exit_recvfrom", "", tt.objs.HandleExitRecvfrom},
+		{"sys_exit_recvmsg", "", tt.objs.HandleExitRecvmsg},
+		{"sys_exit_readv", "", tt.objs.HandleExitReadv},
+		{"sys_exit_sendfile64", "sys_exit_sendfile", tt.objs.HandleExitSendfile},
 	}
 	for _, a := range attaches {
 		tp, err := link.Tracepoint("syscalls", a.name, a.prog, nil)
+		if err != nil && a.fallback != "" {
+			tp, err = link.Tracepoint("syscalls", a.fallback, a.prog, nil)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("attach %s: %w", a.name, errors.Join(err, tt.Close()))
 		}
