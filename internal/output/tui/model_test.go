@@ -1209,3 +1209,244 @@ func TestDetailBodyOffsetClampedBelowZero(t *testing.T) {
 		t.Errorf("at clamped zero offset there should be no ↑ hint:\n%s", body)
 	}
 }
+
+// withMixedRows seeds a model with rows for two different processes.
+func withMixedRows() model {
+	m := newModel(120, 24)
+	for _, r := range []row{
+		{comm: "nginx", path: "/api/users"},
+		{comm: "nginx", path: "/api/posts"},
+		{comm: "curl", path: "/health"},
+		{comm: "curl", path: "/metrics"},
+		{comm: "postgres", path: "/db/query"},
+	} {
+		m = appendRow(m, r)
+	}
+	return m
+}
+
+// rowMatchesFilter: comm and path substring match, case-insensitive.
+func TestRowMatchesFilter(t *testing.T) {
+	r := row{comm: "Nginx", path: "/Api/Users"}
+	if !rowMatchesFilter(r, "nginx") {
+		t.Error("should match comm case-insensitively")
+	}
+	if !rowMatchesFilter(r, "api") {
+		t.Error("should match path case-insensitively")
+	}
+	if !rowMatchesFilter(r, "/api/users") {
+		t.Error("should match full path")
+	}
+	if rowMatchesFilter(r, "curl") {
+		t.Error("should not match unrelated term")
+	}
+}
+
+// Pressing "/" enters filter mode; no other state changes.
+func TestFilterModeOpenedBySlash(t *testing.T) {
+	m := key(withMixedRows(), "/")
+	if !m.filterMode {
+		t.Error("/ should set filterMode=true")
+	}
+	if m.filterTerm != "" {
+		t.Errorf("filterTerm should start empty, got %q", m.filterTerm)
+	}
+}
+
+// In filter mode, rune keystrokes feed the filter term and narrow rows live.
+func TestFilterTermUpdatesLive(t *testing.T) {
+	m := key(withMixedRows(), "/")
+	m = key(m, "n")
+	m = key(m, "g")
+	m = key(m, "i")
+	m = key(m, "n")
+	m = key(m, "x")
+	if m.filterTerm != "nginx" {
+		t.Errorf("filterTerm = %q, want %q", m.filterTerm, "nginx")
+	}
+	if m.displayCount() != 2 {
+		t.Errorf("displayCount = %d, want 2 (nginx rows only)", m.displayCount())
+	}
+}
+
+// The filter matches comm and path independently.
+func TestFilterMatchesCommAndPath(t *testing.T) {
+	m := withMixedRows()
+	m.filterTerm = "curl"
+	m.rebuildFilter()
+	if m.displayCount() != 2 {
+		t.Errorf("displayCount = %d, want 2 (curl rows)", m.displayCount())
+	}
+
+	m.filterTerm = "/health"
+	m.rebuildFilter()
+	if m.displayCount() != 1 {
+		t.Errorf("displayCount = %d, want 1 (/health row)", m.displayCount())
+	}
+	if m.displayRow(0).path != "/health" {
+		t.Errorf("displayRow(0).path = %q, want /health", m.displayRow(0).path)
+	}
+}
+
+// Matching is case-insensitive on both comm and path.
+func TestFilterCaseInsensitive(t *testing.T) {
+	m := withMixedRows()
+	m.filterTerm = "NGINX"
+	m.rebuildFilter()
+	if m.displayCount() != 2 {
+		t.Errorf("displayCount = %d, want 2 for upper-case term", m.displayCount())
+	}
+}
+
+// In filter mode, navigation keys (j/k) feed the buffer instead of moving the selection.
+func TestFilterModeNavigationDisabled(t *testing.T) {
+	m := key(withMixedRows(), "/")
+	before := m.selected
+	m = key(m, "j")
+	if m.selected != before {
+		t.Errorf("j in filterMode moved selection from %d to %d; should be a no-op", before, m.selected)
+	}
+	if m.filterTerm != "j" {
+		t.Errorf("j should be appended to filterTerm, got %q", m.filterTerm)
+	}
+}
+
+// Enter confirms the filter and exits filter mode; the filter stays active.
+func TestFilterEnterConfirms(t *testing.T) {
+	m := key(withMixedRows(), "/")
+	m = key(m, "n")
+	m = key(m, "g")
+	m = key(m, "i")
+	m = key(m, "n")
+	m = key(m, "x")
+	m = press(m, tea.KeyEnter)
+	if m.filterMode {
+		t.Error("Enter should exit filterMode")
+	}
+	if m.filterTerm != "nginx" {
+		t.Errorf("filterTerm should stay %q after Enter, got %q", "nginx", m.filterTerm)
+	}
+	if m.displayCount() != 2 {
+		t.Errorf("displayCount = %d, want 2 after confirming filter", m.displayCount())
+	}
+}
+
+// Esc in filter mode clears the term, exits filter mode, and shows all rows.
+func TestFilterEscClearsFilter(t *testing.T) {
+	m := key(withMixedRows(), "/")
+	m = key(m, "n")
+	m = key(m, "g")
+	m = key(m, "i")
+	m = key(m, "n")
+	m = key(m, "x")
+	m = press(m, tea.KeyEsc)
+	if m.filterMode {
+		t.Error("Esc should exit filterMode")
+	}
+	if m.filterTerm != "" {
+		t.Errorf("Esc should clear filterTerm, got %q", m.filterTerm)
+	}
+	if m.displayCount() != 5 {
+		t.Errorf("displayCount = %d, want 5 (all rows) after clear", m.displayCount())
+	}
+}
+
+// Esc outside filter mode is not consumed by the filter: existing panel/table
+// behaviour still works when no filter is active.
+func TestFilterEscOutsideFilterModePassesThrough(t *testing.T) {
+	m := press(withRows(5), tea.KeyEnter) // open the detail panel
+	m = press(m, tea.KeyEsc)              // should close it (existing behaviour)
+	if m.detailOpen {
+		t.Error("Esc should close the detail panel when not in filterMode")
+	}
+}
+
+// Backspace trims the filter term one rune at a time.
+func TestFilterBackspace(t *testing.T) {
+	m := key(withMixedRows(), "/")
+	m = key(m, "n")
+	m = key(m, "g")
+	m = press(m, tea.KeyBackspace)
+	if m.filterTerm != "n" {
+		t.Errorf("filterTerm = %q after backspace, want %q", m.filterTerm, "n")
+	}
+	m = press(m, tea.KeyBackspace)
+	if m.filterTerm != "" {
+		t.Errorf("filterTerm = %q after second backspace, want empty", m.filterTerm)
+	}
+	if m.filtered != nil {
+		t.Error("filtered should be nil when filterTerm is empty")
+	}
+}
+
+// New rows that match the active filter appear; those that don't are hidden.
+// Follow mode continues to work: selection tracks the last matching row.
+func TestFilterFollowMode(t *testing.T) {
+	m := withMixedRows() // follow=true, 5 rows
+	m.filterTerm = "nginx"
+	m.rebuildFilter()
+	// selected is now clamped to displayCount()-1 = 1 (last nginx row)
+	m.follow = true
+
+	// Arrival of a matching row: it should appear and follow should track it.
+	m = appendRow(m, row{comm: "nginx", path: "/api/v2"})
+	if m.displayCount() != 3 {
+		t.Errorf("displayCount = %d, want 3 after adding a matching row", m.displayCount())
+	}
+	if m.selected != 2 {
+		t.Errorf("selected = %d, want 2 (follow should pin to last matching row)", m.selected)
+	}
+
+	// Arrival of a non-matching row: it should not appear; follow stays on
+	// the last matching row.
+	m = appendRow(m, row{comm: "curl", path: "/new"})
+	if m.displayCount() != 3 {
+		t.Errorf("displayCount = %d after non-matching row, want 3 (unchanged)", m.displayCount())
+	}
+	if m.selected != 2 {
+		t.Errorf("selected = %d after non-matching row, want 2 (unchanged)", m.selected)
+	}
+}
+
+// With a filter active, View still fits the terminal height exactly.
+func TestFilterViewFitsHeight(t *testing.T) {
+	const h = 24
+	m := newModel(120, h)
+	for i := 0; i < 20; i++ {
+		comm := "nginx"
+		if i%2 == 0 {
+			comm = "curl"
+		}
+		m = appendRow(m, row{comm: comm, path: "/"})
+	}
+	m.filterTerm = "nginx"
+	m.rebuildFilter()
+	if got := len(strings.Split(m.View(), "\n")); got != h {
+		t.Errorf("View() with filter emitted %d lines, want %d", got, h)
+	}
+}
+
+// The footer shows "/<term>" in filter input mode and "[/<term>]" when the filter
+// is active but not being edited.
+func TestFilterFooterStates(t *testing.T) {
+	m := key(withMixedRows(), "/")
+	m = key(m, "n")
+	m = key(m, "g")
+	m = key(m, "i")
+	m = key(m, "n")
+	m = key(m, "x")
+	if got := m.footer(); got != " /nginx" {
+		t.Errorf("filterMode footer = %q, want %q", got, " /nginx")
+	}
+	m = press(m, tea.KeyEnter) // confirm, exit filterMode
+	if got := m.footer(); !strings.Contains(got, "[/nginx]") {
+		t.Errorf("active-filter footer = %q, want it to contain [/nginx]", got)
+	}
+}
+
+// The default footer (no filter, no detail) now advertises the "/" key.
+func TestDefaultFooterAdvertisesFilter(t *testing.T) {
+	if got := withRows(5).footer(); !strings.Contains(got, "/: filter") {
+		t.Errorf("default footer = %q, want it to advertise /: filter", got)
+	}
+}
