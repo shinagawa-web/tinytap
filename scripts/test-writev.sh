@@ -37,7 +37,7 @@ assert_contains() {
 WORKTREE=~/tinytap/.claude/worktrees/feat-issue-69
 
 echo "==> building tinytap from ${WORKTREE}"
-go build -o /tmp/tinytap-writev "${WORKTREE}/cmd/tinytap/"
+go build -C "${WORKTREE}" -o /tmp/tinytap-writev ./cmd/tinytap/
 
 # ── Inline Go HTTP server (dynamic + static responses) ────────────────────────
 echo "==> writing Go server"
