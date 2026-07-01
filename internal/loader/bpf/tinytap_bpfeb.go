@@ -22,6 +22,12 @@ type TinytapIncomingPending struct {
 	Pad     uint32
 }
 
+type TinytapSendfileSample struct {
+	_          structs.HostLayout
+	PayloadLen uint32
+	Payload    [256]uint8
+}
+
 // LoadTinytap returns the embedded CollectionSpec for Tinytap.
 func LoadTinytap() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_TinytapBytes)
@@ -88,6 +94,7 @@ type TinytapProgramSpecs struct {
 type TinytapMapSpecs struct {
 	Events             *ebpf.MapSpec `ebpf:"events"`
 	IncomingPendingMap *ebpf.MapSpec `ebpf:"incoming_pending_map"`
+	SendfileSampleMap  *ebpf.MapSpec `ebpf:"sendfile_sample_map"`
 }
 
 // TinytapVariableSpecs contains global variables before they are loaded into the kernel.
@@ -119,12 +126,14 @@ func (o *TinytapObjects) Close() error {
 type TinytapMaps struct {
 	Events             *ebpf.Map `ebpf:"events"`
 	IncomingPendingMap *ebpf.Map `ebpf:"incoming_pending_map"`
+	SendfileSampleMap  *ebpf.Map `ebpf:"sendfile_sample_map"`
 }
 
 func (m *TinytapMaps) Close() error {
 	return _TinytapClose(
 		m.Events,
 		m.IncomingPendingMap,
+		m.SendfileSampleMap,
 	)
 }
 

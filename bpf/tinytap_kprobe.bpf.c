@@ -24,10 +24,6 @@
 #define VMEMMAP_START     0xfffffdffc0000000ULL
 #define PAGE_OFFSET_CONST 0xffff000000000000ULL   // -(1ULL << 48)
 
-// Physical memory start; negative on arm64 (physical_offset is subtracted
-// from linear-map VAs, so ARM64 encodes it as a signed quantity).
-extern s64 memstart_addr __ksym;
-
 // Must match the definition in tinytap.bpf.c exactly.
 // At load time the loader replaces this map with the one from tinytap.bpf.c
 // via MapReplacements so both programs share the same kernel map.
@@ -63,14 +59,12 @@ int BPF_PROG(handle_tcp_sendmsg_locked, struct sock *sk, struct msghdr *msg,
     if (bpf_probe_read_kernel(&bv, sizeof(bv), bvec_ptr) < 0)
         return 0;
 
-    // Derive the kernel virtual address:
-    //   pfn  = vmemmap_index(bv_page)          -- page array index
-    //   pfn += physical_pfn_offset             -- absolute PFN
-    //   va   = linear_map_base + pfn*PAGE_SIZE  -- kernel linear-map VA
+    // Derive the kernel virtual address of the page-cache page.
+    // phys_to_virt(pa) = PAGE_OFFSET + pa - memstart_addr (arm64), and
+    // pa = pfn * PAGE_SIZE where pfn = (bv_page - VMEMMAP_START) / 64.
+    // The memstart_addr terms cancel: va = PAGE_OFFSET + pfn * 4096 + offset.
     u64 pfn = ((u64)bv.bv_page - VMEMMAP_START) >> 6;  // sizeof(struct page)==64
-    pfn += (u64)memstart_addr >> 12;
-    u64 va  = PAGE_OFFSET_CONST + (pfn << 12) - (u64)memstart_addr
-              + bv.bv_offset;
+    u64 va  = PAGE_OFFSET_CONST + (pfn << 12) + bv.bv_offset;
 
     __u32 to_read = bv.bv_len;
     if (to_read > MAX_PAYLOAD)
