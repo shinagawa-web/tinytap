@@ -19,10 +19,11 @@ import (
 // the ringbuf reader. Close releases everything in the reverse order it
 // was set up.
 type Tinytap struct {
-	objs         bpf.TinytapObjects
-	objsCloser   io.Closer // &objs at runtime; injectable in tests
-	tracepoints  []io.Closer
-	readerCloser io.Closer // Reader at runtime; injectable in tests
+	objs             bpf.TinytapObjects
+	objsCloser       io.Closer // &objs at runtime; injectable in tests
+	kprobeObjsCloser io.Closer // non-nil only when fentry kprobe is loaded
+	tracepoints      []io.Closer
+	readerCloser     io.Closer // Reader at runtime; injectable in tests
 	// Reader drains the BPF ringbuf. Each record is the raw bytes of a
 	// `struct event` (see internal/events.Event for the matching Go type).
 	Reader *ringbuf.Reader
@@ -43,6 +44,11 @@ func (t *Tinytap) Close() error {
 	for i, tp := range t.tracepoints {
 		if err := tp.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close tracepoint %d: %w", i, err))
+		}
+	}
+	if t.kprobeObjsCloser != nil {
+		if err := t.kprobeObjsCloser.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close kprobe objects: %w", err))
 		}
 	}
 	if t.objsCloser != nil {

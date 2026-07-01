@@ -5,6 +5,13 @@
 
 #define MAX_PAYLOAD 256
 
+// Payload sample from fentry/tcp_sendmsg_locked; keyed by tid.
+// Written by the companion kprobe object; consumed at sys_exit_sendfile64.
+struct sendfile_sample {
+    __u32 payload_len;
+    __u8  payload[MAX_PAYLOAD];
+};
+
 enum syscall_id {
     SYS_ACCEPT4  = 1,
     SYS_READ     = 2,
@@ -177,6 +184,49 @@ struct {
     __type(value, struct incoming_pending);
 } incoming_pending_map SEC(".maps");
 
+// Optional sendfile body samples, populated by the companion kprobe object
+// when fentry/tcp_sendmsg_locked fires before sys_exit_sendfile64.  If the
+// kprobe object is not loaded (e.g. fentry unavailable), this map stays
+// empty and sendfile events carry no payload.
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10240);
+    __type(key, __u32);                    // tid
+    __type(value, struct sendfile_sample);
+} sendfile_sample_map SEC(".maps");
+
+// Emit a SYS_SENDFILE event.  If s is non-NULL and carries bytes, the
+// page-cache sample from fentry/tcp_sendmsg_locked is included; otherwise
+// the event is emitted with byte count only (no payload).
+static __always_inline void submit_sendfile_event(__s32 fd, __u32 bytes,
+                                                  struct sendfile_sample *s)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    if (pid == own_pid)
+        return;
+
+    struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e)
+        return;
+
+    e->ts_ns       = bpf_ktime_get_ns();
+    e->pid         = pid;
+    e->tid         = (__u32)pid_tgid;
+    e->fd          = fd;
+    e->bytes       = bytes;
+    e->syscall     = SYS_SENDFILE;
+    e->payload_len = 0;
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+    if (s && s->payload_len > 0) {
+        __builtin_memcpy(e->payload, s->payload, MAX_PAYLOAD);
+        e->payload_len = s->payload_len < MAX_PAYLOAD ? s->payload_len : MAX_PAYLOAD;
+    }
+
+    bpf_ringbuf_submit(e, 0);
+}
+
 static __always_inline void submit_event(__u32 syscall, __s32 fd, __u32 bytes,
                                          const void *user_buf, __u32 user_len)
 {
@@ -287,10 +337,13 @@ static __always_inline void submit_from_pending(long ret)
             submit_event(p->syscall, p->fd, bytes, first_base, to_read);
         } else if (p->syscall == SYS_SENDFILE) {
             // sendfile body bytes are transferred kernel-to-kernel (page
-            // cache → socket) and never pass through user space.  Emit
-            // the byte count so the pipeline can advance body accounting,
-            // but carry no payload.
-            submit_event(p->syscall, p->fd, bytes, NULL, 0);
+            // cache → socket).  If the companion fentry/tcp_sendmsg_locked
+            // kprobe stashed a sample, include it; otherwise emit byte
+            // count only.
+            struct sendfile_sample *s =
+                bpf_map_lookup_elem(&sendfile_sample_map, &tid);
+            submit_sendfile_event(p->fd, bytes, s);
+            bpf_map_delete_elem(&sendfile_sample_map, &tid);
         } else {
             // read / recvfrom: buf points directly at the receive buffer.
             submit_event(p->syscall, p->fd, bytes,
@@ -445,6 +498,12 @@ SEC("tracepoint/syscalls/sys_exit_sendfile64")
 int handle_exit_sendfile(struct sys_exit_ctx *ctx)
 {
     submit_from_pending(ctx->ret);
+    // Unconditionally purge any stale sample.  submit_from_pending deletes
+    // it on the normal path, but if own_pid filtering skipped sys_enter
+    // (no incoming_pending entry) while fentry still fired, the sample
+    // would otherwise leak and eventually fill the map.
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    bpf_map_delete_elem(&sendfile_sample_map, &tid);
     return 0;
 }
 

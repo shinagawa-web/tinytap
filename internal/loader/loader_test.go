@@ -12,9 +12,10 @@ func (s *stubCloser) Close() error { return s.err }
 
 func TestCloseAllSucceed(t *testing.T) {
 	tt := &Tinytap{
-		readerCloser: &stubCloser{},
-		tracepoints:  []io.Closer{&stubCloser{}, &stubCloser{}},
-		objsCloser:   &stubCloser{},
+		readerCloser:     &stubCloser{},
+		tracepoints:      []io.Closer{&stubCloser{}, &stubCloser{}},
+		kprobeObjsCloser: &stubCloser{},
+		objsCloser:       &stubCloser{},
 	}
 	if err := tt.Close(); err != nil {
 		t.Errorf("Close() = %v, want nil", err)
@@ -76,5 +77,27 @@ func TestCloseObjsError(t *testing.T) {
 	err := tt.Close()
 	if !errors.Is(err, sentinel) {
 		t.Errorf("Close() = %v, want to wrap %v", err, sentinel)
+	}
+}
+
+func TestCloseKprobeObjsError(t *testing.T) {
+	sentinel := errors.New("kprobe objs fail")
+	tt := &Tinytap{
+		kprobeObjsCloser: &stubCloser{err: sentinel},
+		objsCloser:       &stubCloser{},
+	}
+	err := tt.Close()
+	if !errors.Is(err, sentinel) {
+		t.Errorf("Close() = %v, want to wrap %v", err, sentinel)
+	}
+}
+
+func TestCloseNilKprobeObjs(t *testing.T) {
+	tt := &Tinytap{
+		tracepoints: []io.Closer{&stubCloser{}},
+		objsCloser:  &stubCloser{},
+	}
+	if err := tt.Close(); err != nil {
+		t.Errorf("Close with nil kprobeObjsCloser = %v, want nil", err)
 	}
 }
