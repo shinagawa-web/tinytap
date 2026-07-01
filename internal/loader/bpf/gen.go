@@ -7,3 +7,4 @@ package bpf
 // Include both multiarch dirs; clang silently ignores ones that don't
 // exist, so this works on amd64 and arm64 hosts without per-arch tweaks.
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -output-dir . -go-package bpf Tinytap ../../../bpf/tinytap.bpf.c -- -I/usr/include/aarch64-linux-gnu -I/usr/include/x86_64-linux-gnu
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -output-dir . -go-package bpf TinytapKprobe ../../../bpf/tinytap_kprobe.bpf.c -- -I/usr/include/aarch64-linux-gnu -I/usr/include/x86_64-linux-gnu
