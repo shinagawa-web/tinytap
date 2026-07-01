@@ -108,6 +108,15 @@ echo "==> GET /file (http.ServeFile → sendfile path)"
 curl -fsS "http://127.0.0.1:${PORT}/file" >/dev/null
 
 sleep 1
+
+# ── Check bpftool while tinytap is still running ──────────────────────────────
+# Must run before cleanup — the fentry link is detached when tinytap exits.
+if command -v bpftool &>/dev/null; then
+    BPFTOOL_OUT=$(sudo bpftool prog list 2>/dev/null || true)
+else
+    BPFTOOL_OUT=""
+fi
+
 cleanup
 trap - EXIT
 
@@ -123,17 +132,14 @@ assert_contains "GET /file captured with 200" \
 assert_absent "no 'sendfile payload capture disabled' warning" \
     "${TT_ERR}" "sendfile payload capture disabled"
 
-# 3. fentry program appears in bpftool (best-effort; skip if bpftool absent)
-if command -v bpftool &>/dev/null; then
-    BPFTOOL_OUT=$(sudo bpftool prog list 2>/dev/null || true)
-    if echo "${BPFTOOL_OUT}" | grep -q "handle_tcp_sendmsg_locked"; then
-        echo "  PASS: fentry/tcp_sendmsg_locked visible in bpftool prog list"
-    else
-        echo "  FAIL: fentry/tcp_sendmsg_locked not found in bpftool prog list"
-        FAILURES=$((FAILURES + 1))
-    fi
-else
+# 3. fentry program was live while tinytap ran (checked before cleanup)
+if [[ -z "${BPFTOOL_OUT}" ]]; then
     echo "  SKIP: bpftool not found"
+elif echo "${BPFTOOL_OUT}" | grep -q "handle_tcp_sendmsg_locked"; then
+    echo "  PASS: fentry/tcp_sendmsg_locked visible in bpftool prog list"
+else
+    echo "  FAIL: fentry/tcp_sendmsg_locked not found in bpftool prog list"
+    FAILURES=$((FAILURES + 1))
 fi
 
 echo
