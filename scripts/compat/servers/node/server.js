@@ -6,10 +6,15 @@ const port = parseInt(process.argv[2] || '8080', 10)
 const testdata = path.join(__dirname, '../../../../testdata')
 
 http.createServer((req, res) => {
+    if (req.url === '/hello') {
+        res.end('Hello, world')
+        return
+    }
     const file = path.join(testdata, req.url)
-    fs.readFile(file, (err, data) => {
-        if (err) { res.writeHead(404); res.end('not found'); return }
-        res.writeHead(200, { 'Content-Length': data.length })
-        res.end(data)
+    const stream = fs.createReadStream(file)
+    stream.on('error', () => { res.writeHead(404); res.end('not found') })
+    stream.on('open', () => {
+        res.writeHead(200)
+        stream.pipe(res)
     })
 }).listen(port, () => console.log(`listening on :${port}`))
