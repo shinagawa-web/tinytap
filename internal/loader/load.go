@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -92,6 +93,14 @@ func Load(ownPid uint32) (*Tinytap, error) {
 // silently ignored — the main capture continues without payload bytes for
 // sendfile events.
 func (tt *Tinytap) tryAttachKprobe() {
+	// The VA derivation in the kprobe program is arm64-specific (VA_BITS=48,
+	// no KASAN).  Skip silently on other architectures rather than reading
+	// garbage page addresses.
+	if runtime.GOARCH != "arm64" {
+		log.Printf("tinytap: kprobe sendfile payload capture is arm64-only, skipping on %s", runtime.GOARCH)
+		return
+	}
+
 	kprobeSpec, err := bpf.LoadTinytapKprobe()
 	if err != nil {
 		log.Printf("tinytap: kprobe load spec: %v (sendfile payload capture disabled)", err)

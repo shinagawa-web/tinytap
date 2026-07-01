@@ -221,7 +221,7 @@ static __always_inline void submit_sendfile_event(__s32 fd, __u32 bytes,
 
     if (s && s->payload_len > 0) {
         __builtin_memcpy(e->payload, s->payload, MAX_PAYLOAD);
-        e->payload_len = s->payload_len;
+        e->payload_len = s->payload_len < MAX_PAYLOAD ? s->payload_len : MAX_PAYLOAD;
     }
 
     bpf_ringbuf_submit(e, 0);
@@ -498,6 +498,12 @@ SEC("tracepoint/syscalls/sys_exit_sendfile64")
 int handle_exit_sendfile(struct sys_exit_ctx *ctx)
 {
     submit_from_pending(ctx->ret);
+    // Unconditionally purge any stale sample.  submit_from_pending deletes
+    // it on the normal path, but if own_pid filtering skipped sys_enter
+    // (no incoming_pending entry) while fentry still fired, the sample
+    // would otherwise leak and eventually fill the map.
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    bpf_map_delete_elem(&sendfile_sample_map, &tid);
     return 0;
 }
 

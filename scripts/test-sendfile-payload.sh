@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Manual smoke-test for PR #107 (sendfile body capture via fentry).
+# Manual smoke-test for PR #68 (sendfile body capture via fentry).
 #
 # Verifies that fentry/tcp_sendmsg_locked loads and attaches successfully
 # so that sendfile events carry payload bytes.  Two kinds of checks:
