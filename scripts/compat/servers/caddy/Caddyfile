@@ -1,0 +1,4 @@
+:8080 {
+	root * TESTDATA_PATH
+	file_server
+}
