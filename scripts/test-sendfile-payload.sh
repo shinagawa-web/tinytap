@@ -15,13 +15,13 @@ set -euo pipefail
 
 WORKTREE="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${PORT:-19180}"
-TT_OUT=/tmp/tinytap-sendfile.log
-TT_ERR=/tmp/tinytap-sendfile.err
-SRV_LOG=/tmp/tinytap-sendfile-srv.log
+TT_OUT=/tmp/tinytap-sf.log
+TT_ERR=/tmp/tinytap-sf.err
+SRV_LOG=/tmp/tinytap-sf-srv.log
 FAILURES=0
 
 cleanup() {
-    sudo pkill -INT -x tinytap-sendfile 2>/dev/null || true
+    sudo pkill -INT -x tinytap-sf 2>/dev/null || true
     kill "${SRV_PID:-}" 2>/dev/null || true
     wait 2>/dev/null || true
 }
@@ -53,11 +53,11 @@ assert_absent() {
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 echo "==> building tinytap from ${WORKTREE}"
-go build -C "${WORKTREE}" -o /tmp/tinytap-sendfile ./cmd/tinytap/
+go build -C "${WORKTREE}" -o /tmp/tinytap-sf ./cmd/tinytap/
 
 # ── Go HTTP server (http.ServeFile → sendfile path) ───────────────────────────
 echo "==> writing Go file server"
-cat > /tmp/tinytap-sendfile-srv.go <<'GOEOF'
+cat > /tmp/tinytap-sf-srv.go <<'GOEOF'
 package main
 
 import (
@@ -70,7 +70,7 @@ func main() {
     port := os.Args[1]
 
     // Write a temp file with recognisable content.
-    f, err := os.CreateTemp("", "tinytap-sendfile-*.bin")
+    f, err := os.CreateTemp("", "tinytap-sf-*.bin")
     if err != nil { panic(err) }
     f.WriteString(strings.Repeat("F", 4096))
     f.Close()
@@ -83,7 +83,7 @@ func main() {
 GOEOF
 
 echo "==> starting Go server on :${PORT}"
-go run /tmp/tinytap-sendfile-srv.go "${PORT}" >"${SRV_LOG}" 2>&1 &
+go run /tmp/tinytap-sf-srv.go "${PORT}" >"${SRV_LOG}" 2>&1 &
 SRV_PID=$!
 
 for _ in $(seq 1 50); do
@@ -94,9 +94,9 @@ for _ in $(seq 1 50); do
 done
 
 # ── Start tinytap ─────────────────────────────────────────────────────────────
-echo "==> sudo /tmp/tinytap-sendfile --output stdout"
+echo "==> sudo /tmp/tinytap-sf --output stdout"
 : >"${TT_OUT}" >"${TT_ERR}"
-sudo /tmp/tinytap-sendfile --output stdout >"${TT_OUT}" 2>"${TT_ERR}" &
+sudo /tmp/tinytap-sf --output stdout >"${TT_OUT}" 2>"${TT_ERR}" &
 
 for _ in $(seq 1 50); do
     grep -q "tinytap running" "${TT_OUT}" 2>/dev/null && break
