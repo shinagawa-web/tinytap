@@ -27,7 +27,7 @@
 
 | Server | Issue | Syscall | Small | Medium | Large | Notes |
 |--------|-------|---------|-------|--------|-------|-------|
-| Python `http.server` | #41 | — | — | — | — | |
+| Python `http.server` | #41 | sendto | ✅ | ⚠️ (256 B / 1024 B) | ⚠️ (256 B / 51200 B) | Single `sendto` per body regardless of size — no `sendfile`, no chunking |
 | Go `net/http` | #42 | — | — | — | — | |
 | Node.js `http.createServer` | #43 | — | — | — | — | |
 | nginx (static + proxy) | #44 | — | — | — | — | sendfile expected for static files |
@@ -44,6 +44,8 @@
 ## Notes for #36 (lifting the 256 B BPF cap)
 
 > Collect per-server surprises (TCP_CORK, MSG_MORE, kernel buffering, sendfile gaps) here once the rows are filled in.
+
+- **Python `http.server` (#41)**: `BaseHTTPRequestHandler`/`SimpleHTTPRequestHandler` write headers and body as two separate `sendto` calls, and the body call is a single `sendto` regardless of size — confirmed with `strace` at 200 B, 1024 B, and 51200 B (no `sendfile`, no chunking into multiple writes even for the 50 KiB body). This means raising the BPF cap directly increases how much of *every* body is visible for this server; there's no per-chunk boundary to work around.
 
 ## Reusable test fixtures
 
