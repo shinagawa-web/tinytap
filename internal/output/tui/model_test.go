@@ -640,6 +640,63 @@ func TestBodyHexAndDecodedViews(t *testing.T) {
 	}
 }
 
+// A binary/media Content-Type (#117) shows a one-line placeholder instead of
+// a hex/decoded dump, in either mode.
+func TestDetailBodyShowsPlaceholderForBinaryContentType(t *testing.T) {
+	r := row{
+		method: "GET", path: "/logo.png", status: 200, bytes: 45231,
+		resHeaders: []http.Header{
+			{Name: "Content-Length", Value: "45231"}, // precedes Content-Type; must be skipped, not matched
+			{Name: "Content-Type", Value: "image/png"},
+		},
+		resBody: []byte{0x89, 0x50, 0x4e, 0x47},
+	}
+	for _, hex := range []bool{false, true} {
+		got := strings.Join(detailContent(r, hex), "\n")
+		if !strings.Contains(got, "Response body: [image/png, 45231 bytes]") {
+			t.Errorf("hex=%v: want a binary placeholder, got:\n%s", hex, got)
+		}
+		if strings.Contains(got, "89 50 4e 47") {
+			t.Errorf("hex=%v: binary body should not be hex-dumped:\n%s", hex, got)
+		}
+	}
+}
+
+// Content-Type parameters (charset, boundary, ...) are stripped before
+// matching, and the match is case-insensitive.
+func TestDetailBodyBinaryPlaceholderIgnoresParamsAndCase(t *testing.T) {
+	r := row{
+		method: "GET", path: "/report.pdf", status: 200, bytes: 10,
+		resHeaders: []http.Header{{Name: "content-type", Value: "APPLICATION/PDF; charset=binary"}},
+		resBody:    []byte("%PDF-1.4"),
+	}
+	got := strings.Join(detailContent(r, false), "\n")
+	if !strings.Contains(got, "Response body: [APPLICATION/PDF, 10 bytes]") {
+		t.Errorf("want a binary placeholder with the trimmed content-type:\n%s", got)
+	}
+}
+
+// Text-ish content types (including none at all) are unaffected.
+func TestDetailBodyNoPlaceholderForTextContentType(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers []http.Header
+	}{
+		{"json", []http.Header{{Name: "Content-Type", Value: "application/json"}}},
+		{"missing", nil},
+	}
+	for _, tc := range cases {
+		r := row{
+			method: "GET", path: "/", status: 200, bytes: 2,
+			resHeaders: tc.headers, resBody: []byte("{}"),
+		}
+		got := strings.Join(detailContent(r, false), "\n")
+		if !strings.Contains(got, "Response body (decoded, 2/2 bytes):") {
+			t.Errorf("%s: want the normal decoded block, got:\n%s", tc.name, got)
+		}
+	}
+}
+
 // b (and h) toggle every body block between decoded and hex at once, and the
 // mode is sticky.
 func TestBodyModeToggleKey(t *testing.T) {
