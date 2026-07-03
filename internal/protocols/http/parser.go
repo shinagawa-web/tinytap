@@ -112,7 +112,7 @@ type stream struct {
 	// has been appended to buf since the current message's start. At the
 	// header→body transition we subtract wireBytesConsumed to recover how
 	// many wire bytes of body have already been seen — necessary because
-	// payload samples are capped at MAX_PAYLOAD (256), so buf length and
+	// payload samples are capped at events.MaxPayload, so buf length and
 	// wire length diverge for any syscall larger than that.
 	wireBytesSinceMessageStart int
 	// wireBytesConsumed is the wire-byte length of buf slices consumed by

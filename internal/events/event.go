@@ -5,8 +5,8 @@
 package events
 
 import (
-	"bytes"
 	"encoding/binary"
+	"fmt"
 )
 
 // Syscall identifiers. Must match the SYS_* enum in bpf/tinytap.bpf.c.
@@ -28,11 +28,12 @@ const (
 // bpf/tinytap.bpf.c). Sampled bytes may be shorter than the syscall's
 // actual wire byte count; consumers that care about wire-level framing
 // must read Event.Bytes, not len(Event.Payload).
-const MaxPayload = 256
+const MaxPayload = 4096
 
 // Event mirrors the C `struct event` emitted by the BPF program. Field
 // order, sizes, and alignment must stay in lockstep with the C struct —
-// the wire format is binary.Read of the ringbuf record bytes.
+// the wire format is decoded directly from raw ringbuf record bytes (see
+// Decode).
 type Event struct {
 	TsNs       uint64
 	Pid        uint32
@@ -61,9 +62,33 @@ var SyscallNames = map[uint32]string{
 	SyscallSendfile: "sendfile",
 }
 
+// eventWireSize is sizeof(struct event) on the C side: the fixed 48-byte
+// header (ts_ns through comm) plus the MaxPayload-sized payload array.
+const eventWireSize = 48 + MaxPayload
+
 // Decode parses a single ringbuf record into an Event. Returns an error
 // only if the buffer is too short or otherwise malformed; partial events
 // are not produced.
+//
+// This decodes fields directly via encoding/binary's byte-slice helpers
+// and copy() instead of binary.Read(reader, ..., e): binary.Read falls
+// back to reflection for struct targets, and at MaxPayload=4096 (#36) that
+// reflection overhead on Event's [4096]byte field was CPU-bound enough,
+// per syscall event, to become the actual throughput bottleneck under a
+// request burst — confirmed by ruling out ring buffer capacity first (an
+// 8x larger ring changed the drop rate by well under 2%).
 func Decode(raw []byte, e *Event) error {
-	return binary.Read(bytes.NewReader(raw), binary.LittleEndian, e)
+	if len(raw) < eventWireSize {
+		return fmt.Errorf("events: short ringbuf record: got %d bytes, want %d", len(raw), eventWireSize)
+	}
+	e.TsNs = binary.LittleEndian.Uint64(raw[0:8])
+	e.Pid = binary.LittleEndian.Uint32(raw[8:12])
+	e.Tid = binary.LittleEndian.Uint32(raw[12:16])
+	e.Fd = int32(binary.LittleEndian.Uint32(raw[16:20]))
+	e.Bytes = binary.LittleEndian.Uint32(raw[20:24])
+	e.Syscall = binary.LittleEndian.Uint32(raw[24:28])
+	e.PayloadLen = binary.LittleEndian.Uint32(raw[28:32])
+	copy(e.Comm[:], raw[32:48])
+	copy(e.Payload[:], raw[48:eventWireSize])
+	return nil
 }

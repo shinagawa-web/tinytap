@@ -3,7 +3,16 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
-#define MAX_PAYLOAD 256
+// 4 KiB matches Go's net/http default response buffer and the arm64/x86_64
+// page size — enough to capture a typical "one syscall = one response body"
+// exchange in full (#36). Previously 256, which truncated almost every
+// non-trivial JSON/HTML response. struct event's payload[] is only ever
+// accessed through a bpf_ringbuf_reserve() pointer (ring buffer memory, not
+// the BPF stack), so this bump doesn't by itself risk the 512-byte eBPF
+// stack frame limit — the one place that did keep a MAX_PAYLOAD-sized
+// struct on the stack (tinytap_kprobe.bpf.c's sendfile sampler) was moved
+// to a per-CPU array map scratch buffer for exactly this reason.
+#define MAX_PAYLOAD 4096
 
 // Payload sample from fentry/tcp_sendmsg_locked; keyed by tid.
 // Written by the companion kprobe object; consumed at sys_exit_sendfile64.
@@ -40,7 +49,15 @@ struct event {
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 1 << 16);
+    // 8 MiB (was 64 KiB). Events grew from ~300 B to ~4.1 KiB with the
+    // MAX_PAYLOAD bump (#36) — see the comment on submit_sendfile_event for
+    // why every event reserves that full worst-case size. Measured with a
+    // 10k-request burst (20 parallel clients) after fixing the userspace
+    // decode bottleneck (internal/events.Decode): 1 MiB — the size #36
+    // originally proposed — still paired only ~83% of exchanges (238
+    // abandoned); 8 MiB paired ~99.95% with 0 abandoned. The extra ring
+    // memory is cheap for a debugging tool the user explicitly starts.
+    __uint(max_entries, 1 << 23);
 } events SEC(".maps");
 
 // Set by userspace before load. Events from this PID are skipped to avoid
@@ -141,18 +158,19 @@ static __always_inline __u32 read_msghdr(const void *user_msghdr_ptr,
 // verifier cannot prove `filled + to_read <= MAX_PAYLOAD` when both sides
 // are independently-tracked runtime scalars (tried and confirmed — see
 // PR discussion on #111), but it trivially proves it when each iteration's
-// contribution is a fixed constant. Sums to exactly MAX_PAYLOAD (256).
+// contribution is a fixed constant. Sums to exactly MAX_PAYLOAD (4096) —
+// same 176:32:16:8:8:8:4:4 proportions as the 256-byte cap, scaled by 16x.
 static __always_inline __u32 iov_sample_budget(int i)
 {
     switch (i) {
-    case 0:  return 176;
-    case 1:  return 32;
-    case 2:  return 16;
-    case 3:  return 8;
-    case 4:  return 8;
-    case 5:  return 8;
-    case 6:  return 4;
-    case 7:  return 4;
+    case 0:  return 2816;
+    case 1:  return 512;
+    case 2:  return 256;
+    case 3:  return 128;
+    case 4:  return 128;
+    case 5:  return 128;
+    case 6:  return 64;
+    case 7:  return 64;
     default: return 0;
     }
 }
@@ -264,6 +282,22 @@ struct {
 // Emit a SYS_SENDFILE event.  If s is non-NULL and carries bytes, the
 // page-cache sample from fentry/tcp_sendmsg_locked is included; otherwise
 // the event is emitted with byte count only (no payload).
+//
+// This and submit_event() always reserve sizeof(struct event) — the full
+// MAX_PAYLOAD-sized worst case — even for a 12-byte "Hello, world". A
+// variable-length reservation sized to the actual sample was tried (#36
+// PR discussion) but bpf_ringbuf_reserve's size argument must be a
+// compile-time-constant literal at the call site; funneling a runtime
+// value (even one clamped <= MAX_PAYLOAD, even through a bucketed
+// small-set-of-literal-sizes helper) through it is rejected by the
+// verifier, because the reservation's tracked size and the later payload
+// write's length live on different sides of a merge the verifier won't
+// carry a correlation across. This turned out not to matter in practice:
+// a 10k-request burst test showed ring *capacity* wasn't the bottleneck
+// (an 8x larger ring barely moved the drop rate) — the real cost was
+// userspace's reflection-based decode of the larger struct, fixed in
+// internal/events.Decode. The ring is still sized generously (see the
+// `events` map below) as reasonable headroom, not because it was the fix.
 static __always_inline void submit_sendfile_event(__s32 fd, __u32 bytes,
                                                   struct sendfile_sample *s)
 {
@@ -286,8 +320,14 @@ static __always_inline void submit_sendfile_event(__s32 fd, __u32 bytes,
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     if (s && s->payload_len > 0) {
-        __builtin_memcpy(e->payload, s->payload, MAX_PAYLOAD);
-        e->payload_len = s->payload_len < MAX_PAYLOAD ? s->payload_len : MAX_PAYLOAD;
+        // __builtin_memcpy of a MAX_PAYLOAD-sized (4096) buffer isn't
+        // something clang's BPF backend can lower to inline loads/stores
+        // (it tried to emit a real memcpy() call, which BPF programs can't
+        // make) — bpf_probe_read_kernel is the supported way to copy a
+        // clamped, verifier-provable length between two kernel buffers.
+        __u32 n = s->payload_len < MAX_PAYLOAD ? s->payload_len : MAX_PAYLOAD;
+        if (bpf_probe_read_kernel(e->payload, n, s->payload) == 0)
+            e->payload_len = n;
     }
 
     bpf_ringbuf_submit(e, 0);

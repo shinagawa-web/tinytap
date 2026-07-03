@@ -28,16 +28,16 @@ struct event {
     __u32 syscall;        // enum syscall_id; indicates which hook fired
     __u32 payload_len;    // actual bytes copied into payload[] (0 if no payload captured)
     __u8  comm[16];       // bpf_get_current_comm() — process name, may not be NUL-terminated
-    __u8  payload[256];   // first MAX_PAYLOAD bytes of the user buffer (outgoing only at sys_enter)
+    __u8  payload[4096];  // first MAX_PAYLOAD bytes of the user buffer (outgoing only at sys_enter)
 };
 ```
 
-Total: 304 bytes. No implicit padding — fields are ordered so the natural layout aligns to 8 bytes.
+Total: 4144 bytes. No implicit padding — fields are ordered so the natural layout aligns to 8 bytes.
 
 ## Go side (userspace)
 
 ```go
-const maxPayload = 256
+const maxPayload = 4096
 
 type Event struct {
     TsNs       uint64
@@ -63,7 +63,7 @@ Decoded from raw ringbuf bytes via `encoding/binary` with little-endian byte ord
 - **`syscall`** — enum value from above. The Go side has a parallel `syscallNames` map.
 - **`payload_len`** — set to 0 for hooks that don't capture payload (accept4 / close / incoming syscalls at sys_enter). Otherwise `min(MAX_PAYLOAD, bytes)`.
 - **`comm`** — kernel's `task_struct.comm`, max 15 chars + NUL. **Not guaranteed NUL-terminated** when exactly 16 chars long; trim trailing NULs before printing.
-- **`payload`** — up to 256 bytes of the user buffer at `sys_enter`. Only populated for outgoing syscalls (`write` / `sendto` / `sendmsg`); see [#12](https://github.com/shinagawa-web/tinytap/issues/12). Incoming payload capture (via `sys_exit`) is tracked in [#13](https://github.com/shinagawa-web/tinytap/issues/13).
+- **`payload`** — up to `MAX_PAYLOAD` (4096) bytes of the user buffer at `sys_enter`. Only populated for outgoing syscalls (`write` / `sendto` / `sendmsg`); see [#12](https://github.com/shinagawa-web/tinytap/issues/12). Incoming payload capture (via `sys_exit`) is tracked in [#13](https://github.com/shinagawa-web/tinytap/issues/13). Raised from 256 to 4096 in #36 — see that issue for the trade-off rationale (4 KiB matches Go's `net/http` default response buffer and the page size).
 
 ## Layout (offsets)
 
@@ -77,5 +77,5 @@ Decoded from raw ringbuf bytes via `encoding/binary` with little-endian byte ord
 | 24  | 4   | `syscall` |
 | 28  | 4   | `payload_len` |
 | 32  | 16  | `comm[16]` |
-| 48  | 256 | `payload[256]` |
-| **Total** | **304** | |
+| 48  | 4096 | `payload[4096]` |
+| **Total** | **4144** | |

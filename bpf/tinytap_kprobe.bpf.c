@@ -17,7 +17,8 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-#define MAX_PAYLOAD      256
+// Must match tinytap.bpf.c's MAX_PAYLOAD exactly (#36).
+#define MAX_PAYLOAD      4096
 #define MSG_SPLICE_PAGES 0x8000000
 
 // arm64, VA_BITS=48, no KASAN.
@@ -38,6 +39,19 @@ struct {
     __type(key, __u32);                    // tid
     __type(value, struct sendfile_sample);
 } sendfile_sample_map SEC(".maps");
+
+// Per-CPU scratch buffer for staging a sample before it goes into
+// sendfile_sample_map. At MAX_PAYLOAD=4096, `struct sendfile_sample` is
+// ~4.1 KiB — far past the 512-byte eBPF stack frame limit, so it can no
+// longer be a local variable (#36). A per-CPU array map entry lives in the
+// map's backing memory instead of the stack, and one entry per CPU is
+// enough because this program runs with preemption disabled.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct sendfile_sample);
+} sendfile_scratch_map SEC(".maps");
 
 SEC("fentry/tcp_sendmsg_locked")
 int BPF_PROG(handle_tcp_sendmsg_locked, struct sock *sk, struct msghdr *msg,
@@ -72,13 +86,17 @@ int BPF_PROG(handle_tcp_sendmsg_locked, struct sock *sk, struct msghdr *msg,
     if (to_read == 0)
         return 0;
 
-    __u32 tid = (__u32)bpf_get_current_pid_tgid();
-    struct sendfile_sample s = {};
-    if (bpf_probe_read_kernel(s.payload, to_read, (void *)(unsigned long)va) < 0)
+    __u32 zero = 0;
+    struct sendfile_sample *s = bpf_map_lookup_elem(&sendfile_scratch_map, &zero);
+    if (!s)
         return 0;
-    s.payload_len = to_read;
 
-    bpf_map_update_elem(&sendfile_sample_map, &tid, &s, BPF_ANY);
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    if (bpf_probe_read_kernel(s->payload, to_read, (void *)(unsigned long)va) < 0)
+        return 0;
+    s->payload_len = to_read;
+
+    bpf_map_update_elem(&sendfile_sample_map, &tid, s, BPF_ANY);
     return 0;
 }
 
