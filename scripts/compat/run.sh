@@ -15,8 +15,9 @@ SERVER_URL="${1:?Usage: $0 <SERVER_URL>   e.g. http://localhost:8080}"
 SERVER_URL="${SERVER_URL%/}"  # strip trailing slash
 
 SMALL_EXPECTED=200
-MEDIUM_EXPECTED=1024
+MEDIUM_EXPECTED=8192
 LARGE_EXPECTED=51200
+IMAGE_EXPECTED=68
 
 fire() {
     local label=$1 path=$2 expected=$3
@@ -32,9 +33,10 @@ fire() {
 echo "==> Firing compat requests at $SERVER_URL"
 echo
 
-fire "small.txt  (within BPF cap)"   "small.txt"  "$SMALL_EXPECTED"
-fire "medium.txt (exceeds cap)"       "medium.txt" "$MEDIUM_EXPECTED"
-fire "large.txt  (multi-write / sendfile)" "large.txt"  "$LARGE_EXPECTED"
+fire "small.txt  (within BPF cap)"     "small.txt"  "$SMALL_EXPECTED"
+fire "medium.txt (~2x cap, truncated)" "medium.txt" "$MEDIUM_EXPECTED"
+fire "large.txt  (multi-write / sendfile)" "large.txt" "$LARGE_EXPECTED"
+fire "image.png  (binary placeholder)" "image.png"  "$IMAGE_EXPECTED"
 
 echo
 echo "==> All responses verified. Check tinytap TUI for captured events."

@@ -42,7 +42,7 @@
 | Server | Issue | Syscall | Small | Medium | Large | Image | Notes |
 |--------|-------|---------|-------|--------|-------|-------|-------|
 | Python `http.server` | #41 | — | — | — | — | — | |
-| Go `net/http` | #42 | — | — | — | — | — | |
+| Go `net/http` | #42 | write (≤512 B body); write+sendfile (>512 B body) | ✅ | ⚠️ arm64 (512 B write prefix + 4096 B kprobe sample) / ❌ x86_64 | ⚠️ arm64 (512 B write prefix + 4096 B kprobe sample) / ❌ x86_64 | ✅ (placeholder) | No `writev`/`sendmsg`, no chunked encoding, no `TCP_CORK` — #111/#113/#116/#122 don't apply to this server |
 | Node.js `http.createServer` | #43 | — | — | — | — | — | |
 | nginx (static + proxy) | #44 | — | — | — | — | — | sendfile expected for static files |
 | Caddy | #45 | — | — | — | — | — | |
@@ -58,6 +58,11 @@
 ## Notes for #36 / #111 / #113 / #116 / #122 (per-server surprises)
 
 > Collect per-server surprises (TCP_CORK, MSG_MORE, kernel buffering, sendfile gaps, multi-iovec placement) here as rows are filled in.
+
+- **Go `net/http` (#42)**: confirmed with `strace -f -e trace=network,write,writev,sendto,sendmsg,sendfile` against a minimal server (`w.Write` for `/hello`, `http.FileServer` for everything else) serving 200 B, 8192 B, 51200 B, and a 68 B PNG (`Content-Type: image/png`).
+  - **≤512 B bodies (small.txt, image.png)**: `ServeContent`'s `io.ReaderFrom` fast path bundles the whole body into the same buffer as the response headers, so it goes out as a single `write` (386 B and 237 B respectively) — never touches `sendfile`. Fully visible, well within the 4096 B cap. The image response correctly carries `Content-Type: image/png`, so the TUI shows the #117 binary placeholder instead of a hex/decoded dump for this row.
+  - **>512 B bodies (medium.txt, large.txt)**: the fast path always writes the headers plus exactly the *first 512 B* of the body in one `write` call (699 B and 700 B on the wire, i.e. ~187–188 B of headers + 512 B of body), then hands the entire remainder to a single `sendfile` call (7680 B for the 8192 B body, 50688 B for the 51200 B body — in both cases `total − 512`). This 512 B split happens regardless of body size or whether `Content-Type` was already resolved by the file extension, so it looks like the same buffer `ServeContent` always primes before deciding on the sendfile path. On arm64 (this Lima VM) the `fentry/tcp_sendmsg_locked` kprobe (#68) samples up to 4096 B of the sendfile transfer from the page cache, so the total visible fraction is the 512 B write prefix plus up to 4096 B from the kprobe (4608 of 8192 B for medium; 4608 of 51200 B for large) — truncated but paired successfully, since an explicit `Content-Length` is always set and draining is pure wire-byte accounting (no abandon risk per #116's non-chunked path). On x86_64 the kprobe isn't implemented yet (#112), so only the 512 B write prefix is visible and the rest of the body is invisible.
+  - **Net effect**: none of `writev`, `sendmsg`, or chunked `Transfer-Encoding` appear anywhere in this server's default paths, so #111, #113, #116, and #122 are all non-issues for Go's `net/http` — the only capture gap here is the sendfile path itself (#36's cap plus #112's missing x86_64 kprobe). No `TCP_CORK`/`MSG_MORE` — only the usual `TCP_NODELAY` + keepalive `setsockopt`s.
 
 ## Reusable test fixtures
 
