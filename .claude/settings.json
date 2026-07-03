@@ -45,37 +45,7 @@
   },
   "permissions": {
     "allow": [
-      "Bash(go vet *)",
-      "Bash(go version *)",
-      "Bash(bpftool btf *)",
-      "Bash(gofmt *)",
-      "Bash(llvm-readelf *)",
-      "Bash(llvm-objdump *)",
-      "Bash(ls *)",
-      "Bash(grep *)",
-      "Bash(head *)",
-      "Bash(tail *)",
-      "Bash(go build *)",
-      "Bash(go test *)",
-      "Bash(go doc *)",
-      "Bash(git add *)",
-      "Bash(git commit *)",
-      "Bash(git push *)",
-      "Bash(git fetch *)",
-      "Bash(git pull *)",
-      "Bash(git checkout *)",
-      "Bash(git branch *)",
-      "Bash(git worktree *)",
-      "Bash(git merge *)",
-      "Bash(git stash *)",
-      "Bash(git restore *)",
-      "Bash(git status *)",
-      "Bash(git log *)",
-      "Bash(git diff *)",
-      "Bash(git check-ignore *)",
-      "Bash(gh pr *)",
-      "Bash(gh issue *)",
-      "Bash(gh repo *)"
+      "Bash(*)"
     ]
   }
 }
