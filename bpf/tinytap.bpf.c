@@ -145,10 +145,14 @@ static __always_inline __u32 read_msghdr(const void *user_msghdr_ptr,
 static __always_inline __u32 iov_sample_budget(int i)
 {
     switch (i) {
-    case 0:  return 200;
+    case 0:  return 176;
     case 1:  return 32;
     case 2:  return 16;
     case 3:  return 8;
+    case 4:  return 8;
+    case 5:  return 8;
+    case 6:  return 4;
+    case 7:  return 4;
     default: return 0;
     }
 }
@@ -198,9 +202,17 @@ static __always_inline __u32 fill_iov_payload(const void *iov_user_ptr, __u32 io
             __u32 to_read = avail;
             if (to_read > budget)
                 to_read = budget;
-            if (to_read > 0 &&
-                bpf_probe_read_user(e->payload + filled, to_read, iov.iov_base) == 0)
-                filled += to_read;
+            if (to_read > 0) {
+                // A failed read must count as truncation too, not just a
+                // budget-capped read: leaving `filled` unadvanced here
+                // while `truncated` stays 0 would let the *next* iovec's
+                // bytes land right after it, splicing across the unread
+                // gap exactly as described above.
+                if (bpf_probe_read_user(e->payload + filled, to_read, iov.iov_base) == 0)
+                    filled += to_read;
+                else
+                    truncated = 1;
+            }
             if (to_read < avail)
                 truncated = 1;
         } else if (avail > 0) {
