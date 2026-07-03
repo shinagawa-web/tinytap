@@ -533,24 +533,25 @@ func feedBodySize(t *testing.T, bodySize int) []Message {
 }
 
 func TestBodySizeExactlySampleCap(t *testing.T) {
-	got := feedBodySize(t, 256) // exactly MaxPayload
+	got := feedBodySize(t, events.MaxPayload) // headers + body together fill the sample exactly
 	if len(got) != 1 {
 		t.Fatalf("want 1 message, got %d", len(got))
 	}
-	// headers consume most of the sample so body is likely truncated, but the
+	// headers consume some of the sample so body is likely truncated, but the
 	// message is emitted and body size is correct on the wire.
-	if got[0].ContentLength != 256 {
-		t.Errorf("ContentLength = %d, want 256", got[0].ContentLength)
+	if got[0].ContentLength != events.MaxPayload {
+		t.Errorf("ContentLength = %d, want %d", got[0].ContentLength, events.MaxPayload)
 	}
 }
 
 func TestBodySizeOneOverSampleCap(t *testing.T) {
-	got := feedBodySize(t, 257)
+	const size = events.MaxPayload + 1
+	got := feedBodySize(t, size)
 	if len(got) != 1 {
 		t.Fatalf("want 1 message, got %d", len(got))
 	}
-	if got[0].ContentLength != 257 {
-		t.Errorf("ContentLength = %d, want 257", got[0].ContentLength)
+	if got[0].ContentLength != size {
+		t.Errorf("ContentLength = %d, want %d", got[0].ContentLength, size)
 	}
 }
 
