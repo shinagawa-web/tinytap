@@ -3,7 +3,9 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
-#define MAX_PAYLOAD 256
+// Must match tinytap.bpf.c's MAX_PAYLOAD exactly (#36) — this struct is
+// decoded with the same Go-side layout via internal/events.
+#define MAX_PAYLOAD 4096
 
 // Must stay in lockstep with internal/events/event.go and bpf/tinytap.bpf.c.
 struct event {

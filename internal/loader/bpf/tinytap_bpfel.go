@@ -25,7 +25,7 @@ type TinytapIncomingPending struct {
 type TinytapSendfileSample struct {
 	_          structs.HostLayout
 	PayloadLen uint32
-	Payload    [256]uint8
+	Payload    [4096]uint8
 }
 
 // LoadTinytap returns the embedded CollectionSpec for Tinytap.

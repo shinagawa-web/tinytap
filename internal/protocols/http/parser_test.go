@@ -34,8 +34,10 @@ func makeEvent(syscall uint32, pid uint32, fd int32, wireBytes uint32, sample []
 // MAX_PAYLOAD), so a body > 256 bytes left bodyRemaining permanently
 // positive — and the next keep-alive message was mis-attributed as body.
 func TestBodySplitAcrossMultipleSyscalls(t *testing.T) {
-	headers := []byte("HTTP/1.1 200 OK\r\nContent-Length: 3000\r\n\r\n")
-	chunk := make([]byte, 1000) // sample will be truncated to 256
+	const chunkSize = events.MaxPayload + 1000 // each syscall exceeds the sample cap
+	const total = chunkSize * 3
+	headers := []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n", total))
+	chunk := make([]byte, chunkSize) // sample will be truncated to events.MaxPayload
 	for i := range chunk {
 		chunk[i] = 'B'
 	}
@@ -43,24 +45,25 @@ func TestBodySplitAcrossMultipleSyscalls(t *testing.T) {
 	p := NewParser()
 	pid, fd := uint32(1234), int32(7)
 
-	// Event 1: headers + first 1000 wire bytes of body, sample 256. The message
-	// is now emitted only once the body fully drains (#35), so nothing comes
-	// out while the body is still arriving.
+	// Event 1: headers + first chunkSize wire bytes of body, sample capped at
+	// events.MaxPayload. The message is now emitted only once the body fully
+	// drains (#35), so nothing comes out while the body is still arriving.
 	ev1Wire := append(append([]byte{}, headers...), chunk...)
 	ev1 := makeEvent(events.SyscallWrite, pid, fd, uint32(len(headers)+len(chunk)), ev1Wire)
 	if got := p.Feed(ev1); len(got) != 0 {
 		t.Fatalf("event 1: expected no HTTP events while body drains, got %+v", got)
 	}
 
-	// Event 2: 1000 more wire bytes of body — still draining.
+	// Event 2: chunkSize more wire bytes of body — still draining.
 	ev2 := makeEvent(events.SyscallWrite, pid, fd, uint32(len(chunk)), chunk)
 	if got := p.Feed(ev2); len(got) != 0 {
 		t.Fatalf("event 2: expected no HTTP events while body drains, got %+v", got)
 	}
 
-	// Event 3: final 1000 wire bytes — body complete (3000), message emitted.
-	// Each syscall carried 1000 wire bytes but only 256 sample bytes, so the
-	// body is captured partially and flagged truncated.
+	// Event 3: final chunkSize wire bytes — body complete (total), message
+	// emitted. Each syscall carried chunkSize wire bytes but only
+	// events.MaxPayload sample bytes, so the body is captured partially and
+	// flagged truncated.
 	ev3 := makeEvent(events.SyscallWrite, pid, fd, uint32(len(chunk)), chunk)
 	got := p.Feed(ev3)
 	if len(got) != 1 || got[0].Res.status != 200 {
@@ -69,8 +72,8 @@ func TestBodySplitAcrossMultipleSyscalls(t *testing.T) {
 	if !got[0].BodyTruncated {
 		t.Error("body delivered in >MaxPayload syscalls should be truncated")
 	}
-	if len(got[0].BodySample) == 0 || len(got[0].BodySample) >= 3000 {
-		t.Errorf("want a partial body sample (0 < n < 3000), got %d bytes", len(got[0].BodySample))
+	if len(got[0].BodySample) == 0 || len(got[0].BodySample) >= total {
+		t.Errorf("want a partial body sample (0 < n < %d), got %d bytes", total, len(got[0].BodySample))
 	}
 
 	// Event 4: next pipelined response — only parses if body framing closed.
@@ -331,24 +334,25 @@ func TestBinaryBodyCapturedVerbatim(t *testing.T) {
 // flags the body truncated. Headers arrive alone first so the cap applies to
 // the body, not to headers + body sharing one sample.
 func TestBodyInOneLargeSyscallTruncatedToSample(t *testing.T) {
+	const bodySize = events.MaxPayload + 1000
 	p := NewParser()
 	pid, fd := uint32(1234), int32(7)
-	hdr := []byte("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
+	hdr := []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n", bodySize))
 	if got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, uint32(len(hdr)), hdr)); len(got) != 0 {
 		t.Fatalf("headers alone should not emit yet, got %+v", got)
 	}
-	body := make([]byte, 1000)
+	body := make([]byte, bodySize)
 	for i := range body {
 		body[i] = 'B'
 	}
-	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, 1000, body))
+	got := p.Feed(makeEvent(events.SyscallWrite, pid, fd, bodySize, body))
 	if len(got) != 1 {
 		t.Fatalf("want 1 message at body completion, got %d", len(got))
 	}
 	if !got[0].BodyTruncated {
 		t.Error("a body larger than the sample cap should be truncated")
 	}
-	if n := len(got[0].BodySample); n == 0 || n > 256 {
+	if n := len(got[0].BodySample); n == 0 || n > events.MaxPayload {
 		t.Errorf("want a sample-capped body (0 < n <= 256), got %d", n)
 	}
 }

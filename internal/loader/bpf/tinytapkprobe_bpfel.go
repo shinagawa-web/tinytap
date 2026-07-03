@@ -16,7 +16,7 @@ import (
 type TinytapKprobeSendfileSample struct {
 	_          structs.HostLayout
 	PayloadLen uint32
-	Payload    [256]uint8
+	Payload    [4096]uint8
 }
 
 // LoadTinytapKprobe returns the embedded CollectionSpec for TinytapKprobe.
@@ -68,7 +68,8 @@ type TinytapKprobeProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type TinytapKprobeMapSpecs struct {
-	SendfileSampleMap *ebpf.MapSpec `ebpf:"sendfile_sample_map"`
+	SendfileSampleMap  *ebpf.MapSpec `ebpf:"sendfile_sample_map"`
+	SendfileScratchMap *ebpf.MapSpec `ebpf:"sendfile_scratch_map"`
 }
 
 // TinytapKprobeVariableSpecs contains global variables before they are loaded into the kernel.
@@ -97,12 +98,14 @@ func (o *TinytapKprobeObjects) Close() error {
 //
 // It can be passed to LoadTinytapKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type TinytapKprobeMaps struct {
-	SendfileSampleMap *ebpf.Map `ebpf:"sendfile_sample_map"`
+	SendfileSampleMap  *ebpf.Map `ebpf:"sendfile_sample_map"`
+	SendfileScratchMap *ebpf.Map `ebpf:"sendfile_scratch_map"`
 }
 
 func (m *TinytapKprobeMaps) Close() error {
 	return _TinytapKprobeClose(
 		m.SendfileSampleMap,
+		m.SendfileScratchMap,
 	)
 }
 
