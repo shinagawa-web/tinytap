@@ -131,14 +131,14 @@ type model struct {
 	rows         []row
 	width        int
 	height       int
-	selected     int  // display index (filtered or raw) of the ▸ row; 0 when empty
-	top          int  // display index of the first visible row (the scroll anchor)
-	follow       bool // when true, selection tracks the newest row as rows arrive
-	detailOpen   bool // when true, the bottom detail panel is shown for the selection
-	panelFocus   bool // when true (and detailOpen), keys scroll the panel instead of the table
-	detailOffset int  // first visible line of the panel body when its content overflows
-	hexMode      bool // when true, body blocks render as a hex dump instead of decoded text
-	bodyBytes    int  // total retained body bytes across rows, bounded by sessionBodyBudget
+	selected     int    // display index (filtered or raw) of the ▸ row; 0 when empty
+	top          int    // display index of the first visible row (the scroll anchor)
+	follow       bool   // when true, selection tracks the newest row as rows arrive
+	detailOpen   bool   // when true, the bottom detail panel is shown for the selection
+	panelFocus   bool   // when true (and detailOpen), keys scroll the panel instead of the table
+	detailOffset int    // first visible line of the panel body when its content overflows
+	hexMode      bool   // when true, body blocks render as a hex dump instead of decoded text
+	bodyBytes    int    // total retained body bytes across rows, bounded by sessionBodyBudget
 	filterMode   bool   // when true, keystrokes feed the filter input instead of navigating
 	filterTerm   string // live filter text; empty means all rows are visible
 	filtered     []int  // indices into rows for matching rows; nil when filterTerm is empty
@@ -595,10 +595,10 @@ func (m model) detailBody() []string {
 func detailContent(r row, hex bool) []string {
 	lines := []string{" Request:", fmt.Sprintf("   %s %s %s", r.method, r.path, r.reqVersion)}
 	lines = append(lines, headerLines(r.reqHeaders)...)
-	lines = append(lines, bodyBlock("Request body", r.reqBody, r.reqBytes, r.reqBodyTruncated, hex)...)
+	lines = append(lines, bodyBlock("Request body", r.reqBody, r.reqBytes, r.reqBodyTruncated, hex, r.reqHeaders)...)
 	lines = append(lines, "", " Response:", fmt.Sprintf("   %s %d %s", r.resVersion, r.status, r.reason))
 	lines = append(lines, headerLines(r.resHeaders)...)
-	lines = append(lines, bodyBlock("Response body", r.resBody, r.bytes, r.resBodyTruncated, hex)...)
+	lines = append(lines, bodyBlock("Response body", r.resBody, r.bytes, r.resBodyTruncated, hex, r.resHeaders)...)
 	return lines
 }
 
@@ -606,9 +606,21 @@ func detailContent(r row, hex bool) []string {
 // [— truncated]):" header followed by the body as decoded text or a hex dump.
 // It returns nil — no block at all — when there is no body to show (#32: GET
 // shows only a response body; a body-less side renders nothing, not "(none)").
-func bodyBlock(label string, body []byte, total int, truncated, hex bool) []string {
+// When headers name a binary/media Content-Type (#117), the hex/decoded dump
+// is replaced by a one-line "<label>: [<content-type>, N bytes]" placeholder —
+// neither view is useful for images, video, audio, or other non-text bodies,
+// and what little a sample cap kept is never a meaningful slice of one.
+func bodyBlock(label string, body []byte, total int, truncated, hex bool, headers []http.Header) []string {
 	if len(body) == 0 {
 		return nil
+	}
+	if ct, ok := binaryContentType(headers); ok {
+		line := fmt.Sprintf(" %s: [%s, %d bytes", label, ct, total)
+		if truncated {
+			line += " — truncated"
+		}
+		line += "]"
+		return []string{"", line}
 	}
 	mode := "decoded"
 	if hex {
@@ -625,6 +637,39 @@ func bodyBlock(label string, body []byte, total int, truncated, hex bool) []stri
 		return append(out, hexLines(body)...)
 	}
 	return append(out, decodedLines(body)...)
+}
+
+// binaryContentTypes lists the top-level types and exact values treated as
+// binary/media (#117): decoded text and hex dumps are equally useless for
+// these, so the detail panel shows a placeholder instead. Anything else —
+// text/*, application/json, no Content-Type at all — keeps the existing
+// hex/decoded rendering.
+var binaryContentTypes = []string{"image/", "video/", "audio/", "font/", "application/octet-stream", "application/pdf"}
+
+// binaryContentType returns the (trimmed, parameter-stripped) Content-Type
+// value and true when headers name a binary/media type per
+// binaryContentTypes. It trusts the header only — no magic-byte sniffing.
+func binaryContentType(headers []http.Header) (string, bool) {
+	for _, h := range headers {
+		if !strings.EqualFold(h.Name, "Content-Type") {
+			continue
+		}
+		ct := strings.TrimSpace(h.Value)
+		if i := strings.IndexByte(ct, ';'); i >= 0 {
+			ct = strings.TrimSpace(ct[:i])
+		}
+		lower := strings.ToLower(ct)
+		for _, prefix := range binaryContentTypes {
+			if strings.HasSuffix(prefix, "/") && strings.HasPrefix(lower, prefix) {
+				return ct, true
+			}
+			if lower == prefix {
+				return ct, true
+			}
+		}
+		return ct, false
+	}
+	return "", false
 }
 
 // decodedLines renders body bytes as indented text lines: printable ASCII is
