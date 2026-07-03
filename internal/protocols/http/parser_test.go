@@ -1612,9 +1612,11 @@ func TestChunkedOversizedChunkSizeAbandons(t *testing.T) {
 }
 
 // When chunk data exactly fills the MaxPayload sample cap, the trailing "\r\n"
-// arrives on the wire but is dropped from the sample. The parser must abandon
-// rather than stall waiting for bytes that will never appear in s.buf.
-func TestChunkedCRLFDroppedByMaxPayloadAbandons(t *testing.T) {
+// arrives on the wire but is dropped from the sample. Wire-byte accounting
+// already proves the chunk completed correctly, so the parser trusts it and
+// keeps pairing instead of abandoning (#116) — matching stateNeedBody's trust
+// model for opaque body bytes elsewhere in this file.
+func TestChunkedCRLFDroppedByMaxPayloadTrustsWireBytes(t *testing.T) {
 	headers := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
 	chunkLine := []byte("5\r\n")
 	chunkData := []byte("hello")
@@ -1626,18 +1628,30 @@ func TestChunkedCRLFDroppedByMaxPayloadAbandons(t *testing.T) {
 	p := NewParser()
 	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, wireBytes, sample))
 	if len(got) != 0 {
-		t.Fatalf("want 0 messages, got %d", len(got))
+		t.Fatalf("want 0 messages before the terminating chunk, got %d", len(got))
 	}
-	// Stream must be abandoned — further events on same fd are silently dropped.
+	// The stream must still be live — not abandoned — so the terminating
+	// zero-chunk completes the message instead of being silently dropped.
 	next := []byte("0\r\n\r\n")
 	got = p.Feed(makeEvent(events.SyscallWrite, 1, 1, uint32(len(next)), next))
-	if len(got) != 0 {
-		t.Fatalf("abandoned stream must not emit messages, got %d", len(got))
+	if len(got) != 1 {
+		t.Fatalf("want 1 message at body completion, got %d", len(got))
+	}
+	if string(got[0].BodySample) != "hello" {
+		t.Errorf("BodySample = %q, want %q", got[0].BodySample, "hello")
+	}
+	if got[0].BodyTruncated {
+		t.Error("chunk data itself was fully sampled — only framing bytes were skipped — want BodyTruncated false")
 	}
 }
 
 // When the trailer terminator arrives on the wire but is dropped by the
-// MaxPayload cap, the parser must abandon rather than stall.
+// MaxPayload cap, the parser must abandon rather than stall — unlike
+// stateNeedChunkCRLF (#116), the trailer section has no fixed length, so
+// "more wire bytes arrived than the sample captured" doesn't prove the
+// terminator itself arrived (a long trailer field could still be streaming
+// in). See the code comment in stateNeedTrailer for why this can't safely
+// use the same trust-wire-bytes fix as the chunk-CRLF case.
 func TestChunkedTrailerTerminatorDroppedByMaxPayloadAbandons(t *testing.T) {
 	headers := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
 	termChunk := []byte("0\r\n")

@@ -689,12 +689,31 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 		case stateNeedChunkCRLF:
 			// Consume the "\r\n" that follows each chunk's data.
 			if len(s.buf) < 2 {
-				// If wire bytes exceed what the sample captured, the CRLF
-				// arrived on the wire but was dropped by the MaxPayload cap
-				// and will never appear in s.buf — abandon to avoid a stall.
-				if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
-					s.abandoned = true
+				// If wire-byte accounting already shows at least 2 more
+				// bytes arrived beyond what's been consumed, the CRLF made
+				// it onto the wire even though the MaxPayload cap kept it
+				// (or part of it) out of the sample. Trust that accounting
+				// instead of abandoning — same model stateNeedBody already
+				// uses for opaque body bytes (#116) — rather than stalling
+				// forever waiting for bytes that will never appear in
+				// s.buf. Any leftover byte already in s.buf is discarded
+				// unvalidated along with it: this is a deliberate trade,
+				// accepting that a non-compliant peer whose declared byte
+				// count doesn't actually end in "\r\n" would be silently
+				// mis-framed, in exchange for correctly pairing well-formed
+				// exchanges regardless of chunk size. This branch itself
+				// never sets BodyTruncated — it only skips 2 framing bytes,
+				// not body content. BodyTruncated may already be true by
+				// the time we get here (set earlier, by the chunk-data path
+				// above, if the chunk's *data* didn't fully fit the
+				// sample) or may still be false (if the data fit but only
+				// this trailing CRLF was cut) — either way it accurately
+				// reflects whether body content, specifically, was lost.
+				if s.wireBytesSinceMessageStart-s.wireBytesConsumed >= 2 {
+					s.wireBytesConsumed += 2
 					s.buf = nil
+					s.state = stateNeedChunkSize
+					continue
 				}
 				return out
 			}
@@ -722,6 +741,23 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 					// sample captured, the terminator was dropped by the
 					// MaxPayload cap and will never appear in s.buf — abandon
 					// to avoid a permanent stall.
+					//
+					// Unlike stateNeedChunkCRLF (#116), this can't be fixed
+					// the same way: the trailer section has no fixed length,
+					// so "more wire bytes arrived than the sample captured"
+					// doesn't prove the terminator itself arrived — it could
+					// just as easily mean a single trailer field is long
+					// enough to exceed MaxPayload on its own and continues in
+					// a later syscall, nowhere near the terminator yet.
+					// Trusting that case would emit the message prematurely
+					// and misframe every event after it (confirmed while
+					// reviewing this fix — see PR #120 discussion). Properly
+					// fixing this needs a way to tell "this sample was
+					// truncated mid-trailer-field, more is coming" apart
+					// from "the terminator specifically was dropped", which
+					// stateNeedChunkCRLF gets for free from the chunk's
+					// already-known size and this state does not. Left as a
+					// separate, more carefully-scoped follow-up.
 					if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
 						s.abandoned = true
 						s.buf = nil
