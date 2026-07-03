@@ -131,14 +131,14 @@ type model struct {
 	rows         []row
 	width        int
 	height       int
-	selected     int  // display index (filtered or raw) of the ▸ row; 0 when empty
-	top          int  // display index of the first visible row (the scroll anchor)
-	follow       bool // when true, selection tracks the newest row as rows arrive
-	detailOpen   bool // when true, the bottom detail panel is shown for the selection
-	panelFocus   bool // when true (and detailOpen), keys scroll the panel instead of the table
-	detailOffset int  // first visible line of the panel body when its content overflows
-	hexMode      bool // when true, body blocks render as a hex dump instead of decoded text
-	bodyBytes    int  // total retained body bytes across rows, bounded by sessionBodyBudget
+	selected     int    // display index (filtered or raw) of the ▸ row; 0 when empty
+	top          int    // display index of the first visible row (the scroll anchor)
+	follow       bool   // when true, selection tracks the newest row as rows arrive
+	detailOpen   bool   // when true, the bottom detail panel is shown for the selection
+	panelFocus   bool   // when true (and detailOpen), keys scroll the panel instead of the table
+	detailOffset int    // first visible line of the panel body when its content overflows
+	hexMode      bool   // when true, body blocks render as a hex dump instead of decoded text
+	bodyBytes    int    // total retained body bytes across rows, bounded by sessionBodyBudget
 	filterMode   bool   // when true, keystrokes feed the filter input instead of navigating
 	filterTerm   string // live filter text; empty means all rows are visible
 	filtered     []int  // indices into rows for matching rows; nil when filterTerm is empty
@@ -615,7 +615,12 @@ func bodyBlock(label string, body []byte, total int, truncated, hex bool, header
 		return nil
 	}
 	if ct, ok := binaryContentType(headers); ok {
-		return []string{"", fmt.Sprintf(" %s: [%s, %d bytes]", label, ct, total)}
+		line := fmt.Sprintf(" %s: [%s, %d bytes", label, ct, total)
+		if truncated {
+			line += " — truncated"
+		}
+		line += "]"
+		return []string{"", line}
 	}
 	mode := "decoded"
 	if hex {

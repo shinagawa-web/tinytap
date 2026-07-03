@@ -676,6 +676,22 @@ func TestDetailBodyBinaryPlaceholderIgnoresParamsAndCase(t *testing.T) {
 	}
 }
 
+// A truncated binary body still surfaces the "— truncated" indicator (the
+// text/hex path already does this via bodyBlock's kept/total header) so the
+// user isn't misled into thinking capture was complete.
+func TestDetailBodyBinaryPlaceholderShowsTruncatedMarker(t *testing.T) {
+	r := row{
+		method: "GET", path: "/logo.png", status: 200, bytes: 45231,
+		resHeaders:       []http.Header{{Name: "Content-Type", Value: "image/png"}},
+		resBody:          make([]byte, 256),
+		resBodyTruncated: true,
+	}
+	got := strings.Join(detailContent(r, false), "\n")
+	if !strings.Contains(got, "Response body: [image/png, 45231 bytes — truncated]") {
+		t.Errorf("want a truncated marker on the binary placeholder:\n%s", got)
+	}
+}
+
 // Text-ish content types (including none at all) are unaffected.
 func TestDetailBodyNoPlaceholderForTextContentType(t *testing.T) {
 	cases := []struct {
