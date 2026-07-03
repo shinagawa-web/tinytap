@@ -14,8 +14,8 @@ enum syscall_id {
     SYS_SENDTO   = 6,
     SYS_RECVMSG  = 7,
     SYS_SENDMSG  = 8,
-    SYS_WRITEV   = 9,   // outgoing vectored write; payload sampled from first iovec
-    SYS_READV    = 10,  // incoming vectored read; payload sampled from first iovec at sys_exit
+    SYS_WRITEV   = 9,   // outgoing vectored write; payload sampled across iovecs up to MAX_PAYLOAD
+    SYS_READV    = 10,  // incoming vectored read; payload sampled across iovecs at sys_exit, up to MAX_PAYLOAD
     SYS_SENDFILE = 11,  // outgoing zero-copy transfer; bytes = actual transferred count, payload always empty
 };
 

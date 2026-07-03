@@ -128,16 +128,45 @@ static __always_inline __u32 read_msghdr(const void *user_msghdr_ptr,
     return total;
 }
 
-// Walk a raw userspace iovec array (writev / readv). Returns the total
-// byte length across up to MAX_IOV entries; fills out_first_base /
-// out_first_len with the first entry so callers can sample its bytes.
-static __always_inline __u32 read_iov(const void *iov_user_ptr, __u32 iovcnt,
-                                      void **out_first_base,
-                                      __u32 *out_first_len)
+// Sentinel for fill_iov_payload's actual_len: writev is assumed to always
+// write everything it declares (there's no sys_exit wait for it), so the
+// sampling budget is bounded only by MAX_PAYLOAD, not by a transfer count.
+#define IOV_ACTUAL_LEN_UNBOUNDED 0xFFFFFFFFU
+
+// Per-iovec sampling budget, indexed by unrolled loop iteration. iovec[0]
+// (almost always the headers, or the only iovec on a plain single-buffer
+// write) gets the bulk of MAX_PAYLOAD; later iovecs — typically chunk
+// framing or the start of a body — share the rest. These are compile-time
+// literals rather than a share of the runtime `filled` cursor: the eBPF
+// verifier cannot prove `filled + to_read <= MAX_PAYLOAD` when both sides
+// are independently-tracked runtime scalars (tried and confirmed — see
+// PR discussion on #111), but it trivially proves it when each iteration's
+// contribution is a fixed constant. Sums to exactly MAX_PAYLOAD (256).
+static __always_inline __u32 iov_sample_budget(int i)
+{
+    switch (i) {
+    case 0:  return 200;
+    case 1:  return 32;
+    case 2:  return 16;
+    case 3:  return 8;
+    default: return 0;
+    }
+}
+
+// Walk a raw userspace iovec array (writev / readv) and sample payload
+// bytes into e->payload, spanning as many iovecs as fit in MAX_PAYLOAD
+// instead of only iovec[0] — a single writev/readv call commonly carries
+// headers in one iovec and body/framing in the next, so sampling only the
+// first entry misses the bytes an HTTP parser needs. `actual_len` bounds
+// how many bytes were actually transferred: pass the readv return value,
+// or IOV_ACTUAL_LEN_UNBOUNDED for writev. Returns the total iov_len summed
+// across up to MAX_IOV entries.
+static __always_inline __u32 fill_iov_payload(const void *iov_user_ptr, __u32 iovcnt,
+                                              __u32 actual_len, struct event *e)
 {
     __u32 total = 0;
-    void *first_base = NULL;
-    __u32 first_len = 0;
+    __u32 filled = 0;
+    __u32 remaining = actual_len;
 
     #pragma unroll
     for (int i = 0; i < MAX_IOV; i++) {
@@ -147,15 +176,27 @@ static __always_inline __u32 read_iov(const void *iov_user_ptr, __u32 iovcnt,
         if (bpf_probe_read_user(&iov, sizeof(iov),
                                 (const struct iovec_user *)iov_user_ptr + i) < 0)
             break;
-        if (i == 0) {
-            first_base = iov.iov_base;
-            first_len  = (__u32)iov.iov_len;
+
+        __u32 len = (__u32)iov.iov_len;
+        total += len;
+
+        __u32 avail = len;
+        if (avail > remaining)
+            avail = remaining;
+
+        __u32 budget = iov_sample_budget(i);
+        if (budget > 0 && filled <= MAX_PAYLOAD - budget) {
+            __u32 to_read = avail;
+            if (to_read > budget)
+                to_read = budget;
+            if (to_read > 0 &&
+                bpf_probe_read_user(e->payload + filled, to_read, iov.iov_base) == 0)
+                filled += to_read;
         }
-        total += (__u32)iov.iov_len;
+        remaining -= avail;
     }
 
-    if (out_first_base) *out_first_base = first_base;
-    if (out_first_len)  *out_first_len  = first_len;
+    e->payload_len = filled;
     return total;
 }
 
@@ -259,6 +300,37 @@ static __always_inline void submit_event(__u32 syscall, __s32 fd, __u32 bytes,
     bpf_ringbuf_submit(e, 0);
 }
 
+// Like submit_event, but for writev/readv: samples payload across every
+// iovec via fill_iov_payload instead of a single (buf, len) pair.
+// `actual_len` is IOV_ACTUAL_LEN_UNBOUNDED for writev (e->bytes becomes the
+// declared total) or the readv return value (e->bytes becomes that actual
+// transfer count, which may be less than the declared iovec capacity).
+static __always_inline void submit_event_iov(__u32 syscall, __s32 fd,
+                                             const void *iov_ptr, __u32 iovcnt,
+                                             __u32 actual_len)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = pid_tgid >> 32;
+    if (pid == own_pid)
+        return;
+
+    struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e)
+        return;
+
+    e->ts_ns   = bpf_ktime_get_ns();
+    e->pid     = pid;
+    e->tid     = (__u32)pid_tgid;
+    e->fd      = fd;
+    e->syscall = syscall;
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+    __u32 total = fill_iov_payload(iov_ptr, iovcnt, actual_len, e);
+    e->bytes = (actual_len == IOV_ACTUAL_LEN_UNBOUNDED) ? total : actual_len;
+
+    bpf_ringbuf_submit(e, 0);
+}
+
 // Record (syscall, fd, buf) for this thread at sys_enter so the matching
 // sys_exit can read the now-filled buffer.
 static __always_inline void stash_incoming(__u32 syscall, __s32 fd,
@@ -327,14 +399,11 @@ static __always_inline void submit_from_pending(long ret)
             // holds the actual vector count, both stashed at sys_enter.
             // Using the real iovcnt prevents reading past the end of the
             // array when the caller passes fewer than MAX_IOV vectors.
-            void *first_base = NULL;
-            __u32 first_len = 0;
-            read_iov((const void *)(unsigned long)p->buf, p->iovcnt,
-                     &first_base, &first_len);
-            __u32 to_read = bytes;
-            if (to_read > first_len)
-                to_read = first_len;
-            submit_event(p->syscall, p->fd, bytes, first_base, to_read);
+            // `bytes` (the actual read count) bounds the sample so it
+            // doesn't run into iovecs the kernel never filled.
+            submit_event_iov(p->syscall, p->fd,
+                             (const void *)(unsigned long)p->buf, p->iovcnt,
+                             bytes);
         } else if (p->syscall == SYS_SENDFILE) {
             // sendfile body bytes are transferred kernel-to-kernel (page
             // cache → socket).  If the companion fentry/tcp_sendmsg_locked
@@ -457,11 +526,9 @@ int handle_exit_recvmsg(struct sys_exit_ctx *ctx)
 SEC("tracepoint/syscalls/sys_enter_writev")
 int handle_writev(struct sys_enter_ctx *ctx)
 {
-    void *first_buf = NULL;
-    __u32 first_len = 0;
-    __u32 total = read_iov((const void *)ctx->args[1], (__u32)ctx->args[2],
-                           &first_buf, &first_len);
-    submit_event(SYS_WRITEV, (__s32)ctx->args[0], total, first_buf, first_len);
+    submit_event_iov(SYS_WRITEV, (__s32)ctx->args[0],
+                     (const void *)ctx->args[1], (__u32)ctx->args[2],
+                     IOV_ACTUAL_LEN_UNBOUNDED);
     return 0;
 }
 
