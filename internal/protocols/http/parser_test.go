@@ -1646,11 +1646,13 @@ func TestChunkedCRLFDroppedByMaxPayloadTrustsWireBytes(t *testing.T) {
 }
 
 // When the trailer terminator arrives on the wire but is dropped by the
-// MaxPayload cap, wire-byte accounting already proves the whole exchange
-// (status, headers, body, and trailer) completed, so the parser trusts it
-// and emits the message instead of discarding a fully known exchange over
-// invisible trailer punctuation (#116).
-func TestChunkedTrailerTerminatorDroppedByMaxPayloadTrustsWireBytes(t *testing.T) {
+// MaxPayload cap, the parser must abandon rather than stall — unlike
+// stateNeedChunkCRLF (#116), the trailer section has no fixed length, so
+// "more wire bytes arrived than the sample captured" doesn't prove the
+// terminator itself arrived (a long trailer field could still be streaming
+// in). See the code comment in stateNeedTrailer for why this can't safely
+// use the same trust-wire-bytes fix as the chunk-CRLF case.
+func TestChunkedTrailerTerminatorDroppedByMaxPayloadAbandons(t *testing.T) {
 	headers := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
 	termChunk := []byte("0\r\n")
 	trailerField := []byte("X-T: v\r\n")
@@ -1661,14 +1663,8 @@ func TestChunkedTrailerTerminatorDroppedByMaxPayloadTrustsWireBytes(t *testing.T
 	wireBytes := uint32(len(sample) + len(terminator))
 	p := NewParser()
 	got := p.Feed(makeEvent(events.SyscallWrite, 1, 1, wireBytes, sample))
-	if len(got) != 1 {
-		t.Fatalf("want 1 message, got %d", len(got))
-	}
-	if got[0].Res.status != 200 {
-		t.Errorf("status = %d, want 200", got[0].Res.status)
-	}
-	if len(got[0].BodySample) != 0 {
-		t.Errorf("BodySample = %q, want empty (zero-length chunked body)", got[0].BodySample)
+	if len(got) != 0 {
+		t.Fatalf("want 0 messages, got %d", len(got))
 	}
 }
 

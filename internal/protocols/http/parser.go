@@ -701,9 +701,14 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				// accepting that a non-compliant peer whose declared byte
 				// count doesn't actually end in "\r\n" would be silently
 				// mis-framed, in exchange for correctly pairing well-formed
-				// exchanges regardless of chunk size. BodyTruncated is
-				// already set from the chunk-data path, so callers already
-				// know this pairing's body view is incomplete.
+				// exchanges regardless of chunk size. This branch itself
+				// never sets BodyTruncated — it only skips 2 framing bytes,
+				// not body content. BodyTruncated may already be true by
+				// the time we get here (set earlier, by the chunk-data path
+				// above, if the chunk's *data* didn't fully fit the
+				// sample) or may still be false (if the data fit but only
+				// this trailing CRLF was cut) — either way it accurately
+				// reflects whether body content, specifically, was lost.
 				if s.wireBytesSinceMessageStart-s.wireBytesConsumed >= 2 {
 					s.wireBytesConsumed += 2
 					s.buf = nil
@@ -732,34 +737,29 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			} else {
 				tidx := bytes.Index(s.buf, []byte("\r\n\r\n"))
 				if tidx < 0 {
-					// Terminator not in sample. If wire-byte accounting
-					// already shows more bytes arrived than the sample
-					// captured, the terminator (and possibly some trailer
-					// field bytes before it) were dropped by the
-					// MaxPayload cap. Unlike stateNeedChunkCRLF (#116),
-					// the trailer section has no fixed length, so there's
-					// no exact byte count to skip past. Trust that framing
-					// completed anyway — the message is already fully
-					// known at this point (status, headers, and body all
-					// parsed; only trailer field values remain, which this
-					// parser ignores the content of regardless) — and emit
-					// it now instead of discarding a complete exchange
-					// over invisible punctuation. The cost: any bytes for
-					// a message pipelined immediately behind an invisible
-					// trailer can't be resynced and are lost, so
-					// wireBytesSinceMessageStart resets to 0 rather than a
-					// computed carry-over. Accepted as rare — trailer
-					// fields are themselves uncommon on the wire, and
-					// pipelining directly behind one rarer still — against
-					// losing the whole exchange.
+					// Terminator not in sample. If wire bytes exceed what the
+					// sample captured, the terminator was dropped by the
+					// MaxPayload cap and will never appear in s.buf — abandon
+					// to avoid a permanent stall.
+					//
+					// Unlike stateNeedChunkCRLF (#116), this can't be fixed
+					// the same way: the trailer section has no fixed length,
+					// so "more wire bytes arrived than the sample captured"
+					// doesn't prove the terminator itself arrived — it could
+					// just as easily mean a single trailer field is long
+					// enough to exceed MaxPayload on its own and continues in
+					// a later syscall, nowhere near the terminator yet.
+					// Trusting that case would emit the message prematurely
+					// and misframe every event after it (confirmed while
+					// reviewing this fix — see PR #120 discussion). Properly
+					// fixing this needs a way to tell "this sample was
+					// truncated mid-trailer-field, more is coming" apart
+					// from "the terminator specifically was dropped", which
+					// stateNeedChunkCRLF gets for free from the chunk's
+					// already-known size and this state does not. Left as a
+					// separate, more carefully-scoped follow-up.
 					if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
-						out = append(out, s.takeBody(s.pendingMsg))
-						s.chunked = false
-						s.chunkRemaining = 0
-						s.state = stateNeedStartLine
-						s.wireBytesSinceMessageStart = 0
-						s.wireBytesConsumed = 0
-						s.messageStartTs = 0
+						s.abandoned = true
 						s.buf = nil
 					}
 					return out
