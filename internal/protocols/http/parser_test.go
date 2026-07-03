@@ -353,7 +353,7 @@ func TestBodyInOneLargeSyscallTruncatedToSample(t *testing.T) {
 		t.Error("a body larger than the sample cap should be truncated")
 	}
 	if n := len(got[0].BodySample); n == 0 || n > events.MaxPayload {
-		t.Errorf("want a sample-capped body (0 < n <= 256), got %d", n)
+		t.Errorf("want a sample-capped body (0 < n <= %d), got %d", events.MaxPayload, n)
 	}
 }
 

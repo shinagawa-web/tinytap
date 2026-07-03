@@ -32,7 +32,8 @@ const MaxPayload = 4096
 
 // Event mirrors the C `struct event` emitted by the BPF program. Field
 // order, sizes, and alignment must stay in lockstep with the C struct —
-// the wire format is binary.Read of the ringbuf record bytes.
+// the wire format is decoded directly from raw ringbuf record bytes (see
+// Decode).
 type Event struct {
 	TsNs       uint64
 	Pid        uint32
