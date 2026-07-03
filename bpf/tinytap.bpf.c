@@ -167,6 +167,15 @@ static __always_inline __u32 fill_iov_payload(const void *iov_user_ptr, __u32 io
     __u32 total = 0;
     __u32 filled = 0;
     __u32 remaining = actual_len;
+    // Once an iovec doesn't fully fit its budget, stop sampling further
+    // iovecs. Otherwise a later iovec's bytes would land right after this
+    // one's truncated tail, splicing two non-adjacent wire positions into
+    // what looks like one contiguous run — e.g. a chunked-body parser
+    // reading past the spliced join could mistake later framing bytes
+    // (like a chunk's trailing CRLF) for body content. Keeping the sample
+    // a clean (possibly truncated) prefix matches what every other syscall
+    // in this file already produces.
+    int truncated = 0;
 
     #pragma unroll
     for (int i = 0; i < MAX_IOV; i++) {
@@ -185,13 +194,17 @@ static __always_inline __u32 fill_iov_payload(const void *iov_user_ptr, __u32 io
             avail = remaining;
 
         __u32 budget = iov_sample_budget(i);
-        if (budget > 0 && filled <= MAX_PAYLOAD - budget) {
+        if (!truncated && budget > 0 && filled <= MAX_PAYLOAD - budget) {
             __u32 to_read = avail;
             if (to_read > budget)
                 to_read = budget;
             if (to_read > 0 &&
                 bpf_probe_read_user(e->payload + filled, to_read, iov.iov_base) == 0)
                 filled += to_read;
+            if (to_read < avail)
+                truncated = 1;
+        } else if (avail > 0) {
+            truncated = 1;
         }
         remaining -= avail;
     }
