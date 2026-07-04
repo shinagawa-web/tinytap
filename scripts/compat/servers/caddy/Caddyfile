@@ -1,4 +1,9 @@
 :8080 {
 	root * TESTDATA_PATH
+
+	route /hello {
+		respond "Hello, world"
+	}
+
 	file_server
 }
