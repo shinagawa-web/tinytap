@@ -3,8 +3,10 @@
 # proxy (/proxy/ -> BACKEND_PORT) + in-memory (/hello).
 # Writes a temporary nginx.conf with the correct absolute path.
 #
-# Usage:
-#   bash start.sh [SENDFILE=on|off] [BACKEND_PORT] [TCP_NOPUSH=on|off]
+# Usage (all positional):
+#   bash start.sh [on|off] [BACKEND_PORT] [on|off]
+#                  sendfile              tcp_nopush
+# e.g. `bash start.sh off 8081 on`
 #
 # /proxy/ only works once a backend server (e.g. `python3 -m http.server
 # BACKEND_PORT --directory testdata`) is listening on BACKEND_PORT.
