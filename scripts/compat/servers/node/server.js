@@ -12,10 +12,15 @@ http.createServer((req, res) => {
         res.end('Hello, world')
         return
     }
-    const file = path.join(testdata, req.url)
+    // req.url is untrusted; normalize collapses any ".." before it reaches
+    // path.join, so the result can never escape testdata (a bare
+    // path.join(testdata, req.url) would otherwise allow traversal).
+    const file = path.join(testdata, path.normalize(req.url))
     const contentType = CONTENT_TYPES[path.extname(file)] || 'text/plain'
     const stream = fs.createReadStream(file)
-    stream.on('error', () => { res.writeHead(404); res.end('not found') })
+    stream.on('error', () => {
+        if (!res.headersSent) { res.writeHead(404); res.end('not found') }
+    })
     stream.on('open', () => {
         // No explicit Content-Length: this is the natural result of
         // createReadStream(...).pipe(res) per #43's setup, which makes
