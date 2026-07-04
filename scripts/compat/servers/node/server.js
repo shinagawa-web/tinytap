@@ -5,11 +5,27 @@ const path = require('path')
 const port = parseInt(process.argv[2] || '8080', 10)
 const testdata = path.join(__dirname, '../../../../testdata')
 
+const CONTENT_TYPES = { '.png': 'image/png' }
+
 http.createServer((req, res) => {
-    const file = path.join(testdata, req.url)
-    fs.readFile(file, (err, data) => {
-        if (err) { res.writeHead(404); res.end('not found'); return }
-        res.writeHead(200, { 'Content-Length': data.length })
-        res.end(data)
+    if (req.url === '/hello') {
+        res.end('Hello, world')
+        return
+    }
+    // req.url is untrusted; normalize collapses any ".." before it reaches
+    // path.join, so the result can never escape testdata (a bare
+    // path.join(testdata, req.url) would otherwise allow traversal).
+    const file = path.join(testdata, path.normalize(req.url))
+    const contentType = CONTENT_TYPES[path.extname(file)] || 'text/plain'
+    const stream = fs.createReadStream(file)
+    stream.on('error', () => {
+        if (!res.headersSent) { res.writeHead(404); res.end('not found') }
+    })
+    stream.on('open', () => {
+        // No explicit Content-Length: this is the natural result of
+        // createReadStream(...).pipe(res) per #43's setup, which makes
+        // Node fall back to chunked Transfer-Encoding.
+        res.writeHead(200, { 'Content-Type': contentType })
+        stream.pipe(res)
     })
 }).listen(port, () => console.log(`listening on :${port}`))
