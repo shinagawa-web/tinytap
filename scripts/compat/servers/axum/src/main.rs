@@ -24,6 +24,11 @@ async fn hello() -> &'static str {
 }
 
 async fn serve_file(Path(name): Path<String>) -> Response {
+    // :name is a single path segment (axum's router never lets it contain a
+    // '/'), but a literal ".." segment would still climb out of testdata/.
+    if name.contains("..") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
     let path = testdata_dir().join(&name);
     match tokio::fs::read(&path).await {
         Ok(bytes) => {
@@ -45,7 +50,7 @@ async fn main() {
         .route("/hello", get(hello))
         .route("/:name", get(serve_file));
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .unwrap();
     println!("listening on :{port}");
