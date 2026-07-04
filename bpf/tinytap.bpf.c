@@ -150,27 +150,31 @@ static __always_inline __u32 read_msghdr(const void *user_msghdr_ptr,
 // sampling budget is bounded only by MAX_PAYLOAD, not by a transfer count.
 #define IOV_ACTUAL_LEN_UNBOUNDED 0xFFFFFFFFU
 
-// Per-iovec sampling budget, indexed by unrolled loop iteration. iovec[0]
-// (almost always the headers, or the only iovec on a plain single-buffer
-// write) gets the bulk of MAX_PAYLOAD; later iovecs — typically chunk
-// framing or the start of a body — share the rest. These are compile-time
-// literals rather than a share of the runtime `filled` cursor: the eBPF
-// verifier cannot prove `filled + to_read <= MAX_PAYLOAD` when both sides
-// are independently-tracked runtime scalars (tried and confirmed — see
-// PR discussion on #111), but it trivially proves it when each iteration's
-// contribution is a fixed constant. Sums to exactly MAX_PAYLOAD (4096) —
-// same 176:32:16:8:8:8:4:4 proportions as the 256-byte cap, scaled by 16x.
+// Per-iovec sampling budget, indexed by unrolled loop iteration. These are
+// compile-time literals rather than a share of the runtime `filled` cursor:
+// the eBPF verifier cannot prove `filled + to_read <= MAX_PAYLOAD` when both
+// sides are independently-tracked runtime scalars (tried and confirmed —
+// see PR discussion on #111), but it trivially proves it when each
+// iteration's contribution is a fixed constant.
+//
+// Flat across the first 4 iovecs (0 B beyond that) rather than front-loaded
+// onto iovec[0], because which iovec actually carries the response body is
+// server-dependent and front-loading guessed wrong in both directions:
+// nginx (#127) puts the body in iovec[1] on a plain header+body writev,
+// while Node's chunked framing (#128) puts it in iovec[2] behind a "\r\n"
+// framing iovec. A front-loaded schedule (2816/512/256/128/...) starved
+// Node down to a flat 256 B regardless of body size; a schedule reweighted
+// to favor iovec[2] instead starves nginx down to 64 B. Splitting evenly
+// avoids optimizing for one server's iovec layout at another's expense —
+// every case observed so far (#127, #128) lands in a narrower band instead
+// of swinging between ~64 B and ~14 KiB. Sums to exactly MAX_PAYLOAD (4096).
 static __always_inline __u32 iov_sample_budget(int i)
 {
     switch (i) {
-    case 0:  return 2816;
-    case 1:  return 512;
-    case 2:  return 256;
-    case 3:  return 128;
-    case 4:  return 128;
-    case 5:  return 128;
-    case 6:  return 64;
-    case 7:  return 64;
+    case 0:  return 1024;
+    case 1:  return 1024;
+    case 2:  return 1024;
+    case 3:  return 1024;
     default: return 0;
     }
 }
