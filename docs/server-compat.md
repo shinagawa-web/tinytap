@@ -49,7 +49,7 @@
 | nginx (reverse proxy) | #44 | writev, multiple calls per response, 1–4 iovecs each | ✅ 200/200 | ⚠️ 1024/8192 | ⚠️ 6144/51200 | ✅ placeholder confirmed live, 68/68 | `proxy_pass` never touches sendfile; body arrives via nginx's ~4 KiB proxy buffer, re-emitted as many small `writev` calls |
 | Caddy | #45 | write (≤512 B body); write+sendfile (>512 B body) | ✅ 200/200 | ⚠️ arm64, 4096/8192 (kprobe cap) — x86_64 not run this pass | ⚠️ arm64, 4096/51200 (kprobe cap) — x86_64 not run this pass | ✅ placeholder confirmed live, 68/68 | Same syscall shape as Go `net/http` (#42) — `file_server` uses the same `http.ServeContent` fast path; no `writev`/`sendmsg`/chunked encoding, so #111/#113/#116/#122 don't apply |
 | Bun.serve | #46 | — | — | — | — | — | optional |
-| Uvicorn (ASGI) | #102 | — | — | — | — | — | asyncio / libuv |
+| Uvicorn (ASGI) | #102 | sendto | ✅ 200/200 | ⚠️ (4096 B / 8192 B) | ⚠️ (4096 B / 51200 B) | ✅ (placeholder), 68/68 | Headers and body go out as two separate `sendto` calls, same shape as Python `http.server` (#41) — no `writev`, no `sendmsg`, no `sendfile`, no chunked encoding; #111/#113/#116/#122 don't apply |
 | Gunicorn (WSGI) | #103 | — | — | — | — | — | sync worker baseline |
 | Axum (Rust / hyper) | #104 | writev (1 call, 2 iovecs: header + full body) | ✅ 200/200 | ⚠️ 1024/8192 (iovec[1] budget) | ⚠️ 1024/51200 (same, single writev call — no internal chunking) | ✅ placeholder confirmed live, 68/68 | `Content-Length` always known (in-memory `Bytes` body, no streaming) → no chunked encoding, no `sendfile`; cleanest 2-iovec case observed so far |
 
