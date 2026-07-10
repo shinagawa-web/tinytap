@@ -1,18 +1,21 @@
 import mimetypes
 import os
 
-TESTDATA = os.path.join(os.path.dirname(__file__), "../../../../testdata")
+TESTDATA = os.path.realpath(os.path.join(os.path.dirname(__file__), "../../../../testdata"))
 
 
 def app(environ, start_response):
     path = environ["PATH_INFO"].lstrip("/")
-    filepath = os.path.join(TESTDATA, path)
-    try:
+    filepath = os.path.realpath(os.path.join(TESTDATA, path))
+    is_fixture = (
+        os.path.commonpath([filepath, TESTDATA]) == TESTDATA and os.path.isfile(filepath)
+    )
+    if is_fixture:
         with open(filepath, "rb") as f:
             body = f.read()
         status = "200 OK"
         content_type = mimetypes.guess_type(filepath)[0] or "application/octet-stream"
-    except FileNotFoundError:
+    else:
         body = b"not found"
         status = "404 Not Found"
         content_type = "text/plain"
