@@ -4,3 +4,8 @@
 # Claude Code local settings (track shared settings.json, ignore the rest)
 .claude/*
 !.claude/settings.json
+
+# Python compat server scratch (venvs, bytecode caches)
+__pycache__/
+*.pyc
+.venv-compat/
