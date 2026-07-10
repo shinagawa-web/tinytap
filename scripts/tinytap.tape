@@ -28,24 +28,42 @@ Set Theme "Dracula"
 Set Padding 10
 Set TypingSpeed 40ms
 
+# Launch off-camera: hide the SSH handshake and tinytap startup so the GIF
+# opens straight on the live table rather than on a typed command. demo-tui.sh
+# fires its first request ~1.5s after tinytap starts.
+Hide
 Type "ssh -F ~/.lima/tinytap/ssh.config -t lima-tinytap 'cd ~/tinytap/.claude/worktrees/issue-135-tui-gif-demo && bash scripts/demo-tui.sh'"
 Enter
+Sleep 3s
+Show
 
-# Let the table fill: demo-tui.sh fires its last request at ~6.3s, plus the
-# SSH connect/handshake before the script even starts.
-Sleep 9s
+# On-camera: let the remaining requests stream into the table.
+Sleep 6s
 
-# Open the detail panel for the newest (currently selected) row.
+# Open the detail panel for the selected (newest) row. Focus stays on the
+# table, so the next keystrokes still move the table selection.
 Enter
-Sleep 1s
+Sleep 1.5s
 
-# Move focus into the panel so j/k scroll its body instead of the table.
+# Scroll the TABLE with the panel open — the detail panel tracks the selected
+# row, so its contents switch as the highlight moves up the list.
+Type "k"
+Sleep 1.2s
+Type "k"
+Sleep 1.2s
+Type "k"
+Sleep 1.5s
+
+# Back down to the newest row (it carries a response body), then move focus
+# into the panel so j/k now scrolls the panel body instead of the table.
+Type "jjj"
+Sleep 1.2s
 Tab
-Sleep 500ms
+Sleep 700ms
 
-# Scroll — the panel body overflows the terminal height.
+# Scroll the panel body — it overflows the panel height.
 Type "jjjjj"
-Sleep 1s
+Sleep 1.5s
 
 # Toggle the body view between decoded and hex.
 Type "b"
