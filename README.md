@@ -58,6 +58,13 @@ Now that the plumbing works (see Roadmap §5 / closed issues #1-#3, #8), the nex
 
 This is the "useful demo" version.
 
+![tinytap's TUI capturing live HTTP traffic: a scrolling table of requests with a detail panel](docs/tui-demo.gif)
+
+The `--output tui` mode above shows the live request table (`j`/`k` to scroll),
+the detail panel (`Enter` to open, `b` to toggle the hex body view). Regenerate
+it with `vhs scripts/tinytap.tape` from the Mac host — see the tape's header for
+how it records against the Lima VM.
+
 ## 3. Where tinytap Runs
 
 There are two distinct environments to keep in mind, and they answer two different questions.
