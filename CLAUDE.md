@@ -54,6 +54,7 @@ Lower-level reference material lives under `docs/`:
 - [`docs/terminology.md`](docs/terminology.md) — outgoing/incoming vocabulary and the HTTP protocol mapping
 - [`docs/ebpf-basics.md`](docs/ebpf-basics.md) — eBPF primer
 - [`docs/waveterm-claude-code.md`](docs/waveterm-claude-code.md) — making Wave Terminal's Claude Code badges work inside the Lima VM
+- [`docs/recording-tui-gifs.md`](docs/recording-tui-gifs.md) — recording `--output tui` demo GIFs from the Mac host with `vhs` (the full hand-off procedure + gotchas)
 
 ## Development Environment
 
