@@ -6,6 +6,9 @@
 # Scenarios:
 #   1. Normal: GET / HEAD / POST against python http.server → paired lines.
 #   2. Abandoned: slow server killed mid-request → ABANDONED line in output.
+#   3. Sendfile: GET a static file served via http.ServeFile (sendfile(2))
+#      → pairs regardless of GOARCH; on non-arm64 the payload-capture guard
+#      in internal/loader/load.go also logs its "skipping" line (#133).
 #
 # Usage: bash scripts/test-e2e.sh
 # Exit code 0 = all assertions passed; non-zero = failure.
@@ -14,14 +17,17 @@ set -euo pipefail
 
 PORT="${PORT:-18080}"
 SLOW_PORT="${SLOW_PORT:-18081}"
+FILE_PORT="${FILE_PORT:-18082}"
 URL="http://localhost:${PORT}/"
 TT_OUT=/tmp/tinytap-e2e.log
 PY_LOG=/tmp/tinytap-e2e-py.log
 SLOW_LOG=/tmp/tinytap-e2e-slow.log
+FILE_LOG=/tmp/tinytap-e2e-file.log
 
 PY_PID=""
 SLOW_PY_PID=""
 SLOW_CURL_PID=""
+FILE_PID=""
 FAILURES=0
 
 cleanup() {
@@ -34,6 +40,9 @@ cleanup() {
     fi
     if [[ -n "${SLOW_CURL_PID}" ]]; then
         kill "${SLOW_CURL_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${FILE_PID}" ]]; then
+        kill "${FILE_PID}" 2>/dev/null || true
     fi
     wait 2>/dev/null || true
 }
@@ -72,6 +81,17 @@ assert_contains() {
     fi
 }
 
+assert_absent() {
+    local description="$1"
+    local pattern="$2"
+    if grep -qE "${pattern}" "${TT_OUT}"; then
+        echo "  FAIL: ${description} (unexpected match for pattern: ${pattern})"
+        FAILURES=$((FAILURES + 1))
+    else
+        echo "  PASS: ${description}"
+    fi
+}
+
 echo "==> building tinytap"
 go build -o /tmp/tinytap-e2e ./cmd/tinytap/
 
@@ -102,6 +122,48 @@ PY_PID=$!
 wait_for_port localhost "${PORT}" || { echo "FAIL: http.server did not listen on ${PORT}"; exit 1; }
 kill -0 "${PY_PID}" 2>/dev/null || { echo "FAIL: http.server exited immediately (port ${PORT} already in use?)"; exit 1; }
 
+# ── Scenario 3 setup: static file server (exercises the sendfile path) ───────
+# http.ServeFile hands response bodies to the kernel via sendfile(2) once
+# they're big enough (see docs/server-compat.md, Go net/http row). This
+# exists to exercise the sendfile payload-capture guard in
+# internal/loader/load.go: the fentry/tcp_sendmsg_locked kprobe that samples
+# sendfile body bytes is arm64-only today (#112 tracks x86_64), so on any
+# other GOARCH tinytap logs a "skipping" line and captures byte counts only.
+# The exchange must still pair successfully either way — Content-Length
+# body framing never depends on payload bytes being sampled (see #116).
+echo "==> Go static file server on ${FILE_PORT}"
+cat > /tmp/tinytap-e2e-fileserver.go <<'GOEOF'
+package main
+
+import (
+	"net/http"
+	"os"
+	"strings"
+)
+
+func main() {
+	f, err := os.CreateTemp("", "tinytap-e2e-sendfile-*.bin")
+	if err != nil {
+		panic(err)
+	}
+	f.WriteString(strings.Repeat("F", 4096))
+	f.Close()
+	http.HandleFunc("/file", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, f.Name())
+	})
+	http.ListenAndServe(":"+os.Args[1], nil)
+}
+GOEOF
+# Build ahead of starting it: `go run` compiles and execs in one step, and on
+# a cold CI cache compiling net/http's dependency graph can take longer than
+# wait_for_port's 5s budget, failing the wait before the server ever listens.
+# A separate build step surfaces compile failures synchronously and keeps the
+# wait loop bounded to actual startup time.
+go build -o /tmp/tinytap-e2e-fileserver /tmp/tinytap-e2e-fileserver.go
+/tmp/tinytap-e2e-fileserver "${FILE_PORT}" >"${FILE_LOG}" 2>&1 &
+FILE_PID=$!
+wait_for_port localhost "${FILE_PORT}" || { echo "FAIL: file server did not listen on ${FILE_PORT}"; exit 1; }
+
 # ── Start tinytap ─────────────────────────────────────────────────────────────
 echo "==> sudo /tmp/tinytap-e2e --output stdout"
 : >"${TT_OUT}"
@@ -115,6 +177,10 @@ curl -fsS --retry 3 --retry-delay 0 -I "${URL}" >/dev/null
 post_exit=0
 curl -fsS -X POST "${URL}" -d "hello" >/dev/null || post_exit=$?
 [[ ${post_exit} -eq 0 || ${post_exit} -eq 22 ]] || exit "${post_exit}"
+
+# ── Scenario 3: sendfile (static file) ────────────────────────────────────────
+echo "==> firing sendfile request"
+curl -fsS --retry 3 --retry-delay 0 "http://localhost:${FILE_PORT}/file" >/dev/null
 
 # ── Scenario 2: abandoned request via kill -9 ────────────────────────────────
 echo "==> firing request to slow server"
@@ -139,6 +205,24 @@ assert_contains "GET / paired with 200"   "\[${PY_PID}\].*GET[[:space:]]+/[[:spa
 assert_contains "HEAD / paired with 200"  "\[${PY_PID}\].*HEAD[[:space:]]+/[[:space:]].*200"
 assert_contains "POST / captured"         "\[${PY_PID}\].*POST[[:space:]]+/"
 assert_contains "abandoned: peer closed"  "ABANDONED.*peer closed"
+assert_contains "sendfile: GET /file paired with 200" "\[${FILE_PID}\].*GET[[:space:]]+/file[[:space:]].*200"
+
+# The sendfile payload-capture kprobe (#68) is arm64-only today (#112 tracks
+# x86_64); on any other GOARCH, internal/loader/load.go logs a "skipping"
+# line instead of attaching it. Assert whichever behavior matches the
+# architecture this run is actually on, so the test passes both in the Lima
+# VM (arm64) and in CI (x86_64) without hardcoding either.
+ARCH="$(go env GOARCH)"
+if [[ "${ARCH}" == "arm64" ]]; then
+    # A successful kprobe attach is silent (see tryAttachKprobe in
+    # internal/loader/load.go) — every log line it emits means some step
+    # failed. Assert none of them fired, i.e. the kprobe attached cleanly.
+    assert_absent "sendfile payload capture kprobe attached without error (arm64)" \
+        "sendfile payload capture (is arm64-only|disabled)"
+else
+    assert_contains "sendfile payload capture arm64-only guard logged (${ARCH})" \
+        "kprobe sendfile payload capture is arm64-only, skipping on ${ARCH}"
+fi
 
 echo
 if [[ "${FAILURES}" -eq 0 ]]; then
