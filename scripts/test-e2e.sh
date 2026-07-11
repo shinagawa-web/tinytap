@@ -9,6 +9,9 @@
 #   3. Sendfile: GET a static file served via http.ServeFile (sendfile(2))
 #      → pairs regardless of GOARCH; on non-arm64 the payload-capture guard
 #      in internal/loader/load.go also logs its "skipping" line (#133).
+#   4. Writev: GET against a server that calls writev(2) directly with two
+#      iovecs (headers, body) → exercises the #111 multi-iovec sampling path
+#      (bpf/tinytap.bpf.c's read_iov) that #3's sendfile path never touches.
 #
 # Usage: bash scripts/test-e2e.sh
 # Exit code 0 = all assertions passed; non-zero = failure.
@@ -18,16 +21,19 @@ set -euo pipefail
 PORT="${PORT:-18080}"
 SLOW_PORT="${SLOW_PORT:-18081}"
 FILE_PORT="${FILE_PORT:-18082}"
+WRITEV_PORT="${WRITEV_PORT:-18083}"
 URL="http://localhost:${PORT}/"
 TT_OUT=/tmp/tinytap-e2e.log
 PY_LOG=/tmp/tinytap-e2e-py.log
 SLOW_LOG=/tmp/tinytap-e2e-slow.log
 FILE_LOG=/tmp/tinytap-e2e-file.log
+WRITEV_LOG=/tmp/tinytap-e2e-writev.log
 
 PY_PID=""
 SLOW_PY_PID=""
 SLOW_CURL_PID=""
 FILE_PID=""
+WRITEV_PID=""
 FAILURES=0
 
 cleanup() {
@@ -43,6 +49,9 @@ cleanup() {
     fi
     if [[ -n "${FILE_PID}" ]]; then
         kill "${FILE_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${WRITEV_PID}" ]]; then
+        kill "${WRITEV_PID}" 2>/dev/null || true
     fi
     wait 2>/dev/null || true
 }
@@ -164,6 +173,79 @@ go build -o /tmp/tinytap-e2e-fileserver /tmp/tinytap-e2e-fileserver.go
 FILE_PID=$!
 wait_for_port localhost "${FILE_PORT}" || { echo "FAIL: file server did not listen on ${FILE_PORT}"; exit 1; }
 
+# ── Scenario 4 setup: writev server (exercises the multi-iovec path) ─────────
+# Calls writev(2) directly with two iovecs — iovec[0] the response headers,
+# iovec[1] the body — mirroring the cleanest real-world shape observed in
+# docs/server-compat.md (Axum/hyper, #104). This exists to exercise #111's
+# read_iov fix: without it, any body living outside iovec[0] is never
+# sampled, regardless of size.
+echo "==> Go writev server on ${WRITEV_PORT}"
+cat > /tmp/tinytap-e2e-writevserver.go <<'GOEOF'
+package main
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"syscall"
+	"unsafe"
+)
+
+func main() {
+	ln, err := net.Listen("tcp", ":"+os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			continue
+		}
+		go handle(conn)
+	}
+}
+
+func handle(conn net.Conn) {
+	defer conn.Close()
+	buf := make([]byte, 4096)
+	conn.Read(buf) // drain the request
+
+	// Use SyscallConn to run writev(2) directly on the connection's own fd.
+	// tc.File() would dup the fd instead — tinytap correlates a response
+	// with its request by the accepting fd, so writing on a dup'd fd
+	// orphans the response from the exchange and it shows as ABANDONED.
+	tc := conn.(*net.TCPConn)
+	rc, err := tc.SyscallConn()
+	if err != nil {
+		return
+	}
+
+	body := []byte("Hello, writev!")
+	headers := []byte(fmt.Sprintf(
+		"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+		len(body)))
+
+	var iov [2]syscall.Iovec
+	iov[0].Base = &headers[0]
+	iov[0].SetLen(len(headers))
+	iov[1].Base = &body[0]
+	iov[1].SetLen(len(body))
+
+	var errno syscall.Errno
+	writeErr := rc.Write(func(fd uintptr) bool {
+		_, _, errno = syscall.Syscall(syscall.SYS_WRITEV, fd, uintptr(unsafe.Pointer(&iov[0])), uintptr(len(iov)))
+		return true
+	})
+	if writeErr != nil || errno != 0 {
+		fmt.Fprintln(os.Stderr, "writev failed:", writeErr, errno)
+	}
+}
+GOEOF
+go build -o /tmp/tinytap-e2e-writevserver /tmp/tinytap-e2e-writevserver.go
+/tmp/tinytap-e2e-writevserver "${WRITEV_PORT}" >"${WRITEV_LOG}" 2>&1 &
+WRITEV_PID=$!
+wait_for_port localhost "${WRITEV_PORT}" || { echo "FAIL: writev server did not listen on ${WRITEV_PORT}"; exit 1; }
+
 # ── Start tinytap ─────────────────────────────────────────────────────────────
 echo "==> sudo /tmp/tinytap-e2e --output stdout"
 : >"${TT_OUT}"
@@ -181,6 +263,10 @@ curl -fsS -X POST "${URL}" -d "hello" >/dev/null || post_exit=$?
 # ── Scenario 3: sendfile (static file) ────────────────────────────────────────
 echo "==> firing sendfile request"
 curl -fsS --retry 3 --retry-delay 0 "http://localhost:${FILE_PORT}/file" >/dev/null
+
+# ── Scenario 4: writev (multi-iovec) ──────────────────────────────────────────
+echo "==> firing writev request"
+curl -fsS --retry 3 --retry-delay 0 "http://localhost:${WRITEV_PORT}/" >/dev/null
 
 # ── Scenario 2: abandoned request via kill -9 ────────────────────────────────
 echo "==> firing request to slow server"
@@ -206,6 +292,7 @@ assert_contains "HEAD / paired with 200"  "\[${PY_PID}\].*HEAD[[:space:]]+/[[:sp
 assert_contains "POST / captured"         "\[${PY_PID}\].*POST[[:space:]]+/"
 assert_contains "abandoned: peer closed"  "ABANDONED.*peer closed"
 assert_contains "sendfile: GET /file paired with 200" "\[${FILE_PID}\].*GET[[:space:]]+/file[[:space:]].*200"
+assert_contains "writev: GET / paired with 200" "\[${WRITEV_PID}\].*GET[[:space:]]+/[[:space:]].*200"
 
 # The sendfile payload-capture kprobe (#68) is arm64-only today (#112 tracks
 # x86_64); on any other GOARCH, internal/loader/load.go logs a "skipping"
