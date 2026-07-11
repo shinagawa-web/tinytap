@@ -3,8 +3,6 @@ package loader
 import (
 	"errors"
 	"fmt"
-	"log"
-	"runtime"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -88,50 +86,11 @@ func Load(ownPid uint32) (*Tinytap, error) {
 	return tt, nil
 }
 
-// tryAttachKprobe attempts to load the companion kprobe BPF object and
-// attach its fentry/tcp_sendmsg_locked program.  Any failure is logged and
+// tryAttachKprobe attempts to load the companion kprobe BPF object and attach
+// its fentry/tcp_sendmsg_locked program.  Its implementation is arch-specific:
+// the sendfile page->VA derivation only has arm64 and amd64 support, and the
+// bpf2go-generated kprobe bindings only exist for those arches, so the real
+// implementation lives in load_kprobe.go (amd64 || arm64) and a no-op stub in
+// load_kprobe_other.go covers every other GOARCH.  Any failure is logged and
 // silently ignored — the main capture continues without payload bytes for
 // sendfile events.
-func (tt *Tinytap) tryAttachKprobe() {
-	// The kprobe program derives kernel VAs with arch-specific memory-map
-	// bases (arm64 constants, x86_64 live KASLR ksyms), compiled per target
-	// arch by bpf2go.  Only these two arches are supported; skip silently on
-	// anything else rather than reading garbage page addresses.
-	switch runtime.GOARCH {
-	case "arm64", "amd64":
-	default:
-		log.Printf("tinytap: kprobe sendfile payload capture is arm64/amd64-only, skipping on %s", runtime.GOARCH)
-		return
-	}
-
-	kprobeSpec, err := bpf.LoadTinytapKprobe()
-	if err != nil {
-		log.Printf("tinytap: kprobe load spec: %v (sendfile payload capture disabled)", err)
-		return
-	}
-
-	kprobeObjs := new(bpf.TinytapKprobeObjects)
-	err = kprobeSpec.LoadAndAssign(kprobeObjs, &ebpf.CollectionOptions{
-		MapReplacements: map[string]*ebpf.Map{
-			"sendfile_sample_map": tt.objs.SendfileSampleMap,
-		},
-	})
-	if err != nil {
-		_ = kprobeObjs.Close()
-		log.Printf("tinytap: kprobe load objects: %v (sendfile payload capture disabled)", err)
-		return
-	}
-
-	lnk, err := link.AttachTracing(link.TracingOptions{
-		Program:    kprobeObjs.HandleTcpSendmsgLocked,
-		AttachType: ebpf.AttachTraceFEntry,
-	})
-	if err != nil {
-		_ = kprobeObjs.Close()
-		log.Printf("tinytap: attach fentry/tcp_sendmsg_locked: %v (sendfile payload capture disabled)", err)
-		return
-	}
-
-	tt.tracepoints = append(tt.tracepoints, lnk)
-	tt.kprobeObjsCloser = kprobeObjs
-}
