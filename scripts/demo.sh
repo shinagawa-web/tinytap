@@ -5,7 +5,7 @@
 # - Runs `sudo ./tinytap` with output redirected to a file. Output never
 #   reaches the live terminal, so VS Code Remote / Claude Code can't relay
 #   our log lines back into the BPF event stream and amplify the feedback
-#   loop (see README §1.5 + commit history for #16).
+#   loop (see commit history for #16).
 # - Fires one `curl` at the server.
 # - Stops only the processes this script started, then prints the captured
 #   events (filtered to comm=python3/curl).
