@@ -7,8 +7,8 @@
 #   1. Normal: GET / HEAD / POST against python http.server → paired lines.
 #   2. Abandoned: slow server killed mid-request → ABANDONED line in output.
 #   3. Sendfile: GET a static file served via http.ServeFile (sendfile(2))
-#      → pairs regardless of GOARCH; on non-arm64 the payload-capture guard
-#      in internal/loader/load.go also logs its "skipping" line (#133).
+#      → pairs regardless of GOARCH; the payload-capture kprobe attaches on
+#      arm64 and amd64 (#112), and only logs a "skipping" line on other arches.
 #   4. Writev: GET against a server that calls writev(2) directly with two
 #      iovecs (headers, body) → exercises the #111 multi-iovec sampling path
 #      (bpf/tinytap.bpf.c's read_iov) that #3's sendfile path never touches.
@@ -134,12 +134,12 @@ kill -0 "${PY_PID}" 2>/dev/null || { echo "FAIL: http.server exited immediately 
 # ── Scenario 3 setup: static file server (exercises the sendfile path) ───────
 # http.ServeFile hands response bodies to the kernel via sendfile(2) once
 # they're big enough (see docs/server-compat.md, Go net/http row). This
-# exists to exercise the sendfile payload-capture guard in
+# exists to exercise the sendfile payload-capture kprobe in
 # internal/loader/load.go: the fentry/tcp_sendmsg_locked kprobe that samples
-# sendfile body bytes is arm64-only today (#112 tracks x86_64), so on any
-# other GOARCH tinytap logs a "skipping" line and captures byte counts only.
-# The exchange must still pair successfully either way — Content-Length
-# body framing never depends on payload bytes being sampled (see #116).
+# sendfile body bytes attaches on arm64 and amd64 (#112); on any other GOARCH
+# tinytap logs a "skipping" line and captures byte counts only. The exchange
+# must still pair successfully either way — Content-Length body framing never
+# depends on payload bytes being sampled (see #116).
 echo "==> Go static file server on ${FILE_PORT}"
 cat > /tmp/tinytap-e2e-fileserver.go <<'GOEOF'
 package main
@@ -297,22 +297,25 @@ assert_contains "abandoned: peer closed"  "ABANDONED.*peer closed"
 assert_contains "sendfile: GET /file paired with 200" "\[${FILE_PID}\].*GET[[:space:]]+/file[[:space:]].*200"
 assert_contains "writev: GET / paired with 200" "\[${WRITEV_PID}\].*GET[[:space:]]+/[[:space:]].*200"
 
-# The sendfile payload-capture kprobe (#68) is arm64-only today (#112 tracks
-# x86_64); on any other GOARCH, internal/loader/load.go logs a "skipping"
-# line instead of attaching it. Assert whichever behavior matches the
-# architecture this run is actually on, so the test passes both in the Lima
-# VM (arm64) and in CI (x86_64) without hardcoding either.
+# The sendfile payload-capture kprobe (#68) attaches on arm64 and amd64 (#112);
+# on any other GOARCH, internal/loader/load.go logs a "skipping" line instead of
+# attaching it. Assert whichever behavior matches the architecture this run is
+# actually on, so the test passes both in the Lima VM (arm64) and in CI (x86_64)
+# without hardcoding either.
 ARCH="$(go env GOARCH)"
-if [[ "${ARCH}" == "arm64" ]]; then
+case "${ARCH}" in
+arm64 | amd64)
     # A successful kprobe attach is silent (see tryAttachKprobe in
     # internal/loader/load.go) — every log line it emits means some step
     # failed. Assert none of them fired, i.e. the kprobe attached cleanly.
-    assert_absent "sendfile payload capture kprobe attached without error (arm64)" \
-        "sendfile payload capture (is arm64-only|disabled)"
-else
-    assert_contains "sendfile payload capture arm64-only guard logged (${ARCH})" \
-        "kprobe sendfile payload capture is arm64-only, skipping on ${ARCH}"
-fi
+    assert_absent "sendfile payload capture kprobe attached without error (${ARCH})" \
+        "sendfile payload capture (is arm64|disabled)"
+    ;;
+*)
+    assert_contains "sendfile payload capture unsupported-arch guard logged (${ARCH})" \
+        "kprobe sendfile payload capture is arm64/amd64-only, skipping on ${ARCH}"
+    ;;
+esac
 
 echo
 if [[ "${FAILURES}" -eq 0 ]]; then
