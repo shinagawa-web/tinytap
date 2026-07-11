@@ -234,7 +234,10 @@ func handle(conn net.Conn) {
 	var errno syscall.Errno
 	writeErr := rc.Write(func(fd uintptr) bool {
 		_, _, errno = syscall.Syscall(syscall.SYS_WRITEV, fd, uintptr(unsafe.Pointer(&iov[0])), uintptr(len(iov)))
-		return true
+		// EINTR/EAGAIN/EWOULDBLOCK: not done yet — returning false makes
+		// RawConn.Write wait for writability (or just retry) and call us
+		// again, instead of treating a transient condition as a hard error.
+		return errno != syscall.EINTR && errno != syscall.EAGAIN && errno != syscall.EWOULDBLOCK
 	})
 	if writeErr != nil || errno != 0 {
 		fmt.Fprintln(os.Stderr, "writev failed:", writeErr, errno)
