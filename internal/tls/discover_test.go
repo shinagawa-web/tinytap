@@ -228,3 +228,70 @@ func TestFind_AnonymousMappingsIgnored(t *testing.T) {
 		t.Errorf("Find() error = %v, want ErrLibSSLNotFound", err)
 	}
 }
+
+func TestFind_DeletedLibraryMapping(t *testing.T) {
+	// The kernel appends " (deleted)" to the mapped path when the backing
+	// file has been unlinked while still mapped — e.g. a package upgrade
+	// replacing libssl.so under a long-running process. The path up to
+	// that suffix must still resolve.
+	buildDir := t.TempDir()
+	lib := buildSharedLib(t, buildDir, "libssl", tlsdiscover.RequiredSymbols)
+
+	const libPath = "/usr/lib/x86_64-linux-gnu/libssl.so.3"
+	root := fixture(t, 8888, []string{mapsLine(libPath + " (deleted)")}, libPath, lib)
+
+	got, err := tlsdiscover.Find(root, 8888)
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	want := filepath.Join(root, "8888", "root", libPath)
+	if got.Path != want {
+		t.Errorf("Find().Path = %q, want %q", got.Path, want)
+	}
+}
+
+func TestFind_MapsFilePermissionDenied(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: permission-denied test not applicable")
+	}
+	root := t.TempDir()
+	procDir := filepath.Join(root, "999")
+	if err := os.MkdirAll(procDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapsPath := filepath.Join(procDir, "maps")
+	if err := os.WriteFile(mapsPath, []byte(mapsLine("/usr/lib/x86_64-linux-gnu/libssl.so.3")), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := tlsdiscover.Find(root, 999)
+	if errors.Is(err, tlsdiscover.ErrLibSSLNotFound) {
+		t.Errorf("Find() error = %v, want a permission error, not ErrLibSSLNotFound", err)
+	}
+	if err == nil {
+		t.Error("Find() error = nil, want a permission error")
+	}
+}
+
+func TestFind_MapsFileScanError(t *testing.T) {
+	// A single line longer than bufio.Scanner's default token buffer
+	// deterministically triggers scanner.Err() (bufio.ErrTooLong), which
+	// must not be swallowed and reported as ErrLibSSLNotFound.
+	root := t.TempDir()
+	procDir := filepath.Join(root, "111")
+	if err := os.MkdirAll(procDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hugeLine := strings.Repeat("x", 1<<20)
+	if err := os.WriteFile(filepath.Join(procDir, "maps"), []byte(hugeLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := tlsdiscover.Find(root, 111)
+	if errors.Is(err, tlsdiscover.ErrLibSSLNotFound) {
+		t.Errorf("Find() error = %v, want a scan error, not ErrLibSSLNotFound", err)
+	}
+	if err == nil {
+		t.Error("Find() error = nil, want a scan error")
+	}
+}

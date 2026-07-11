@@ -94,20 +94,34 @@ func Find(root string, pid uint32) (Discovery, error) {
 func findLibSSLMapping(mapsPath string) (string, error) {
 	f, err := os.Open(mapsPath)
 	if err != nil {
-		return "", ErrLibSSLNotFound
+		if os.IsNotExist(err) {
+			return "", ErrLibSSLNotFound
+		}
+		// A real failure (e.g. permission denied) is not the same as "no
+		// libssl mapped" and shouldn't be reported as such.
+		return "", fmt.Errorf("open %s: %w", mapsPath, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 6 {
+		line := scanner.Text()
+		// The pathname field starts at the first '/'; taking everything
+		// from there (rather than the last whitespace-delimited field)
+		// handles the " (deleted)" suffix the kernel appends when a mapped
+		// library's file has since been unlinked (e.g. replaced by a
+		// package upgrade while the process keeps running).
+		idx := strings.IndexByte(line, '/')
+		if idx < 0 {
 			continue // anonymous mapping, no backing path
 		}
-		path := fields[len(fields)-1]
+		path := strings.TrimSuffix(line[idx:], " (deleted)")
 		if libsslPattern.MatchString(path) {
 			return path, nil
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scan %s: %w", mapsPath, err)
 	}
 	return "", ErrLibSSLNotFound
 }
