@@ -205,7 +205,7 @@ assert_contains "GET / paired with 200"   "\[${PY_PID}\].*GET[[:space:]]+/[[:spa
 assert_contains "HEAD / paired with 200"  "\[${PY_PID}\].*HEAD[[:space:]]+/[[:space:]].*200"
 assert_contains "POST / captured"         "\[${PY_PID}\].*POST[[:space:]]+/"
 assert_contains "abandoned: peer closed"  "ABANDONED.*peer closed"
-assert_contains "sendfile: GET /file paired with 200" "GET[[:space:]]+/file[[:space:]].*200"
+assert_contains "sendfile: GET /file paired with 200" "\[${FILE_PID}\].*GET[[:space:]]+/file[[:space:]].*200"
 
 # The sendfile payload-capture kprobe (#68) is arm64-only today (#112 tracks
 # x86_64); on any other GOARCH, internal/loader/load.go logs a "skipping"
