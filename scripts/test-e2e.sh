@@ -154,7 +154,13 @@ func main() {
 	http.ListenAndServe(":"+os.Args[1], nil)
 }
 GOEOF
-go run /tmp/tinytap-e2e-fileserver.go "${FILE_PORT}" >"${FILE_LOG}" 2>&1 &
+# Build ahead of starting it: `go run` compiles and execs in one step, and on
+# a cold CI cache compiling net/http's dependency graph can take longer than
+# wait_for_port's 5s budget, failing the wait before the server ever listens.
+# A separate build step surfaces compile failures synchronously and keeps the
+# wait loop bounded to actual startup time.
+go build -o /tmp/tinytap-e2e-fileserver /tmp/tinytap-e2e-fileserver.go
+/tmp/tinytap-e2e-fileserver "${FILE_PORT}" >"${FILE_LOG}" 2>&1 &
 FILE_PID=$!
 wait_for_port localhost "${FILE_PORT}" || { echo "FAIL: file server did not listen on ${FILE_PORT}"; exit 1; }
 
