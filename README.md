@@ -23,10 +23,12 @@ line-oriented stream:
 12:47:57.005  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
 ```
 
-`--output auto` (the default) picks the TUI on an interactive terminal and
-falls back to the line stream otherwise; `--output stdout` / `--output tui`
-force one or the other, and `-v` / `--verbose` hangs the full request/response
-headers under each stdout line.
+`--output auto` (the default) picks the TUI when stdout/stdin are an
+interactive terminal of at least 120x24; otherwise it prints guidance and
+exits rather than silently streaming — the line stream is opt-in via
+`--output stdout`. `--output tui` forces the TUI (and exits the same way if
+the terminal can't host it); `-v` / `--verbose` hangs the full
+request/response headers under each stdout line.
 
 ## Current limitations
 
@@ -108,7 +110,7 @@ For the user, this means **tinytap doesn't need to be installed inside container
 
 ### Requirements
 
-- Linux kernel 5.4+ (ringbuf support; may bump to 5.8+ — see [Toolchain](#toolchain))
+- Linux kernel 5.8+ (tinytap's event transport is `BPF_MAP_TYPE_RINGBUF`, added in 5.8 — see [Toolchain](#toolchain))
 - macOS/Windows users run tinytap inside a Linux VM (Lima, WSL2, etc.) — there is no native macOS/Windows build and none is planned, since eBPF is Linux-only
 
 ## Status & Roadmap
@@ -125,7 +127,7 @@ Full roadmap (near-term steps and longer-term vision) lives in [#19](https://git
 | Build | `bpf2go` (part of cilium/ebpf) | Generates Go bindings from C code |
 | Compiler | `clang` 14+ | Standard for eBPF, supports BTF |
 | Go | 1.24+ | |
-| Kernel | Linux 5.4+ | Common on modern Ubuntu, has BTF; ringbuf available 5.8+ |
+| Kernel | Linux 5.8+ | Required for `BPF_MAP_TYPE_RINGBUF`, tinytap's event transport |
 | Architecture | amd64 + arm64 | Need arm64 for Apple Silicon Lima VM |
 
 ### Dev environment
@@ -156,7 +158,7 @@ source ~/.bashrc
 
 ## License
 
-MIT. The repository doesn't have a `LICENSE` file checked in yet — tracked as a follow-up.
+Not yet licensed — no `LICENSE` file is checked in. MIT is the intended license once one is added.
 
 ## References
 
