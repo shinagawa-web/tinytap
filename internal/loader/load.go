@@ -93,11 +93,14 @@ func Load(ownPid uint32) (*Tinytap, error) {
 // silently ignored — the main capture continues without payload bytes for
 // sendfile events.
 func (tt *Tinytap) tryAttachKprobe() {
-	// The VA derivation in the kprobe program is arm64-specific (VA_BITS=48,
-	// no KASAN).  Skip silently on other architectures rather than reading
-	// garbage page addresses.
-	if runtime.GOARCH != "arm64" {
-		log.Printf("tinytap: kprobe sendfile payload capture is arm64-only, skipping on %s", runtime.GOARCH)
+	// The kprobe program derives kernel VAs with arch-specific memory-map
+	// bases (arm64 constants, x86_64 live KASLR ksyms), compiled per target
+	// arch by bpf2go.  Only these two arches are supported; skip silently on
+	// anything else rather than reading garbage page addresses.
+	switch runtime.GOARCH {
+	case "arm64", "amd64":
+	default:
+		log.Printf("tinytap: kprobe sendfile payload capture is arm64/amd64-only, skipping on %s", runtime.GOARCH)
 		return
 	}
 
