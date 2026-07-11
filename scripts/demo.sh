@@ -17,7 +17,7 @@ URL="http://localhost:${PORT}/"
 TT_LOG=/tmp/tinytap-demo.log
 TT_RAW=/tmp/tinytap-demo-raw.log
 PY_LOG=/tmp/tinytap-demo-py.log
-GREP_RE='(python3|curl)\[[0-9]+\]'
+GREP_RE='(python3|curl)[^][]*\[[0-9]+\]'
 
 PY_PID=""
 TT_PID=""
