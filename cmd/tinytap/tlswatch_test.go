@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,13 +44,17 @@ func (s *syncBuffer) String() string {
 	return s.buf.String()
 }
 
+// fakeProbe's closed field uses atomic.Bool since
+// TestSSLWatcher_OnEvent_ClosedDuringAttach reads it from a polling loop
+// concurrently with Close() writing it from sslWatcher's background
+// goroutine — a plain bool would race under -race.
 type fakeProbe struct {
 	closeErr error
-	closed   bool
+	closed   atomic.Bool
 }
 
 func (f *fakeProbe) Close() error {
-	f.closed = true
+	f.closed.Store(true)
 	return f.closeErr
 }
 
@@ -123,6 +128,67 @@ func TestSSLWatcher_OnEvent_LibSSLNotFound(t *testing.T) {
 	defer w.mu.Unlock()
 	if len(w.probes) != 0 {
 		t.Errorf("probes = %v, want empty", w.probes)
+	}
+}
+
+func TestSSLWatcher_OnEvent_UnexpectedFindError(t *testing.T) {
+	logBuf := newSyncBuffer()
+	orig := log.Writer()
+	log.SetOutput(logBuf)
+	defer log.SetOutput(orig)
+
+	w := newSSLWatcher(&fakeSink{})
+	findErr := errors.New("permission denied")
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		return tls.Discovery{}, findErr
+	}
+
+	w.OnEvent(&events.Event{Pid: 21})
+	waitOnChan(t, logBuf.done)
+
+	if !strings.Contains(logBuf.String(), "permission denied") {
+		t.Errorf("log output = %q, want mention of the unexpected error", logBuf.String())
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.probes) != 0 {
+		t.Errorf("probes = %v, want empty", w.probes)
+	}
+}
+
+func TestSSLWatcher_OnEvent_ClosedDuringAttach(t *testing.T) {
+	attaching := make(chan struct{})
+	release := make(chan struct{})
+	fp := &fakeProbe{}
+	w := newSSLWatcher(&fakeSink{})
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+	w.attach = func(pid uint32, path string) (sslProbe, error) {
+		close(attaching)
+		<-release
+		return fp, nil
+	}
+
+	w.OnEvent(&events.Event{Pid: 23})
+	<-attaching // attach is in flight; Close() races it below
+
+	if err := w.Close(); err != nil {
+		t.Errorf("Close() = %v, want nil", err)
+	}
+	close(release) // let the in-flight attach complete after Close() returned
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !fp.closed.Load() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !fp.closed.Load() {
+		t.Error("probe attached after Close() was never closed (leaked)")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.probes) != 0 {
+		t.Errorf("probes = %v, want empty (closed watcher must not store new probes)", w.probes)
 	}
 }
 
@@ -214,8 +280,8 @@ func TestSSLWatcher_Close_JoinsProbeAndSinkErrors(t *testing.T) {
 	if !errors.Is(err, sinkErr) {
 		t.Errorf("Close() error does not wrap sink close error: %v", err)
 	}
-	if !fp1.closed || !fp2.closed {
-		t.Errorf("fp1.closed=%v fp2.closed=%v, want both true", fp1.closed, fp2.closed)
+	if !fp1.closed.Load() || !fp2.closed.Load() {
+		t.Errorf("fp1.closed=%v fp2.closed=%v, want both true", fp1.closed.Load(), fp2.closed.Load())
 	}
 }
 

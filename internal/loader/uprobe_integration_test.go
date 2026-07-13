@@ -87,7 +87,16 @@ func TestAttachSSLSetFd_RealCall(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start helper: %v", err)
 	}
-	defer func() { _ = cmd.Wait() }()
+	// If a Fatalf below fires before the go-ahead newline is written (e.g. a
+	// timeout reading the READY line), the helper would otherwise block
+	// forever on fgets(stdin) and hang cmd.Wait(). Closing stdin and killing
+	// the process are both best-effort and safe to call after a normal
+	// exit too — they just no-op.
+	defer func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
 
 	reader := bufio.NewReader(stdout)
 	readyLine, err := readLineWithTimeout(reader, 5*time.Second)

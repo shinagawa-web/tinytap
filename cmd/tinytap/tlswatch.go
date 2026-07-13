@@ -34,6 +34,7 @@ type sslWatcher struct {
 	output.Sink
 
 	mu     sync.Mutex
+	closed bool
 	seen   map[uint32]bool
 	probes map[uint32]sslProbe
 
@@ -78,8 +79,10 @@ func (w *sslWatcher) Quit() {
 // loop. ErrLibSSLNotFound (no TLS, or a statically-linked stack) is the
 // overwhelmingly common case and stays silent; a *tls.SymbolError
 // (stripped/nonstandard libssl) logs once, matching #144's "fail fast and
-// say so" policy for stripped binaries. A successful attach logs
-// confirmation.
+// say so" policy for stripped binaries; any other find error (e.g. a
+// permission-denied /proc read) is unexpected and logged so discovery
+// failures aren't silently invisible in real deployments. A successful
+// attach logs confirmation.
 func (w *sslWatcher) maybeAttach(pid uint32) {
 	w.mu.Lock()
 	if w.seen[pid] {
@@ -92,10 +95,15 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 	go func() {
 		disc, err := w.find(pid)
 		if err != nil {
+			if errors.Is(err, tls.ErrLibSSLNotFound) {
+				return
+			}
 			var symErr *tls.SymbolError
 			if errors.As(err, &symErr) {
 				log.Printf("tls: pid %d has libssl at %s but is missing required symbols %v — TLS capture unavailable for this process", pid, symErr.Path, symErr.Missing)
+				return
 			}
+			log.Printf("tls: discover libssl for pid %d: %v", pid, err)
 			return
 		}
 
@@ -106,6 +114,13 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 		}
 
 		w.mu.Lock()
+		if w.closed {
+			w.mu.Unlock()
+			// The watcher shut down while discovery+attach was in flight —
+			// don't write to (and don't leak) a probe nobody will close.
+			_ = probe.Close()
+			return
+		}
 		w.probes[pid] = probe
 		w.mu.Unlock()
 		log.Printf("tls: SSL_set_fd uprobe attached for pid %d (%s)", pid, disc.Path)
@@ -113,8 +128,12 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 }
 
 // Close closes every attached probe (joining errors), then the wrapped sink.
+// Marks the watcher closed first so any maybeAttach goroutine still in
+// flight closes its own probe instead of racing a write into probes after
+// it's been handed off here (see maybeAttach's closed check).
 func (w *sslWatcher) Close() error {
 	w.mu.Lock()
+	w.closed = true
 	probes := w.probes
 	w.probes = nil
 	w.mu.Unlock()
