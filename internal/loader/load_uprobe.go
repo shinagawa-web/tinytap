@@ -1,3 +1,11 @@
+//go:build arm64
+
+// SSL_set_fd uprobe support (#147) is arm64-only for now: its PT_REGS_PARMn
+// argument macros need a real kernel-internal struct pt_regs, only
+// available from a BTF-derived vmlinux.h, and this repo's vendored one
+// reflects only the arm64 dev VM it was generated on (see bpf/gen.go).
+// x86_64 support is tracked in #156; load_uprobe_other.go covers every
+// other GOARCH with a stub that returns an error.
 package loader
 
 import (
