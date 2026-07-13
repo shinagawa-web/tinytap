@@ -112,7 +112,7 @@ func closeOnInterrupt(rd io.Closer, stop <-chan os.Signal) {
 }
 
 func runStdout(rd ringbufCloser, verbose bool) {
-	sink := newStdoutSink(verbose)
+	sink := newSSLWatcher(newStdoutSink(verbose))
 	defer closeSink(sink)
 	log.Println("tinytap running — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.")
 	stop := make(chan os.Signal, 1)
@@ -139,7 +139,7 @@ func runCapturePipeline(rd ringbufCloser, sink output.Sink, ui tuiRunner) error 
 }
 
 func runTUI(rd ringbufCloser, width, height int) {
-	sink := newTUISink(width, height)
+	sink := newSSLWatcher(newTUISink(width, height))
 	defer closeSink(sink)
 
 	// Mute logging for the TUI session so stray lines can't corrupt the alt-screen.
