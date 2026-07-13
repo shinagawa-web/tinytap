@@ -27,7 +27,7 @@ test-unit:
 	go test -coverprofile=$(COVFILE) -covermode=atomic ./...
 
 check-coverage:
-	grep -vE '(_bpfel\.go|_bpfeb\.go|internal/loader/load(_kprobe(_other)?)?\.go)' $(COVFILE) > $(FILTERED)
+	grep -vE '(_bpfel\.go|_bpfeb\.go|internal/loader/load(_kprobe(_other)?|_uprobe)?\.go)' $(COVFILE) > $(FILTERED)
 	@awk 'NR>1 { total+=$$2; if($$3>0) covered+=$$2 } END { \
 		printf "Total coverage: %d/%d statements\n", covered, total; \
 		if (covered * 100 < total * $(COVERAGE_THRESHOLD)) { \
