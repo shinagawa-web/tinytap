@@ -149,6 +149,18 @@ type Message struct {
 	// the sample cap (wire-only tail) or the body exceeded maxBodyBytes.
 	BodySample    []byte
 	BodyTruncated bool
+	// SSL and SSLFallback support pairing TLS-sourced messages that have no
+	// verified fd (#171): some clients (curl, confirmed in #167) never call
+	// SSL_set_fd, so the SSL_write/SSL_read uprobe (#146) plaintext can only
+	// be identified by its SSL* pointer, not a socket fd. SSLFallback's zero
+	// value (false) is today's default — every message currently produced by
+	// Feed is fd-sourced. A future TLS event source (#149) sets SSLFallback
+	// true and SSL to the observed pointer when no SSL_set_fd correlation
+	// exists for it; Fd is meaningless in that case. Never both false/set and
+	// true/unset — see Pairer, which keys strictly on one or the other and
+	// never guesses a fd for an SSLFallback message.
+	SSL         uint64
+	SSLFallback bool
 }
 
 // Header is a single HTTP header field as it appeared on the wire. Name and

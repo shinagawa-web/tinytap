@@ -142,6 +142,51 @@ func TestRowLineSlowLatencyHighlighted(t *testing.T) {
 	}
 }
 
+// A row matched on (pid, SSL*) instead of a verified fd (#171) gets its PID
+// cell styled distinctly; an ordinary fd-verified row stays plain.
+func TestRowLineSSLFallbackHighlighted(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	const width = 120
+	pathWidth := width - markerCol - fixedWidth - separators
+	fallback := rowLine(row{pid: 5950, path: "/", sslFallback: true}, pathWidth, false, false)
+	verified := rowLine(row{pid: 5950, path: "/", sslFallback: false}, pathWidth, false, false)
+
+	if !strings.Contains(fallback, "5950") || !strings.Contains(fallback, "\x1b[") {
+		t.Errorf("sslFallback row should show a styled pid, got %q", fallback)
+	}
+	if strings.Contains(verified, "\x1b[") {
+		t.Errorf("fd-verified row should be unstyled, got %q", verified)
+	}
+	if got := lipgloss.Width(fallback); got != width {
+		t.Errorf("sslFallback row visible width = %d, want %d", got, width)
+	}
+}
+
+// newRow carries PairedEvent.SSLFallback through to row.sslFallback.
+func TestNewRowCarriesSSLFallback(t *testing.T) {
+	r := newRow(http.PairedEvent{SSLFallback: true}, time.Now())
+	if !r.sslFallback {
+		t.Error("newRow should carry SSLFallback=true through from the PairedEvent")
+	}
+}
+
+// detailDivider marks an SSL-fallback selection so the detail panel doesn't
+// read as an ordinary fd-verified pairing either.
+func TestDetailDividerMarksSSLFallback(t *testing.T) {
+	m := model{width: 80, rows: []row{{pid: 1, comm: "curl", sslFallback: true}}}
+	if got := m.detailDivider(); !strings.Contains(got, "ssl-keyed") {
+		t.Errorf("detailDivider() = %q, want it to mention ssl-keyed", got)
+	}
+
+	m2 := model{width: 80, rows: []row{{pid: 1, comm: "nginx", sslFallback: false}}}
+	if got := m2.detailDivider(); strings.Contains(got, "ssl-keyed") {
+		t.Errorf("detailDivider() = %q, want no ssl-keyed marker for a verified row", got)
+	}
+}
+
 // rowLine marks the selected row with the ▸ gutter glyph.
 func TestRowLineSelectedMarker(t *testing.T) {
 	r := row{time: "19:35:24.123", pid: 5950, comm: "curl", method: "GET", path: "/"}

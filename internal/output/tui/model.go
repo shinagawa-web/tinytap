@@ -94,6 +94,12 @@ type row struct {
 	resBody          []byte
 	reqBodyTruncated bool
 	resBodyTruncated bool
+
+	// sslFallback mirrors PairedEvent.SSLFallback (#171): true when this row
+	// was matched on (pid, SSL*) instead of a verified fd — e.g. curl, which
+	// never calls SSL_set_fd (#167). rowLine paints the PID cell distinctly
+	// so this never reads as an ordinary fd-verified pairing.
+	sslFallback bool
 }
 
 func newRow(pe http.PairedEvent, when time.Time) row {
@@ -117,6 +123,7 @@ func newRow(pe http.PairedEvent, when time.Time) row {
 		resBody:          pe.ResBody,
 		reqBodyTruncated: pe.ReqBodyTruncated,
 		resBodyTruncated: pe.ResBodyTruncated,
+		sslFallback:      pe.SSLFallback,
 	}
 }
 
@@ -526,6 +533,9 @@ func (m model) detailDivider() string {
 	if m.displayCount() > 0 {
 		r := m.displayRow(m.selected)
 		label += fmt.Sprintf("pid=%d (%s) ", r.pid, r.comm)
+		if r.sslFallback {
+			label += "[ssl-keyed, fd unverified] "
+		}
 	}
 	n := utf8.RuneCountInString(label)
 	if n >= m.width {
@@ -822,6 +832,12 @@ var selectedStyle = lipgloss.NewStyle().Reverse(true)
 // bold yellow — the unit ceases to be the only signal that a request was slow.
 var slowLatencyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 
+// sslFallbackStyle marks rows matched on (pid, SSL*) instead of a verified fd
+// (#171). Applied to the PID cell — the closest on-screen stand-in for
+// connection identity, since fd itself isn't a displayed column — so a
+// fallback pairing is never mistaken for an ordinary fd-verified one.
+var sslFallbackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
+
 // rowLine renders one exchange. `selected` draws the ▸ gutter marker (blank
 // otherwise); `focused` additionally paints the row in reverse video — the
 // bright focus bar. The two are separate so that when focus is in the detail
@@ -839,9 +855,13 @@ func rowLine(r row, pathWidth int, selected, focused bool) string {
 	if r.latency >= time.Second {
 		latency = slowLatencyStyle.Render(latency)
 	}
+	pidCell := fitLeft(strconv.FormatUint(uint64(r.pid), 10), colPID)
+	if r.sslFallback {
+		pidCell = sslFallbackStyle.Render(pidCell)
+	}
 	line := marker + strings.Join([]string{
 		fitLeft(r.time, colTime),
-		fitLeft(strconv.FormatUint(uint64(r.pid), 10), colPID),
+		pidCell,
 		fitLeft(r.comm, colComm),
 		fitLeft(r.method, colMethod),
 		fitLeft(r.path, pathWidth),
