@@ -412,6 +412,35 @@ func TestPairerSSLFallbackNeverCollidesWithSameNumericFd(t *testing.T) {
 	}
 }
 
+// A malformed SSLFallback message with SSL==0 must be dropped, not queued
+// or paired — keying it on (pid, ssl=0) would collapse every such message
+// for a pid onto one shared FIFO, defeating the discriminator's whole
+// purpose. Two independently-malformed requests on the same pid must not
+// cross-pair with each other's responses either (Copilot review, PR #172).
+func TestPairerSSLFallbackZeroSSLIsDropped(t *testing.T) {
+	p := NewPairer()
+	pid := uint32(42)
+
+	if _, ok := p.Push(Message{TsNs: 1, Pid: pid, SSL: 0, SSLFallback: true, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/a"}}); ok {
+		t.Error("a request must never itself report as paired")
+	}
+	if _, ok := p.Push(Message{TsNs: 2, Pid: pid, SSL: 0, SSLFallback: true, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/b"}}); ok {
+		t.Error("a request must never itself report as paired")
+	}
+	if len(p.pending) != 0 {
+		t.Errorf("malformed SSLFallback requests must not be queued, pending = %+v", p.pending)
+	}
+
+	// A response for the malformed identity must not pair with either
+	// dropped request (there is nothing valid to pair with).
+	if pe, ok := p.Push(Message{TsNs: 3, Pid: pid, SSL: 0, SSLFallback: true, IsRequest: false,
+		Res: httpStatusLine{status: 200}}); ok {
+		t.Errorf("malformed SSLFallback response must not pair, got %+v", pe)
+	}
+}
+
 // A successful pairing carries SSL/SSLFallback from the request into the
 // PairedEvent, so renderers downstream can tell it apart from a verified
 // pairing (#171).

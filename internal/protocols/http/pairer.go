@@ -118,7 +118,16 @@ func newPairerWithClock(now func() time.Time) *Pairer {
 // kind: an SSLFallback request never pairs with an ordinary fd-keyed
 // response even if their Pid/Fd/SSL values happened to coincide, and vice
 // versa — keyFor's discriminator makes that impossible by construction.
+//
+// A malformed SSLFallback message (SSL == 0 — no producer should ever emit
+// one, but Push does not trust that) is dropped rather than paired: keying
+// it on (pid, ssl=0) would collapse every SSL* this pid ever fails to set
+// onto one shared FIFO, reopening exactly the cross-pairing risk #171
+// exists to close, just from a different bug than a guessed fd.
 func (p *Pairer) Push(e Message) (PairedEvent, bool) {
+	if e.SSLFallback && e.SSL == 0 {
+		return PairedEvent{}, false
+	}
 	key := keyFor(e.Pid, e.Fd, e.SSL, e.SSLFallback)
 	if e.IsRequest {
 		p.pending[key] = append(p.pending[key], timedMessage{msg: e, arrivedAt: p.now()})
