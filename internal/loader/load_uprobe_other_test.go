@@ -29,3 +29,21 @@ func TestSSLFdProbeStub_LookupAndClose(t *testing.T) {
 		t.Errorf("Close() = %v, want nil", err)
 	}
 }
+
+func TestAttachSSLReadWrite_UnsupportedArch(t *testing.T) {
+	probe, err := loader.AttachSSLReadWrite(123, "/lib/libssl.so.3")
+	if probe != nil {
+		t.Errorf("AttachSSLReadWrite probe = %v, want nil", probe)
+	}
+	if !errors.Is(err, loader.ErrSSLSetFdUnsupportedArch) {
+		t.Errorf("AttachSSLReadWrite err = %v, want wrapping ErrSSLSetFdUnsupportedArch", err)
+	}
+}
+
+func TestSSLPayloadProbeStub_Close(t *testing.T) {
+	var p *loader.SSLPayloadProbe
+
+	if err := p.Close(); err != nil {
+		t.Errorf("Close() = %v, want nil", err)
+	}
+}

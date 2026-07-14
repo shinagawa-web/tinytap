@@ -20,6 +20,19 @@ type TinytapUprobeSslFdKey struct {
 	Ssl uint64
 }
 
+type TinytapUprobeSslReadExPending struct {
+	_            structs.HostLayout
+	Ssl          uint64
+	Buf          uint64
+	ReadbytesPtr uint64
+}
+
+type TinytapUprobeSslReadPending struct {
+	_   structs.HostLayout
+	Ssl uint64
+	Buf uint64
+}
+
 // LoadTinytapUprobe returns the embedded CollectionSpec for TinytapUprobe.
 func LoadTinytapUprobe() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_TinytapUprobeBytes)
@@ -62,14 +75,23 @@ type TinytapUprobeSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type TinytapUprobeProgramSpecs struct {
-	HandleSslSetFd *ebpf.ProgramSpec `ebpf:"handle_ssl_set_fd"`
+	HandleSslRead      *ebpf.ProgramSpec `ebpf:"handle_ssl_read"`
+	HandleSslReadEx    *ebpf.ProgramSpec `ebpf:"handle_ssl_read_ex"`
+	HandleSslReadExRet *ebpf.ProgramSpec `ebpf:"handle_ssl_read_ex_ret"`
+	HandleSslReadRet   *ebpf.ProgramSpec `ebpf:"handle_ssl_read_ret"`
+	HandleSslSetFd     *ebpf.ProgramSpec `ebpf:"handle_ssl_set_fd"`
+	HandleSslWrite     *ebpf.ProgramSpec `ebpf:"handle_ssl_write"`
+	HandleSslWriteEx   *ebpf.ProgramSpec `ebpf:"handle_ssl_write_ex"`
 }
 
 // TinytapUprobeMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type TinytapUprobeMapSpecs struct {
-	SslFdMap *ebpf.MapSpec `ebpf:"ssl_fd_map"`
+	SslEvents           *ebpf.MapSpec `ebpf:"ssl_events"`
+	SslFdMap            *ebpf.MapSpec `ebpf:"ssl_fd_map"`
+	SslReadExPendingMap *ebpf.MapSpec `ebpf:"ssl_read_ex_pending_map"`
+	SslReadPendingMap   *ebpf.MapSpec `ebpf:"ssl_read_pending_map"`
 }
 
 // TinytapUprobeVariableSpecs contains global variables before they are loaded into the kernel.
@@ -98,12 +120,18 @@ func (o *TinytapUprobeObjects) Close() error {
 //
 // It can be passed to LoadTinytapUprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type TinytapUprobeMaps struct {
-	SslFdMap *ebpf.Map `ebpf:"ssl_fd_map"`
+	SslEvents           *ebpf.Map `ebpf:"ssl_events"`
+	SslFdMap            *ebpf.Map `ebpf:"ssl_fd_map"`
+	SslReadExPendingMap *ebpf.Map `ebpf:"ssl_read_ex_pending_map"`
+	SslReadPendingMap   *ebpf.Map `ebpf:"ssl_read_pending_map"`
 }
 
 func (m *TinytapUprobeMaps) Close() error {
 	return _TinytapUprobeClose(
+		m.SslEvents,
 		m.SslFdMap,
+		m.SslReadExPendingMap,
+		m.SslReadPendingMap,
 	)
 }
 
@@ -117,12 +145,24 @@ type TinytapUprobeVariables struct {
 //
 // It can be passed to LoadTinytapUprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type TinytapUprobePrograms struct {
-	HandleSslSetFd *ebpf.Program `ebpf:"handle_ssl_set_fd"`
+	HandleSslRead      *ebpf.Program `ebpf:"handle_ssl_read"`
+	HandleSslReadEx    *ebpf.Program `ebpf:"handle_ssl_read_ex"`
+	HandleSslReadExRet *ebpf.Program `ebpf:"handle_ssl_read_ex_ret"`
+	HandleSslReadRet   *ebpf.Program `ebpf:"handle_ssl_read_ret"`
+	HandleSslSetFd     *ebpf.Program `ebpf:"handle_ssl_set_fd"`
+	HandleSslWrite     *ebpf.Program `ebpf:"handle_ssl_write"`
+	HandleSslWriteEx   *ebpf.Program `ebpf:"handle_ssl_write_ex"`
 }
 
 func (p *TinytapUprobePrograms) Close() error {
 	return _TinytapUprobeClose(
+		p.HandleSslRead,
+		p.HandleSslReadEx,
+		p.HandleSslReadExRet,
+		p.HandleSslReadRet,
 		p.HandleSslSetFd,
+		p.HandleSslWrite,
+		p.HandleSslWriteEx,
 	)
 }
 

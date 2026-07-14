@@ -79,3 +79,50 @@ Decoded from raw ringbuf bytes via `encoding/binary` with little-endian byte ord
 | 32  | 16  | `comm[16]` |
 | 48  | 4096 | `payload[4096]` |
 | **Total** | **4144** | |
+
+## SSL plaintext event (uprobe)
+
+A second, separate event format emitted by the SSL_write/SSL_read uprobe program (`bpf/tinytap_uprobe.bpf.c`, #146) over its own ringbuf (`ssl_events`). Decoded on the Go side by `events.DecodeSSL` into `events.SSLEvent` ([`internal/events/ssl_event.go`](../internal/events/ssl_event.go)). This program is a standalone capability (see `loader.AttachSSLReadWrite`) — not wired into `Load()` or the main `event` ringbuf above, and it carries no `fd` (SSL-to-fd correlation is `loader.SSLFdProbe`'s job, #147).
+
+```c
+enum ssl_op {
+    SSL_OP_WRITE = 1, // captured at entry; len is the requested byte count
+    SSL_OP_READ  = 2, // captured at return; len is the actual byte count
+};
+
+struct ssl_event {
+    __u64 ts_ns;
+    __u32 pid;
+    __u32 tid;
+    __u64 ssl;             // SSL* value, opaque — never dereferenced
+    __u32 op;               // enum ssl_op
+    __u32 len;               // see enum ssl_op for entry-vs-return semantics
+    __u32 payload_len;       // actual bytes copied into payload[]
+    __u32 _pad;              // explicit alignment pad, keeps comm/payload offsets a multiple of 8
+    __u8  comm[16];
+    __u8  payload[4096];
+};
+```
+
+Total: 4152 bytes.
+
+- **`op`** — `SSL_OP_WRITE` is captured at `SSL_write`/`SSL_write_ex` entry, where `(ssl, buf, num)` are already valid arguments. `SSL_OP_READ` is captured at `SSL_read`/`SSL_read_ex` *return* instead, since the plaintext buffer is only filled by the time the call returns — the uprobe stashes `(ssl, buf)` at entry and a uretprobe reads the actual byte count (return value for the plain form, the `size_t *readbytes` out-param for `_ex`) once the call completes.
+- **`len`** — for writes, the *requested* byte count (same "captured at entry" caveat as the main event's `bytes`). For reads, the *actual* byte count, since it's only known at return.
+- **`_pad`** — no data; keeps `comm`/`payload` at offsets that are multiples of 8, explicit rather than left to compiler-inserted struct padding (mirrors this repo's "no implicit padding" convention above).
+- **`payload`** — up to 4096 bytes of plaintext, same cap and truncation behavior as the main event's `payload`.
+
+### Layout (offsets)
+
+| Offset | Size | Field |
+|---|---|---|
+| 0   | 8   | `ts_ns` |
+| 8   | 4   | `pid` |
+| 12  | 4   | `tid` |
+| 16  | 8   | `ssl` |
+| 24  | 4   | `op` |
+| 28  | 4   | `len` |
+| 32  | 4   | `payload_len` |
+| 36  | 4   | `_pad` |
+| 40  | 16  | `comm[16]` |
+| 56  | 4096 | `payload[4096]` |
+| **Total** | **4152** | |

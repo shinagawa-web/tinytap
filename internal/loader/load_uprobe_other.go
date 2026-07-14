@@ -30,3 +30,16 @@ func (p *SSLFdProbe) Lookup(pid uint32, ssl uint64) (int32, bool) { return 0, fa
 
 // Close is a no-op on non-arm64 arches.
 func (p *SSLFdProbe) Close() error { return nil }
+
+// SSLPayloadProbe is a no-op stand-in on non-arm64 arches; AttachSSLReadWrite
+// never returns one, so its methods are unreachable in practice.
+type SSLPayloadProbe struct{}
+
+// AttachSSLReadWrite always fails on non-arm64 arches, for the same reason
+// as AttachSSLSetFd. See ErrSSLSetFdUnsupportedArch.
+func AttachSSLReadWrite(pid uint32, libsslPath string) (*SSLPayloadProbe, error) {
+	return nil, fmt.Errorf("pid %d: %w (GOARCH=%s)", pid, ErrSSLSetFdUnsupportedArch, runtime.GOARCH)
+}
+
+// Close is a no-op on non-arm64 arches.
+func (p *SSLPayloadProbe) Close() error { return nil }
