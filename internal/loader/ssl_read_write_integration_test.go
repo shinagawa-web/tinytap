@@ -1,4 +1,10 @@
-//go:build privileged
+//go:build privileged && arm64
+
+// This test accesses SSLPayloadProbe.Reader directly, which only exists on
+// the real arm64 implementation (load_uprobe.go) — the non-arm64 stub
+// (load_uprobe_other.go) has no such field, since AttachSSLReadWrite always
+// fails there before returning a probe. TestAttachSSLReadWrite_UnsupportedArch
+// in load_uprobe_other_test.go covers that stub behavior on every other arch.
 
 package loader_test
 
