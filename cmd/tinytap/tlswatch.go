@@ -23,6 +23,13 @@ import (
 // attached probes accumulate for the process's lifetime and are all closed
 // together on tinytap shutdown via Close(). Acceptable for a dev-environment
 // tool watching a handful of long-lived processes (nginx, curl invocations).
+//
+// Known gap: curl never calls SSL_set_fd — it wires OpenSSL to the socket via
+// a custom BIO_METHOD instead, consistently across current stable versions
+// (see lib/vtls/openssl.c in curl/curl). This probe will attach to curl
+// processes but the uprobe never fires, so curl's SSL_write/SSL_read payloads
+// are captured without SSL*<->fd correlation. Confirmed, not hypothetical —
+// see #167 and #144's "Explicitly out of scope" section.
 // sslProbe is the subset of *loader.SSLFdProbe that sslWatcher needs —
 // narrowed to an interface so tests can inject a fake instead of a real
 // eBPF-backed probe.
