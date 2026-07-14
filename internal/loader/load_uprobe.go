@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/ringbuf"
 
 	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
 )
@@ -28,6 +30,19 @@ import (
 // running a capture tool — so callers must fix this themselves, e.g.
 // `sudo chmod +x <path>`, before retrying.
 var ErrLibSSLNotExecutable = errors.New("libssl path has no execute permission bit set (try: sudo chmod +x <path>)")
+
+// checkLibSSLExecutable confirms libsslPath exists and has the execute
+// permission bit set, without modifying it (see ErrLibSSLNotExecutable).
+func checkLibSSLExecutable(libsslPath string) error {
+	info, err := os.Stat(libsslPath)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", libsslPath, err)
+	}
+	if info.Mode()&0o111 == 0 {
+		return fmt.Errorf("%s: %w", libsslPath, ErrLibSSLNotExecutable)
+	}
+	return nil
+}
 
 // SSLFdProbe attaches a uprobe on SSL_set_fd in a target process's libssl
 // and exposes a (pid, SSL*) -> fd lookup backed by a BPF hash map.
@@ -54,12 +69,8 @@ type SSLFdProbe struct {
 // come from internal/tls.Find — this function performs no discovery of its
 // own, only attachment.
 func AttachSSLSetFd(pid uint32, libsslPath string) (*SSLFdProbe, error) {
-	info, err := os.Stat(libsslPath)
-	if err != nil {
-		return nil, fmt.Errorf("stat %s: %w", libsslPath, err)
-	}
-	if info.Mode()&0o111 == 0 {
-		return nil, fmt.Errorf("%s: %w", libsslPath, ErrLibSSLNotExecutable)
+	if err := checkLibSSLExecutable(libsslPath); err != nil {
+		return nil, err
 	}
 
 	spec, err := bpf.LoadTinytapUprobe()
@@ -104,6 +115,116 @@ func (p *SSLFdProbe) Close() error {
 	var errs []error
 	if p.link != nil {
 		if err := p.link.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close uprobe link: %w", err))
+		}
+	}
+	if err := p.objs.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("close uprobe objects: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+// SSLPayloadProbe attaches uprobes on SSL_write/SSL_write_ex (entry) and
+// uretprobes on SSL_read/SSL_read_ex (return) in a target process's libssl,
+// and exposes the captured plaintext as decoded events over its own
+// ringbuf.
+//
+// This is a standalone capability (#146): like SSLFdProbe, it is not wired
+// into Load() or the live capture loop. Deciding which pid to target is the
+// caller's job. Out of scope for this probe (see #146's issue scope):
+// correlating the captured SSL* to a fd (SSLFdProbe covers that separately),
+// reassembling payloads that span multiple syscalls, and feeding output
+// into the HTTP parser.
+type SSLPayloadProbe struct {
+	objs   bpf.TinytapUprobeObjects
+	links  []link.Link
+	Reader *ringbuf.Reader
+}
+
+// AttachSSLReadWrite loads the SSL_write/SSL_read uprobe BPF program and
+// attaches it to libsslPath, capturing plaintext buffers.
+//
+// pid scopes the uprobes to a single process; pass 0 to attach system-wide
+// to every process that calls into libsslPath. libsslPath is expected to
+// come from internal/tls.Find — this function performs no discovery of its
+// own, only attachment.
+//
+// SSL_write_ex/SSL_read_ex are attached best-effort: their absence (older
+// OpenSSL) does not fail the whole attach, since internal/tls.Find's
+// RequiredSymbols only guarantees the plain SSL_read/SSL_write/SSL_set_fd
+// trio.
+func AttachSSLReadWrite(pid uint32, libsslPath string) (*SSLPayloadProbe, error) {
+	if err := checkLibSSLExecutable(libsslPath); err != nil {
+		return nil, err
+	}
+
+	spec, err := bpf.LoadTinytapUprobe()
+	if err != nil {
+		return nil, fmt.Errorf("load uprobe spec: %w", err)
+	}
+
+	p := &SSLPayloadProbe{}
+	if err := spec.LoadAndAssign(&p.objs, nil); err != nil {
+		return nil, fmt.Errorf("load uprobe objects: %w", err)
+	}
+
+	ex, err := link.OpenExecutable(libsslPath)
+	if err != nil {
+		_ = p.objs.Close()
+		return nil, fmt.Errorf("open executable %s: %w", libsslPath, err)
+	}
+
+	opts := &link.UprobeOptions{PID: int(pid)}
+	hooks := []struct {
+		symbol   string
+		ret      bool
+		required bool
+		prog     *ebpf.Program
+	}{
+		{"SSL_write", false, true, p.objs.HandleSslWrite},
+		{"SSL_read", false, true, p.objs.HandleSslRead},
+		{"SSL_read", true, true, p.objs.HandleSslReadRet},
+		{"SSL_write_ex", false, false, p.objs.HandleSslWriteEx},
+		{"SSL_read_ex", false, false, p.objs.HandleSslReadEx},
+		{"SSL_read_ex", true, false, p.objs.HandleSslReadExRet},
+	}
+	for _, h := range hooks {
+		attach := ex.Uprobe
+		if h.ret {
+			attach = ex.Uretprobe
+		}
+		lnk, err := attach(h.symbol, h.prog, opts)
+		if err != nil {
+			if !h.required && errors.Is(err, link.ErrNoSymbol) {
+				continue
+			}
+			_ = p.Close()
+			return nil, fmt.Errorf("attach uprobe %s: %w", h.symbol, err)
+		}
+		p.links = append(p.links, lnk)
+	}
+
+	rd, err := ringbuf.NewReader(p.objs.SslEvents)
+	if err != nil {
+		_ = p.Close()
+		return nil, fmt.Errorf("open ssl ringbuf: %w", err)
+	}
+	p.Reader = rd
+
+	return p, nil
+}
+
+// Close detaches every attached uprobe, closes the ringbuf reader, and
+// releases the loaded BPF objects.
+func (p *SSLPayloadProbe) Close() error {
+	var errs []error
+	if p.Reader != nil {
+		if err := p.Reader.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close ssl ringbuf: %w", err))
+		}
+	}
+	for _, lnk := range p.links {
+		if err := lnk.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close uprobe link: %w", err))
 		}
 	}
