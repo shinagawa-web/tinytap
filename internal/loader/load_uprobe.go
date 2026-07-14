@@ -126,8 +126,8 @@ func (p *SSLFdProbe) Close() error {
 
 // SSLPayloadProbe attaches uprobes on SSL_write/SSL_write_ex (entry) and
 // uretprobes on SSL_read/SSL_read_ex (return) in a target process's libssl,
-// and exposes the captured plaintext as decoded events over its own
-// ringbuf.
+// and exposes the captured plaintext over its own ringbuf. Reader yields raw
+// records — callers decode them with events.DecodeSSL into events.SSLEvent.
 //
 // This is a standalone capability (#146): like SSLFdProbe, it is not wired
 // into Load() or the live capture loop. Deciding which pid to target is the

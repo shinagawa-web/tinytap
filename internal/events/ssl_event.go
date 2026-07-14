@@ -35,8 +35,8 @@ type SSLEvent struct {
 }
 
 // sslEventWireSize is sizeof(struct ssl_event) on the C side: the fixed
-// 56-byte header (ts_ns through the alignment pad) plus the
-// MaxSSLPayload-sized payload array.
+// 56-byte header (ts_ns through comm, including the alignment pad at offset
+// 36-40) plus the MaxSSLPayload-sized payload array.
 const sslEventWireSize = 56 + MaxSSLPayload
 
 // DecodeSSL parses a single ringbuf record from the SSL uprobe program into
