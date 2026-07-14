@@ -7,17 +7,47 @@ const (
 	AbandonReasonTimeout = "timed out"
 )
 
-// Pairer matches HTTP requests with their responses on the same (pid, fd)
-// and emits a single PairedEvent at the moment the response's headers
-// arrive. Requests with no response yet stay queued; responses without a
-// queued request are dropped (likely captured mid-stream).
+// Pairer matches HTTP requests with their responses on the same connection
+// identity and emits a single PairedEvent at the moment the response's
+// headers arrive. Requests with no response yet stay queued; responses
+// without a queued request are dropped (likely captured mid-stream).
 //
 // HTTP/1.1 keep-alive guarantees responses are returned in request order,
-// so a simple FIFO per (pid, fd) is sufficient. Chunked encoding and
-// HTTP/2 are out of scope for v0.1.0.
+// so a simple FIFO per identity is sufficient. Chunked encoding and HTTP/2
+// are out of scope for v0.1.0.
+//
+// Connection identity is normally (pid, fd). For TLS-sourced messages with
+// no verified fd (Message.SSLFallback, #171) it is (pid, SSL*) instead — a
+// dimension distinct from (pid, fd) by construction (see pairKey), so a
+// fallback message can never collide with a real fd-keyed connection or
+// with another SSL* on the same pid. Guessing or inferring a fd for these
+// is explicitly rejected (#171): a wrong guess would silently cross-pair
+// two unrelated exchanges, which is worse than the fallback path's own
+// limitation of never receiving a Close() (see Close).
 type Pairer struct {
-	pending map[pidFd][]timedMessage
+	pending map[pairKey][]timedMessage
 	now     func() time.Time
+}
+
+// pairKey identifies a connection for pairing purposes. sslFallback is an
+// explicit discriminator, not inferred from fd/ssl being zero — so the
+// fd-keyed and SSL-keyed halves of the key space can never collide by
+// construction, regardless of what values fd or ssl happen to hold.
+type pairKey struct {
+	pid         uint32
+	fd          int32  // meaningful only when sslFallback is false
+	ssl         uint64 // meaningful only when sslFallback is true
+	sslFallback bool
+}
+
+// keyFor derives a message's pairing identity. Zero-value Messages (every
+// message Feed produces today) yield the same key shape the pairer has
+// always used: {pid, fd}.
+func keyFor(pid uint32, fd int32, ssl uint64, sslFallback bool) pairKey {
+	if sslFallback {
+		return pairKey{pid: pid, ssl: ssl, sslFallback: true}
+	}
+	return pairKey{pid: pid, fd: fd}
 }
 
 // timedMessage wraps a Message with the wall-clock time it arrived at the
@@ -59,6 +89,12 @@ type PairedEvent struct {
 	ReqBodyTruncated bool
 	ResBody          []byte
 	ResBodyTruncated bool
+	// SSL and SSLFallback mirror Message's fields of the same name (#171).
+	// When SSLFallback is true, Fd carries no meaning — this pair was matched
+	// on (Pid, SSL) instead, and renderers must show it as such rather than
+	// display Fd as if it were verified.
+	SSL         uint64
+	SSLFallback bool
 }
 
 func NewPairer() *Pairer {
@@ -67,7 +103,7 @@ func NewPairer() *Pairer {
 
 func newPairerWithClock(now func() time.Time) *Pairer {
 	return &Pairer{
-		pending: make(map[pidFd][]timedMessage),
+		pending: make(map[pairKey][]timedMessage),
 		now:     now,
 	}
 }
@@ -77,8 +113,13 @@ func newPairerWithClock(now func() time.Time) *Pairer {
 // matching request is queued, the request is dequeued and a paired event
 // is returned. Unmatched responses (request was missed) yield nil so the
 // caller can decide whether to render them on their own.
+//
+// A request and its response only pair when they carry the *same* identity
+// kind: an SSLFallback request never pairs with an ordinary fd-keyed
+// response even if their Pid/Fd/SSL values happened to coincide, and vice
+// versa — keyFor's discriminator makes that impossible by construction.
 func (p *Pairer) Push(e Message) (PairedEvent, bool) {
-	key := pidFd{pid: e.Pid, fd: e.Fd}
+	key := keyFor(e.Pid, e.Fd, e.SSL, e.SSLFallback)
 	if e.IsRequest {
 		p.pending[key] = append(p.pending[key], timedMessage{msg: e, arrivedAt: p.now()})
 		return PairedEvent{}, false
@@ -114,6 +155,9 @@ func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 		ReqBodyTruncated: req.BodyTruncated,
 		ResBody:          e.BodySample,
 		ResBodyTruncated: e.BodyTruncated,
+
+		SSL:         req.SSL,
+		SSLFallback: req.SSLFallback,
 	}, true
 }
 
@@ -128,8 +172,15 @@ func bodyBytes(cl int, sample []byte) int {
 
 // Close emits an abandoned PairedEvent for every pending request on the given
 // (pid, fd) and removes them from the queue. Called when the socket closes.
+//
+// This only ever targets the fd-keyed identity space — close is a syscall-
+// level event and always carries a real fd, but an SSLFallback request was
+// deliberately never filed under one (#171: guessing a fd is rejected as a
+// cross-pairing risk). So Close can never evict an SSLFallback-pending
+// request, even when the underlying socket for its SSL* did close; Sweep's
+// timeout eviction is the only path that reclaims those.
 func (p *Pairer) Close(pid uint32, fd int32, closeTsNs uint64) []PairedEvent {
-	key := pidFd{pid: pid, fd: fd}
+	key := keyFor(pid, fd, 0, false)
 	msgs := p.pending[key]
 	if len(msgs) == 0 {
 		return nil
@@ -184,5 +235,7 @@ func abandonedEvent(req Message, reason string, latency time.Duration) PairedEve
 		ReqHeaders:    req.Headers,
 		Abandoned:     true,
 		AbandonReason: reason,
+		SSL:           req.SSL,
+		SSLFallback:   req.SSLFallback,
 	}
 }

@@ -343,6 +343,142 @@ func TestPairerSameFdDifferentPids(t *testing.T) {
 	}
 }
 
+// #171: two concurrent SSL-fallback connections on the same pid (curl-style,
+// no verified fd — see #167) must be isolated from each other exactly like
+// two fd-keyed connections are (TestPairerConcurrentFdsSamePid). Requests
+// and responses are pushed interleaved, not request/request/response/
+// response, to prove the FIFO-per-key isolation holds under interleaving,
+// not just under a convenient ordering.
+func TestPairerSSLFallbackConcurrentSSLsSamePid(t *testing.T) {
+	p := NewPairer()
+	pid := uint32(42)
+	ssl1, ssl2 := uint64(0x1000), uint64(0x2000)
+
+	p.Push(Message{TsNs: 1, Pid: pid, SSL: ssl1, SSLFallback: true, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/ssl1"}})
+	p.Push(Message{TsNs: 2, Pid: pid, SSL: ssl2, SSLFallback: true, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/ssl2"}})
+
+	// Respond to ssl2 first; ssl1 must still be pending and pair correctly
+	// afterwards — neither response may leak onto the other connection's row.
+	pe2, ok := p.Push(Message{TsNs: 3, Pid: pid, SSL: ssl2, SSLFallback: true, IsRequest: false,
+		Res: httpStatusLine{status: 201}})
+	if !ok || pe2.Path != "/ssl2" || pe2.Status != 201 {
+		t.Errorf("ssl2 pair: got %+v ok=%v", pe2, ok)
+	}
+	pe1, ok := p.Push(Message{TsNs: 4, Pid: pid, SSL: ssl1, SSLFallback: true, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	if !ok || pe1.Path != "/ssl1" || pe1.Status != 200 {
+		t.Errorf("ssl1 pair: got %+v ok=%v", pe1, ok)
+	}
+}
+
+// #171's central safety guarantee: an SSLFallback message and an ordinary
+// fd-keyed message on the same pid must never collide even when Fd and SSL
+// happen to carry the identical numeric value. If the pairer only had one
+// bare (pid, number) key without the sslFallback discriminator, fd=7 and
+// ssl=7 on the same pid would be indistinguishable and this test would fail
+// by cross-pairing curl's plaintext response onto the unrelated fd=7
+// connection's request (or vice versa).
+func TestPairerSSLFallbackNeverCollidesWithSameNumericFd(t *testing.T) {
+	p := NewPairer()
+	pid := uint32(42)
+	const sameValue = 7 // used as both a real fd and an SSL* value below
+
+	// Queue order: fd-keyed request first, then ssl-keyed request. If both
+	// collapsed onto one shared (pid, 7) FIFO, it would now hold
+	// [/fd-keyed, /ssl-keyed] in that order.
+	p.Push(Message{TsNs: 1, Pid: pid, Fd: sameValue, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/fd-keyed"}})
+	p.Push(Message{TsNs: 2, Pid: pid, SSL: sameValue, SSLFallback: true, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/ssl-keyed"}})
+
+	// Respond to the ssl-keyed request FIRST — the reverse of queue order.
+	// Under a collided shared FIFO this would incorrectly pop the
+	// fd-keyed request (queued first) and return "/fd-keyed" here; the
+	// discriminator must instead route it to its own single-entry queue.
+	peSSL, ok := p.Push(Message{TsNs: 3, Pid: pid, SSL: sameValue, SSLFallback: true, IsRequest: false,
+		Res: httpStatusLine{status: 201}})
+	if !ok || peSSL.Path != "/ssl-keyed" {
+		t.Fatalf("ssl-keyed pair: got %+v ok=%v, want /ssl-keyed", peSSL, ok)
+	}
+
+	// The fd-keyed request must still be queued, untouched, and pair with
+	// its own response next.
+	peFd, ok := p.Push(Message{TsNs: 4, Pid: pid, Fd: sameValue, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	if !ok || peFd.Path != "/fd-keyed" {
+		t.Fatalf("fd-keyed pair: got %+v ok=%v, want /fd-keyed", peFd, ok)
+	}
+}
+
+// A successful pairing carries SSL/SSLFallback from the request into the
+// PairedEvent, so renderers downstream can tell it apart from a verified
+// pairing (#171).
+func TestPairerSSLFallbackCarriesIntoPairedEvent(t *testing.T) {
+	p := NewPairer()
+	pid, ssl := uint32(1), uint64(0xabc)
+
+	p.Push(Message{TsNs: 1, Pid: pid, SSL: ssl, SSLFallback: true, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/x"}})
+	pe, ok := p.Push(Message{TsNs: 2, Pid: pid, SSL: ssl, SSLFallback: true, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	if !ok {
+		t.Fatal("want paired event")
+	}
+	if !pe.SSLFallback || pe.SSL != ssl {
+		t.Errorf("PairedEvent SSL=%#x SSLFallback=%v, want %#x true", pe.SSL, pe.SSLFallback, ssl)
+	}
+}
+
+// Close is fd-driven — a real close syscall always carries a real fd — so it
+// must never evict a pending SSLFallback request even when the fd passed to
+// Close numerically matches the pending request's SSL* value (#171: no
+// guessed/inferred fd correlation for SSLFallback messages).
+func TestPairerCloseNeverEvictsSSLFallback(t *testing.T) {
+	p := NewPairer()
+	pid := uint32(42)
+	const sameValue = 9
+
+	p.Push(Message{TsNs: 1, Pid: pid, SSL: sameValue, SSLFallback: true, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/ssl-keyed"}})
+
+	if got := p.Close(pid, sameValue, 2); len(got) != 0 {
+		t.Errorf("Close(fd=%d) must not evict an SSLFallback request keyed on SSL=%d, got %+v", sameValue, sameValue, got)
+	}
+
+	// The request must still be there, pairing normally.
+	pe, ok := p.Push(Message{TsNs: 3, Pid: pid, SSL: sameValue, SSLFallback: true, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	if !ok || pe.Path != "/ssl-keyed" {
+		t.Errorf("want the SSLFallback request to survive Close and pair normally, got %+v ok=%v", pe, ok)
+	}
+}
+
+// Sweep is the only eviction path for SSLFallback requests (see Close's
+// doc comment) — confirm it works the same way it does for fd-keyed ones,
+// and that the resulting abandoned event still carries SSL/SSLFallback.
+func TestPairerSweepEvictsSSLFallbackTimeout(t *testing.T) {
+	now := time.Now()
+	p := newPairerWithClock(func() time.Time { return now })
+
+	pid, ssl := uint32(1), uint64(0x42)
+	p.Push(Message{TsNs: 1, Pid: pid, SSL: ssl, SSLFallback: true, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/slow"}})
+
+	now = now.Add(31 * time.Second)
+	abandoned := p.Sweep(30 * time.Second)
+	if len(abandoned) != 1 {
+		t.Fatalf("want 1 abandoned, got %d", len(abandoned))
+	}
+	if !abandoned[0].SSLFallback || abandoned[0].SSL != ssl {
+		t.Errorf("abandoned SSL=%#x SSLFallback=%v, want %#x true", abandoned[0].SSL, abandoned[0].SSLFallback, ssl)
+	}
+	if abandoned[0].AbandonReason != AbandonReasonTimeout {
+		t.Errorf("AbandonReason = %q, want %q", abandoned[0].AbandonReason, AbandonReasonTimeout)
+	}
+}
+
 // 1000 short keep-alive cycles: request + response + Close. No pending
 // entries must survive after the burst.
 func TestPairerLeakSmokeTest(t *testing.T) {
