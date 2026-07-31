@@ -322,6 +322,20 @@ python3 /tmp/tinytap-e2e-tlsserver.py >"${TLS_LOG}" 2>&1 &
 TLS_PY_PID=$!
 wait_for_port localhost "${TLS_PORT}" || { echo "FAIL: TLS server did not listen on ${TLS_PORT}"; exit 1; }
 
+# AttachSSLSetFd/AttachSSLReadWrite deliberately never chmod their target
+# themselves (a capture tool silently mutating a system library's
+# permissions would be a surprising side effect — see load_uprobe.go's
+# ErrLibSSLNotExecutable doc). Debian/Ubuntu ships libssl3 without the
+# execute bit (mode 0644), unlike libc.so.6, so this e2e harness — which is
+# already responsible for the rest of the test environment's setup — sets
+# it explicitly instead of silently failing every SSL_set_fd/SSL_write/
+# SSL_read/SSL_free attach for the rest of this run.
+LIBSSL_PATH="$(ldconfig -p | grep 'libssl\.so\.3' | awk '{print $NF}' | head -1)"
+if [[ -n "${LIBSSL_PATH}" && ! -x "${LIBSSL_PATH}" ]]; then
+    echo "==> chmod +x ${LIBSSL_PATH} (Debian/Ubuntu ships libssl3 without the execute bit)"
+    sudo chmod +x "${LIBSSL_PATH}"
+fi
+
 # ── Start tinytap ─────────────────────────────────────────────────────────────
 echo "==> sudo /tmp/tinytap-e2e --output stdout"
 : >"${TT_OUT}"
