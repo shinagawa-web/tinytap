@@ -1,4 +1,4 @@
-//go:build !arm64
+//go:build !amd64 && !arm64
 
 package loader_test
 
@@ -14,8 +14,8 @@ func TestAttachSSLSetFd_UnsupportedArch(t *testing.T) {
 	if probe != nil {
 		t.Errorf("AttachSSLSetFd probe = %v, want nil", probe)
 	}
-	if !errors.Is(err, loader.ErrSSLSetFdUnsupportedArch) {
-		t.Errorf("AttachSSLSetFd err = %v, want wrapping ErrSSLSetFdUnsupportedArch", err)
+	if !errors.Is(err, loader.ErrSSLUprobeUnsupportedArch) {
+		t.Errorf("AttachSSLSetFd err = %v, want wrapping ErrSSLUprobeUnsupportedArch", err)
 	}
 }
 
@@ -35,8 +35,8 @@ func TestAttachSSLReadWrite_UnsupportedArch(t *testing.T) {
 	if probe != nil {
 		t.Errorf("AttachSSLReadWrite probe = %v, want nil", probe)
 	}
-	if !errors.Is(err, loader.ErrSSLSetFdUnsupportedArch) {
-		t.Errorf("AttachSSLReadWrite err = %v, want wrapping ErrSSLSetFdUnsupportedArch", err)
+	if !errors.Is(err, loader.ErrSSLUprobeUnsupportedArch) {
+		t.Errorf("AttachSSLReadWrite err = %v, want wrapping ErrSSLUprobeUnsupportedArch", err)
 	}
 }
 
