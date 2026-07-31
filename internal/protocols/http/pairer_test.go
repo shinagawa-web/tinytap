@@ -73,7 +73,141 @@ func TestPairerDropsOrphanResponse(t *testing.T) {
 	res := Message{TsNs: 100, Pid: 42, Fd: 7, IsRequest: false,
 		Res: httpStatusLine{status: 200}}
 	if pe, ok := p.Push(res); ok {
-		t.Errorf("orphan response should not pair, got %+v", pe)
+		t.Errorf("orphan response should not pair immediately, got %+v", pe)
+	}
+}
+
+// #67: an early response — e.g. a 413/417 error or a 100-continue reply —
+// can arrive before the request Message is emitted, since the request is
+// only emitted once its body fully drains (approach A). The pairer must
+// hold the response and pair it once the matching request shows up, rather
+// than dropping it.
+func TestPairerPairsResponseThatArrivesBeforeRequest(t *testing.T) {
+	p := NewPairer()
+	pid, fd := uint32(42), int32(7)
+
+	res := Message{TsNs: 100, Pid: pid, Fd: fd, IsRequest: false,
+		Res: httpStatusLine{status: 413, reason: "Payload Too Large"}}
+	if pe, ok := p.Push(res); ok {
+		t.Fatalf("response with no queued request must not pair immediately, got %+v", pe)
+	}
+
+	// The request (large upload) only finishes streaming, and is only
+	// emitted, after the early error response already arrived.
+	req := Message{TsNs: 50, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "POST", path: "/upload", version: "HTTP/1.1"}}
+	pe, ok := p.Push(req)
+	if !ok {
+		t.Fatal("request must pair with the held response")
+	}
+	if pe.Method != "POST" || pe.Path != "/upload" || pe.Status != 413 {
+		t.Errorf("paired fields: %+v", pe)
+	}
+	if pe.Latency != 50 {
+		t.Errorf("Latency = %v, want 50ns (res.TsNs - req.TsNs)", pe.Latency)
+	}
+}
+
+// Two early responses on the same identity must pair FIFO: the oldest held
+// response claims the first request that shows up, mirroring the in-order
+// pipelining guarantee (TestPairerHandlesPipelining).
+func TestPairerHeldResponsesPairInFIFOOrder(t *testing.T) {
+	p := NewPairer()
+	pid, fd := uint32(42), int32(7)
+
+	p.Push(Message{TsNs: 1, Pid: pid, Fd: fd, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	p.Push(Message{TsNs: 2, Pid: pid, Fd: fd, IsRequest: false,
+		Res: httpStatusLine{status: 204}})
+
+	pe1, ok := p.Push(Message{TsNs: 3, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/a"}})
+	if !ok || pe1.Path != "/a" || pe1.Status != 200 {
+		t.Errorf("first request should claim the oldest held response: %+v ok=%v", pe1, ok)
+	}
+	pe2, ok := p.Push(Message{TsNs: 4, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/b"}})
+	if !ok || pe2.Path != "/b" || pe2.Status != 204 {
+		t.Errorf("second request should claim the next held response: %+v ok=%v", pe2, ok)
+	}
+}
+
+// A flood of orphan responses — ones whose request was never captured at
+// all — must not grow heldResponses without bound.
+func TestPairerHeldResponsesAreBounded(t *testing.T) {
+	p := NewPairer()
+	pid := uint32(42)
+
+	for i := 0; i < maxHeldResponses+50; i++ {
+		p.Push(Message{TsNs: uint64(i), Pid: pid, Fd: int32(i), IsRequest: false,
+			Res: httpStatusLine{status: 200}})
+	}
+	if len(p.heldResponses) != maxHeldResponses {
+		t.Errorf("heldResponses = %d, want capped at %d", len(p.heldResponses), maxHeldResponses)
+	}
+
+	// The oldest held responses (fd=0..49) must have been evicted; a
+	// request on fd=0 now finds nothing waiting and is queued instead.
+	if _, ok := p.Push(Message{TsNs: 1000, Pid: pid, Fd: 0, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/evicted"}}); ok {
+		t.Error("request on an evicted held response's key must not pair")
+	}
+}
+
+// Once Close evicts a connection, any response it held must go with it —
+// otherwise a later, unrelated request that reuses the same (pid, fd) could
+// wrongly claim a response left over from the previous connection.
+func TestPairerCloseDiscardsHeldResponse(t *testing.T) {
+	p := NewPairer()
+	pid, fd := uint32(42), int32(7)
+
+	p.Push(Message{TsNs: 1, Pid: pid, Fd: fd, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	p.Close(pid, fd, 2)
+
+	// A new, unrelated request reusing the same (pid, fd) must not pair
+	// with the stale held response from the closed connection.
+	if pe, ok := p.Push(Message{TsNs: 3, Pid: pid, Fd: fd, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/new"}}); ok {
+		t.Errorf("request must not pair with a held response from a closed connection, got %+v", pe)
+	}
+}
+
+// CloseSSL must discard a held response on its SSLFallback identity for the
+// same reason Close does on fd-keyed identities (#173's SSL*-keyed mirror
+// of TestPairerCloseDiscardsHeldResponse).
+func TestPairerCloseSSLDiscardsHeldResponse(t *testing.T) {
+	p := NewPairer()
+	pid, ssl := uint32(42), uint64(0x1000)
+
+	p.Push(Message{TsNs: 1, Pid: pid, SSL: ssl, SSLFallback: true, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	p.CloseSSL(pid, ssl, 2)
+
+	if pe, ok := p.Push(Message{TsNs: 3, Pid: pid, SSL: ssl, SSLFallback: true, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/new"}}); ok {
+		t.Errorf("request must not pair with a held response from a closed SSL connection, got %+v", pe)
+	}
+}
+
+// Close/CloseSSL must only discard held responses on their own key — an
+// unrelated connection's held response must survive.
+func TestPairerCloseOnlyDiscardsOwnHeldResponse(t *testing.T) {
+	p := NewPairer()
+	pid := uint32(42)
+	fdA, fdB := int32(7), int32(8)
+
+	p.Push(Message{TsNs: 1, Pid: pid, Fd: fdA, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	p.Push(Message{TsNs: 2, Pid: pid, Fd: fdB, IsRequest: false,
+		Res: httpStatusLine{status: 201}})
+
+	p.Close(pid, fdA, 3)
+
+	pe, ok := p.Push(Message{TsNs: 4, Pid: pid, Fd: fdB, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/b"}})
+	if !ok || pe.Status != 201 {
+		t.Errorf("fdB's held response must survive fdA's Close: %+v ok=%v", pe, ok)
 	}
 }
 
