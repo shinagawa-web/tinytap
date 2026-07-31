@@ -9,3 +9,8 @@
 __pycache__/
 *.pyc
 .venv-compat/
+
+# nginx docker-compose e2e scratch (#178): self-signed cert + per-run image
+# selection, generated fresh by scripts/test-e2e-nginx.sh every run.
+scripts/docker/nginx-tls/certs/*.pem
+scripts/docker/nginx-tls/.env
