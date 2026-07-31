@@ -1,12 +1,19 @@
 //go:build ignore
 
-// struct pt_regs (needed by BPF_UPROBE's PT_REGS_PARMn macros) comes from
-// the vendored vmlinux.h, same as tinytap_kprobe.bpf.c. Userspace uapi
-// asm/ptrace.h only exposes the distinct struct user_pt_regs, not this.
-// vmlinux.h reflects only this build host's own arch (arm64), which is why
-// this program currently only targets arm64 (see gen.go and #156 for the
-// x86_64 follow-up).
+// BPF_UPROBE's PT_REGS_PARMn macros need a real, arch-correct struct pt_regs
+// at compile time. arm64 gets it from the vendored vmlinux.h (a BTF dump of
+// this build host's arm64 kernel). x86_64's pt_regs is not in that arm64 dump,
+// and userspace uapi asm/ptrace.h on arm64 only exposes struct user_pt_regs --
+// so rather than vendor a second multi-MB x86_64 BTF dump for a program that
+// uses no CO-RE relocations, the amd64 build hand-declares just that one struct
+// in pt_regs_x86_64.h and takes its int types / map enums from <linux/bpf.h>.
+// See gen.go and #156.
+#if defined(__TARGET_ARCH_x86)
+#include <linux/bpf.h>
+#include "pt_regs_x86_64.h"
+#else
 #include "vmlinux.h"
+#endif
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
