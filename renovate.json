@@ -17,7 +17,7 @@
     },
     {
       "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch", "digest", "major"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "major", "pinDigest"],
       "automerge": true
     }
   ]
