@@ -1,4 +1,4 @@
-name: audit
+name: govulncheck
 
 permissions:
   contents: read
@@ -10,7 +10,7 @@ on:
     branches: [main]
 
 jobs:
-  audit:
+  govulncheck:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -22,7 +22,7 @@ jobs:
 
       # The pinned govulncheck (see Makefile) requires a newer Go than go.mod's own minimum
       # (go.mod: 1.24.0). Provisioned separately here rather than bumping
-      # go.mod for the whole module just to satisfy the audit tool — and
+      # go.mod for the whole module just to satisfy this check — and
       # deliberately not go.mod's own version, since an older govulncheck
       # compatible with go.mod's Go doesn't scope vulnerability reachability
       # by target platform as precisely (confirmed locally: v1.1.4 flags a
@@ -35,4 +35,4 @@ jobs:
           cache: true
 
       - name: Run govulncheck
-        run: make audit
+        run: make govulncheck
