@@ -99,15 +99,19 @@ wait_for_tinytap() {
 # SSL_write/SSL_read the pid does happens before the uprobe is watching and
 # won't be captured — so the TLS scenario must wait here before firing the
 # request it actually asserts on, not just wait for the port to accept TCP
-# connections.
+# connections. 30s (vs. 5s for wait_for_tinytap) because this involves two
+# uprobe attaches plus a /proc+ELF scan, and CI runners are measurably
+# slower than a dedicated dev VM for this path.
 wait_for_tls_attach() {
     local pid=$1
-    for _ in $(seq 1 100); do
+    for _ in $(seq 1 300); do
         if grep -q "SSL_write/SSL_read/SSL_free uprobes attached for pid ${pid}" "${TT_OUT}" 2>/dev/null; then
             return 0
         fi
         sleep 0.1
     done
+    echo "  (tinytap output so far:)"
+    cat "${TT_OUT}" 2>/dev/null || true
     return 1
 }
 
