@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"golang.org/x/term"
 
@@ -116,7 +117,12 @@ func runStdout(rd ringbufCloser, verbose bool) {
 	defer closeSink(sink)
 	log.Println("tinytap running — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.")
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
+	// SIGTERM alongside SIGINT (#154): without it, a supervisor's or test
+	// harness's graceful-shutdown signal (conventionally SIGTERM, e.g.
+	// systemd, docker stop, `kill` with no -SIGNAL) hits the OS's default
+	// disposition and kills the process immediately — skipping run()'s
+	// deferred tt.Close() and leaving the BPF probes attached.
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	closeOnInterrupt(rd, stop)
 	capture(rd, sink)
 }
