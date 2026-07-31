@@ -1,4 +1,4 @@
-# Backing compose file for scripts/test-e2e-nginx.sh (#178). NGINX_IMAGE
+# Backing compose file for scripts/test-e2e-tls-nginx.sh (#178). NGINX_IMAGE
 # lets the script run the same scenario against both a Debian-based image
 # (nginx:latest) and an Alpine-based one (nginx:alpine) — the two nginx
 # variants #144's open questions asked about.

@@ -1,4 +1,4 @@
-name: e2e-nginx
+name: e2e-tls-nginx
 
 permissions:
   contents: read
@@ -10,7 +10,7 @@ on:
     branches: [main]
 
 jobs:
-  e2e-nginx:
+  e2e-tls-nginx:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
 
@@ -27,4 +27,4 @@ jobs:
           cache: true
 
       - name: Run nginx docker-compose TLS e2e tests
-        run: bash scripts/test-e2e-nginx.sh
+        run: bash scripts/test-e2e-tls-nginx.sh

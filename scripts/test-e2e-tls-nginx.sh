@@ -16,7 +16,7 @@
 # process — no container-aware code needed on tinytap's side.
 #
 # Requires: docker, docker compose (v2 plugin), sudo (eBPF attach), openssl.
-# Usage: bash scripts/test-e2e-nginx.sh
+# Usage: bash scripts/test-e2e-tls-nginx.sh
 
 set -euo pipefail
 

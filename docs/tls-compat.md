@@ -11,15 +11,15 @@
 | Server/client | Verified via | fd-resolvable? | Result |
 |---|---|---|---|
 | Python `ssl`-wrapped `http.server` | `scripts/test-e2e.sh` (no Docker) | ✅ calls `SSL_set_fd` (#167) | ✅ paired, decrypted correctly |
-| nginx, Debian-based (`nginx:latest`) | `scripts/test-e2e-nginx.sh` (docker-compose, #178) | ✅ calls `SSL_set_fd` directly (`ngx_ssl_create_connection()`) | ✅ paired, decrypted correctly |
-| nginx, Alpine-based (`nginx:alpine`) | `scripts/test-e2e-nginx.sh` (docker-compose, #178) | ✅ same as above | ✅ paired, decrypted correctly |
+| nginx, Debian-based (`nginx:latest`) | `scripts/test-e2e-tls-nginx.sh` (docker-compose, #178) | ✅ calls `SSL_set_fd` directly (`ngx_ssl_create_connection()`) | ✅ paired, decrypted correctly |
+| nginx, Alpine-based (`nginx:alpine`) | `scripts/test-e2e-tls-nginx.sh` (docker-compose, #178) | ✅ same as above | ✅ paired, decrypted correctly |
 | curl | investigated in #167 | ❌ never calls `SSL_set_fd` (custom `BIO_METHOD` + `SSL_set_bio`) | ⚠️ plaintext captured by the uprobe but dropped before the HTTP parser today — needs the SSL*-keyed parser stream tracked in #179 |
 
 ## nginx docker-compose validation (#178)
 
 The primary motivating scenario from #144: nginx as a TLS-terminating reverse proxy in front of a plaintext backend, in a docker-compose setup — confirming the assumption that mainstream nginx Docker images dynamically link `libssl.so` with symbols intact, for both major base image families.
 
-**Setup** (`scripts/docker/nginx-tls/`): a `python:3-alpine` backend (`python3 -m http.server 80`) behind an nginx container terminating TLS on `:443` (self-signed cert, generated fresh per run) and `proxy_pass`-ing to the backend. `scripts/test-e2e-nginx.sh` runs this against both `nginx:latest` (Debian-based) and `nginx:alpine` (Alpine-based), asserting the actual image running matches what was requested (not just what the compose file defaults to) before firing a request and checking tinytap's output for a paired `GET / → 200` line attributed to the nginx worker process.
+**Setup** (`scripts/docker/nginx-tls/`): a `python:3-alpine` backend (`python3 -m http.server 80`) behind an nginx container terminating TLS on `:443` (self-signed cert, generated fresh per run) and `proxy_pass`-ing to the backend. `scripts/test-e2e-tls-nginx.sh` runs this against both `nginx:latest` (Debian-based) and `nginx:alpine` (Alpine-based), asserting the actual image running matches what was requested (not just what the compose file defaults to) before firing a request and checking tinytap's output for a paired `GET / → 200` line attributed to the nginx worker process.
 
 **Key fact this confirms**: eBPF operates at the host kernel level. A container's process is an ordinary host process under a different PID namespace — tinytap (running on the host, outside any container) sees it exactly like any other process, with no container-aware code needed. `internal/tls.Find`'s existing `/proc/<pid>/root/<path>` resolution (already needed for chroot-like cases) handles resolving the container's own libssl path from the host's view for free.
 
@@ -34,5 +34,5 @@ The primary motivating scenario from #144: nginx as a TLS-terminating reverse pr
 bash scripts/test-e2e.sh
 
 # Needs Docker + the docker compose v2 plugin — validates against real nginx images
-bash scripts/test-e2e-nginx.sh
+bash scripts/test-e2e-tls-nginx.sh
 ```
