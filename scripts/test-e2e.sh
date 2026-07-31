@@ -69,7 +69,12 @@ cleanup() {
     fi
     wait 2>/dev/null || true
 }
-trap cleanup EXIT
+# check_no_leftover_processes (defined below) also runs on every EXIT path —
+# not just the explicit end-of-script call — so an early failure (e.g. a
+# server never starting listening) still gets verified, not just the happy
+# path. The explicit end-of-script "cleanup; trap - EXIT; check_no_leftover_processes"
+# sequence disables this trap first so the two don't run twice there.
+trap 'cleanup; check_no_leftover_processes' EXIT
 
 wait_for_port() {
     local host=$1 port=$2
@@ -134,6 +139,41 @@ assert_absent() {
         FAILURES=$((FAILURES + 1))
     else
         echo "  PASS: ${description}"
+    fi
+}
+
+# check_no_leftover_processes (#154) verifies cleanup() actually stopped
+# everything it targeted. cleanup() swallows every kill/pkill failure with
+# `|| true` (it must — a process that already exited is not an error), so
+# without this, a signal that got ignored or a hung shutdown would pass
+# silently. cleanup()'s own `wait` already blocks until every backgrounded
+# job of this shell has exited, so a leftover found here means something
+# escaped job control entirely (e.g. double-forked) rather than a timing
+# race — treat it as a hard failure, not a retry-and-hope case.
+check_no_leftover_processes() {
+    local leftover=0
+
+    # tinytap-e2e has no tracked PID (it runs under `sudo ... &`, so the
+    # backgrounded job is sudo, not the binary itself) — matched by name,
+    # the same way cleanup()'s `pkill -INT -x tinytap-e2e` targets it.
+    if pgrep -x tinytap-e2e >/dev/null 2>&1; then
+        echo "FAIL: tinytap-e2e still running after cleanup"
+        pgrep -a -x tinytap-e2e || true
+        leftover=1
+    fi
+
+    local pid_var
+    for pid_var in PY_PID SLOW_PY_PID SLOW_CURL_PID FILE_PID WRITEV_PID TLS_PY_PID; do
+        local pid="${!pid_var}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            echo "FAIL: ${pid_var}=${pid} still running after cleanup"
+            leftover=1
+        fi
+    done
+
+    if [[ "${leftover}" -ne 0 ]]; then
+        echo "FAIL: leftover process(es) after cleanup — see above"
+        exit 1
     fi
 }
 
@@ -387,6 +427,7 @@ sleep 1
 
 cleanup
 trap - EXIT
+check_no_leftover_processes
 
 echo
 echo "=== assertions ==="

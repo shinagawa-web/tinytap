@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -339,6 +340,89 @@ func TestRunStdout_Verbose(t *testing.T) {
 	defer func() { newStdoutSink = oldSink }()
 
 	runStdout(rd, true)
+}
+
+// blockingRingbufCloser blocks Read() until Close() is called, like the real
+// cilium/ebpf ringbuf.Reader does while waiting for data. Unlike
+// fakeRingbufCloser (which errors on the very first Read, so capture's loop
+// exits on its own regardless of any signal), this proves it is genuinely
+// the signal — via closeOnInterrupt calling Close() — that unblocks capture,
+// not an incidental property of the fake.
+//
+// readyCh closes on the first Read() call, giving tests a deterministic
+// "runStdout has reached capture's read loop" signal — and since
+// signal.Notify runs strictly before that call in runStdout's body, this
+// also guarantees the signal handler is already registered, without relying
+// on a fixed sleep that could race under a loaded scheduler (e.g. CI).
+type blockingRingbufCloser struct {
+	closedCh chan struct{}
+	readyCh  chan struct{}
+	readOnce sync.Once
+}
+
+func newBlockingRC() *blockingRingbufCloser {
+	return &blockingRingbufCloser{closedCh: make(chan struct{}), readyCh: make(chan struct{})}
+}
+
+func (b *blockingRingbufCloser) Read() (ringbuf.Record, error) {
+	b.readOnce.Do(func() { close(b.readyCh) })
+	<-b.closedCh
+	return ringbuf.Record{}, errors.New("closed")
+}
+
+func (b *blockingRingbufCloser) Close() error {
+	select {
+	case <-b.closedCh:
+	default:
+		close(b.closedCh)
+	}
+	return nil
+}
+
+// #154: runStdout must register for both SIGINT and SIGTERM, so a real OS
+// signal from an external supervisor or test harness (not just a value
+// pushed onto a channel in a unit test) reliably closes the ringbuf reader
+// before the process exits. Sends an actual signal to this test process via
+// syscall.Kill, run sequentially (no t.Parallel) so one test's leftover
+// signal registration can't race the next.
+func TestRunStdout_RealSIGINTTriggersShutdown(t *testing.T) {
+	testRunStdoutRealSignal(t, syscall.SIGINT)
+}
+
+func TestRunStdout_RealSIGTERMTriggersShutdown(t *testing.T) {
+	testRunStdoutRealSignal(t, syscall.SIGTERM)
+}
+
+func testRunStdoutRealSignal(t *testing.T, sig syscall.Signal) {
+	rd := newBlockingRC()
+
+	oldSink := newStdoutSink
+	newStdoutSink = func(bool) output.Sink { return &fakeSink{} }
+	defer func() { newStdoutSink = oldSink }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runStdout(rd, false)
+	}()
+
+	// Wait for runStdout to reach capture's Read() call — signal.Notify runs
+	// strictly before that in runStdout's body, so this deterministically
+	// guarantees the handler is registered before the signal is sent.
+	select {
+	case <-rd.readyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runStdout never reached capture's read loop")
+	}
+	if err := syscall.Kill(os.Getpid(), sig); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("runStdout did not return after a real %v", sig)
+	}
 }
 
 // --- runCapturePipeline ---
