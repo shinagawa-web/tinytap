@@ -3,7 +3,7 @@ COVERAGE_THRESHOLD ?= 100
 COVFILE            := /tmp/tinytap-cover.out
 FILTERED           := /tmp/tinytap-cover-filtered.out
 
-.PHONY: all generate build run run-raw lint test-unit check-coverage test-e2e test-integration install install-hooks clean
+.PHONY: all generate build run run-raw lint audit test-unit check-coverage test-e2e test-integration install install-hooks clean
 
 all: generate build
 
@@ -22,6 +22,16 @@ run-raw: build
 
 lint:
 	$(GOLINT) run
+
+# #159: scans go.mod's dependency surface (and this module's own code paths
+# into it) for known CVEs. `go run pkg@version` fetches govulncheck without
+# adding it to go.mod as a real dependency. Pinned (not @latest) so audits
+# are reproducible and a supply-chain-compromised "latest" tag can't slip
+# in unnoticed — bump intentionally (#163 will eventually automate this).
+GOVULNCHECK_VERSION := v1.6.0
+
+audit:
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 test-unit:
 	go test -coverprofile=$(COVFILE) -covermode=atomic ./...
