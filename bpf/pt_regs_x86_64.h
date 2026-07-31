@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Minimal x86_64 `struct pt_regs` for tinytap_uprobe.bpf.c.
  *
@@ -69,5 +68,30 @@ struct pt_regs {
 	unsigned long rsp;
 	unsigned long ss;
 };
+
+/*
+ * Cheap second line of defense. The ultimate correctness check is the x86_64
+ * integration test (it attaches this object and asserts real argument values),
+ * but that only runs under `make test-integration` on an x86_64 host. These
+ * compile-time guards fail the build the moment someone "tidies" this struct in
+ * a way that would break it -- long before anyone runs the integration test.
+ *
+ * The size guard catches an added/removed field; the offset guards catch a
+ * reordered one (which keeps the size but silently moves a register). Only the
+ * registers bpf_tracing.h actually dereferences here are pinned: PARM1-4 map to
+ * rdi/rsi/rdx/rcx and RC maps to rax (BPF's `unsigned long` is 8 bytes).
+ */
+_Static_assert(sizeof(struct pt_regs) == 21 * sizeof(unsigned long),
+	       "x86_64 struct pt_regs must be 21 unsigned-long slots (168 bytes)");
+_Static_assert(__builtin_offsetof(struct pt_regs, rax) == 10 * sizeof(unsigned long),
+	       "RC (rax) offset drifted from the kernel pt_regs layout");
+_Static_assert(__builtin_offsetof(struct pt_regs, rcx) == 11 * sizeof(unsigned long),
+	       "PARM4 (rcx) offset drifted from the kernel pt_regs layout");
+_Static_assert(__builtin_offsetof(struct pt_regs, rdx) == 12 * sizeof(unsigned long),
+	       "PARM3 (rdx) offset drifted from the kernel pt_regs layout");
+_Static_assert(__builtin_offsetof(struct pt_regs, rsi) == 13 * sizeof(unsigned long),
+	       "PARM2 (rsi) offset drifted from the kernel pt_regs layout");
+_Static_assert(__builtin_offsetof(struct pt_regs, rdi) == 14 * sizeof(unsigned long),
+	       "PARM1 (rdi) offset drifted from the kernel pt_regs layout");
 
 #endif /* TINYTAP_PT_REGS_X86_64_H */
