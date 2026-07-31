@@ -124,25 +124,34 @@ func (p *SSLFdProbe) Close() error {
 	return errors.Join(errs...)
 }
 
-// SSLPayloadProbe attaches uprobes on SSL_write/SSL_write_ex (entry) and
-// uretprobes on SSL_read/SSL_read_ex (return) in a target process's libssl,
-// and exposes the captured plaintext over its own ringbuf. Reader yields raw
-// records — callers decode them with events.DecodeSSL into events.SSLEvent.
+// SSLPayloadProbe attaches uprobes on SSL_write/SSL_write_ex (entry),
+// uretprobes on SSL_read/SSL_read_ex (return), and a uprobe on SSL_free
+// (entry, #173) in a target process's libssl, and exposes the captured
+// events over its own ringbuf. Reader yields raw records — callers decode
+// them with events.DecodeSSL into events.SSLEvent and switch on its Op field
+// (events.SSLOpWrite / SSLOpRead / SSLOpFree).
 //
-// This is a standalone capability (#146): like SSLFdProbe, it is not wired
-// into Load() or the live capture loop. Deciding which pid to target is the
-// caller's job. Out of scope for this probe (see #146's issue scope):
-// correlating the captured SSL* to a fd (SSLFdProbe covers that separately),
-// reassembling payloads that span multiple syscalls, and feeding output
-// into the HTTP parser.
+// SSL_free fires once per SSL object on connection teardown regardless of
+// how its BIO/fd was wired (see #167 and bpf/tinytap_uprobe.bpf.c's
+// handle_ssl_free comment), so its event is the (pid, SSL*)-scoped signal
+// Pairer.CloseSSL (#173) needs to evict a pending SSLFallback request the
+// same way Pairer.Close already does for fd-keyed connections on close(2).
+//
+// This is a standalone capability (#146/#173): like SSLFdProbe, it is not
+// wired into Load() or the live capture loop. Deciding which pid to target
+// is the caller's job. Out of scope for this probe (see #146's issue
+// scope): correlating the captured SSL* to a fd (SSLFdProbe covers that
+// separately), reassembling payloads that span multiple syscalls, and
+// feeding output into the HTTP parser.
 type SSLPayloadProbe struct {
 	objs   bpf.TinytapUprobeObjects
 	links  []link.Link
 	Reader *ringbuf.Reader
 }
 
-// AttachSSLReadWrite loads the SSL_write/SSL_read uprobe BPF program and
-// attaches it to libsslPath, capturing plaintext buffers.
+// AttachSSLReadWrite loads the SSL_write/SSL_read/SSL_free uprobe BPF
+// program and attaches it to libsslPath, capturing plaintext buffers and
+// connection-teardown signals (#173).
 //
 // pid scopes the uprobes to a single process; pass 0 to attach system-wide
 // to every process that calls into libsslPath. libsslPath is expected to
@@ -151,8 +160,9 @@ type SSLPayloadProbe struct {
 //
 // SSL_write_ex/SSL_read_ex are attached best-effort: their absence (older
 // OpenSSL) does not fail the whole attach, since internal/tls.Find's
-// RequiredSymbols only guarantees the plain SSL_read/SSL_write/SSL_set_fd
-// trio.
+// RequiredSymbols only guarantees SSL_read/SSL_write/SSL_set_fd/SSL_free —
+// the `_ex` variants are OpenSSL >= 1.1.1 only, unlike everything else
+// RequiredSymbols covers.
 func AttachSSLReadWrite(pid uint32, libsslPath string) (*SSLPayloadProbe, error) {
 	if err := checkLibSSLExecutable(libsslPath); err != nil {
 		return nil, err
@@ -187,6 +197,7 @@ func AttachSSLReadWrite(pid uint32, libsslPath string) (*SSLPayloadProbe, error)
 		{"SSL_write_ex", false, false, p.objs.HandleSslWriteEx},
 		{"SSL_read_ex", false, false, p.objs.HandleSslReadEx},
 		{"SSL_read_ex", true, false, p.objs.HandleSslReadExRet},
+		{"SSL_free", false, true, p.objs.HandleSslFree},
 	}
 	for _, h := range hooks {
 		attach := ex.Uprobe

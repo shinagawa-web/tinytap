@@ -147,7 +147,7 @@ func TestFind_ProcessNotFound(t *testing.T) {
 
 func TestFind_MissingSymbols(t *testing.T) {
 	buildDir := t.TempDir()
-	// A libssl-like library that only exports two of the three required
+	// A libssl-like library that only exports two of the four required
 	// symbols — e.g. a non-standard or incomplete TLS provider.
 	lib := buildSharedLib(t, buildDir, "libssl-partial", []string{"SSL_read", "SSL_write"})
 
@@ -159,11 +159,12 @@ func TestFind_MissingSymbols(t *testing.T) {
 	if !errors.As(err, &symErr) {
 		t.Fatalf("Find() error = %v, want *SymbolError", err)
 	}
-	if len(symErr.Missing) != 1 || symErr.Missing[0] != "SSL_set_fd" {
-		t.Errorf("SymbolError.Missing = %v, want [SSL_set_fd]", symErr.Missing)
+	wantMissing := []string{"SSL_set_fd", "SSL_free"}
+	if len(symErr.Missing) != len(wantMissing) || symErr.Missing[0] != wantMissing[0] || symErr.Missing[1] != wantMissing[1] {
+		t.Errorf("SymbolError.Missing = %v, want %v", symErr.Missing, wantMissing)
 	}
 
-	const wantSubstr = "is missing required symbols [SSL_set_fd]"
+	const wantSubstr = "is missing required symbols [SSL_set_fd SSL_free]"
 	if got := symErr.Error(); !strings.Contains(got, wantSubstr) {
 		t.Errorf("SymbolError.Error() = %q, want to contain %q", got, wantSubstr)
 	}

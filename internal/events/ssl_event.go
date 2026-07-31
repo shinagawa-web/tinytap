@@ -9,6 +9,7 @@ import (
 const (
 	SSLOpWrite = 1 // captured at SSL_write/SSL_write_ex entry; Len is the requested byte count
 	SSLOpRead  = 2 // captured at SSL_read/SSL_read_ex return; Len is the actual byte count
+	SSLOpFree  = 3 // captured at SSL_free entry (#173); Len and Payload are unused
 )
 
 // MaxSSLPayload is the payload sample cap on the BPF side (MAX_SSL_PAYLOAD in

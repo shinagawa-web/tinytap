@@ -63,6 +63,7 @@ int BPF_UPROBE(handle_ssl_set_fd, void *ssl, int fd)
 enum ssl_op {
     SSL_OP_WRITE = 1, // captured at entry; len is the requested byte count
     SSL_OP_READ  = 2, // captured at return; len is the actual byte count
+    SSL_OP_FREE  = 3, // captured at SSL_free entry; len/payload are unused
 };
 
 struct ssl_event {
@@ -238,6 +239,20 @@ int BPF_URETPROBE(handle_ssl_read_ex_ret, int ret)
     __u32 n32 = n > 0xffffffff ? 0xffffffff : (__u32)n;
     submit_ssl_event(SSL_OP_READ, pending.ssl, n32,
                       (const void *)(unsigned long)pending.buf, n32);
+    return 0;
+}
+
+// void SSL_free(SSL *ssl) — signals this connection's teardown (#173). Unlike
+// SSL_set_fd, SSL_free is called exactly once per SSL object regardless of
+// how its BIO/fd was wired (confirmed for curl's custom-BIO path too, which
+// never calls SSL_set_fd but does call SSL_free on every connection close —
+// see #167's investigation), so it's a reliable (pid, SSL*)-scoped analog of
+// the close(2) syscall that already drives Pairer.Close for fd-keyed
+// connections. Carries no payload — len is 0 and payload_len stays 0.
+SEC("uprobe/ssl_free")
+int BPF_UPROBE(handle_ssl_free, void *ssl)
+{
+    submit_ssl_event(SSL_OP_FREE, (__u64)(unsigned long)ssl, 0, NULL, 0);
     return 0;
 }
 

@@ -22,8 +22,8 @@ const (
 // fallback message can never collide with a real fd-keyed connection or
 // with another SSL* on the same pid. Guessing or inferring a fd for these
 // is explicitly rejected (#171): a wrong guess would silently cross-pair
-// two unrelated exchanges, which is worse than the fallback path's own
-// limitation of never receiving a Close() (see Close).
+// two unrelated exchanges. CloseSSL (#173) is the SSL*-keyed counterpart to
+// Close, driven by the SSL_free uprobe instead of the close(2) syscall.
 type Pairer struct {
 	pending map[pairKey][]timedMessage
 	now     func() time.Time
@@ -186,10 +186,36 @@ func bodyBytes(cl int, sample []byte) int {
 // level event and always carries a real fd, but an SSLFallback request was
 // deliberately never filed under one (#171: guessing a fd is rejected as a
 // cross-pairing risk). So Close can never evict an SSLFallback-pending
-// request, even when the underlying socket for its SSL* did close; Sweep's
-// timeout eviction is the only path that reclaims those.
+// request, even when the underlying socket for its SSL* did close; CloseSSL
+// (driven by the SSL_free uprobe, #173) is the fd-less counterpart, with
+// Sweep's timeout eviction remaining as the fallback for both key spaces
+// when neither close signal ever arrives (e.g. a hard crash).
 func (p *Pairer) Close(pid uint32, fd int32, closeTsNs uint64) []PairedEvent {
 	key := keyFor(pid, fd, 0, false)
+	msgs := p.pending[key]
+	if len(msgs) == 0 {
+		return nil
+	}
+	out := make([]PairedEvent, len(msgs))
+	for i, tm := range msgs {
+		out[i] = abandonedEvent(tm.msg, AbandonReasonClosed,
+			time.Duration(int64(closeTsNs)-int64(tm.msg.TsNs)))
+	}
+	delete(p.pending, key)
+	return out
+}
+
+// CloseSSL emits an abandoned PairedEvent for every pending SSLFallback
+// request on the given (pid, ssl) and removes them from the queue. Called
+// when the SSL_free uprobe (#173) observes the connection's SSL* object
+// being freed — OpenSSL's mandatory, always-called teardown API, fired
+// exactly once per SSL object regardless of how its BIO/fd was wired
+// (confirmed for curl's custom-BIO path too, see #167). This is the
+// fd-less counterpart to Close: it only ever targets the SSL*-keyed
+// identity space and can never evict an ordinary fd-keyed request, by the
+// same keyFor discriminator Push and Close rely on.
+func (p *Pairer) CloseSSL(pid uint32, ssl uint64, closeTsNs uint64) []PairedEvent {
+	key := keyFor(pid, 0, ssl, true)
 	msgs := p.pending[key]
 	if len(msgs) == 0 {
 		return nil
