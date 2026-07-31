@@ -109,11 +109,14 @@ run_scenario() {
 
     echo "==> docker compose up (${image})"
     # docker compose auto-loads a .env file from its project directory —
-    # more reliable than passing NGINX_IMAGE through `sudo -E`, which this
+    # more reliable than passing vars through `sudo -E`, which this
     # environment's sudoers policy doesn't honor (silently ignored, so a
     # prior version of this script always got the ${NGINX_IMAGE:-nginx:latest}
     # fallback regardless of which image this loop thought it was testing).
-    echo "NGINX_IMAGE=${image}" > "${DIR}/.env"
+    # PORT must go in here too: docker-compose.yml's port mapping reads it
+    # from the same .env, not from this script's shell variable, so a PORT
+    # override wouldn't otherwise reach the actual published port.
+    printf 'NGINX_IMAGE=%s\nPORT=%s\n' "${image}" "${PORT}" > "${DIR}/.env"
     (cd "${DIR}" && sudo docker compose up -d)
     local actual_image
     actual_image=$(sudo docker inspect --format '{{.Config.Image}}' "$(cd "${DIR}" && sudo docker compose ps -q nginx)")
