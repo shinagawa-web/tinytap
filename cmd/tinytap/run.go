@@ -123,6 +123,13 @@ func runStdout(rd ringbufCloser, verbose bool) {
 	// disposition and kills the process immediately — skipping run()'s
 	// deferred tt.Close() and leaving the BPF probes attached.
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	// Without Stop, the OS-level relay for this stop channel stays registered
+	// for the rest of the process's life once runStdout returns — harmless in
+	// production (the process exits shortly after), but in tests (where the
+	// process keeps running across many test functions) it silently swallows
+	// a later real Ctrl-C/SIGTERM meant for something else, since Go delivers
+	// a registered signal to every channel still listening for it.
+	defer signal.Stop(stop)
 	closeOnInterrupt(rd, stop)
 	capture(rd, sink)
 }

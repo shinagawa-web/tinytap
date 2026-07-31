@@ -348,15 +348,24 @@ func TestRunStdout_Verbose(t *testing.T) {
 // exits on its own regardless of any signal), this proves it is genuinely
 // the signal — via closeOnInterrupt calling Close() — that unblocks capture,
 // not an incidental property of the fake.
+//
+// readyCh closes on the first Read() call, giving tests a deterministic
+// "runStdout has reached capture's read loop" signal — and since
+// signal.Notify runs strictly before that call in runStdout's body, this
+// also guarantees the signal handler is already registered, without relying
+// on a fixed sleep that could race under a loaded scheduler (e.g. CI).
 type blockingRingbufCloser struct {
 	closedCh chan struct{}
+	readyCh  chan struct{}
+	readOnce sync.Once
 }
 
 func newBlockingRC() *blockingRingbufCloser {
-	return &blockingRingbufCloser{closedCh: make(chan struct{})}
+	return &blockingRingbufCloser{closedCh: make(chan struct{}), readyCh: make(chan struct{})}
 }
 
 func (b *blockingRingbufCloser) Read() (ringbuf.Record, error) {
+	b.readOnce.Do(func() { close(b.readyCh) })
 	<-b.closedCh
 	return ringbuf.Record{}, errors.New("closed")
 }
@@ -397,9 +406,14 @@ func testRunStdoutRealSignal(t *testing.T, sig syscall.Signal) {
 		runStdout(rd, false)
 	}()
 
-	// Give the goroutine time to reach signal.Notify before sending —
-	// otherwise the signal could arrive before runStdout is listening.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for runStdout to reach capture's Read() call — signal.Notify runs
+	// strictly before that in runStdout's body, so this deterministically
+	// guarantees the handler is registered before the signal is sent.
+	select {
+	case <-rd.readyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runStdout never reached capture's read loop")
+	}
 	if err := syscall.Kill(os.Getpid(), sig); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}

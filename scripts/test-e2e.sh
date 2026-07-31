@@ -69,7 +69,12 @@ cleanup() {
     fi
     wait 2>/dev/null || true
 }
-trap cleanup EXIT
+# check_no_leftover_processes (defined below) also runs on every EXIT path —
+# not just the explicit end-of-script call — so an early failure (e.g. a
+# server never starting listening) still gets verified, not just the happy
+# path. The explicit end-of-script "cleanup; trap - EXIT; check_no_leftover_processes"
+# sequence disables this trap first so the two don't run twice there.
+trap 'cleanup; check_no_leftover_processes' EXIT
 
 wait_for_port() {
     local host=$1 port=$2
@@ -158,7 +163,7 @@ check_no_leftover_processes() {
     fi
 
     local pid_var
-    for pid_var in PY_PID FILE_PID WRITEV_PID TLS_PY_PID; do
+    for pid_var in PY_PID SLOW_PY_PID SLOW_CURL_PID FILE_PID WRITEV_PID TLS_PY_PID; do
         local pid="${!pid_var}"
         if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
             echo "FAIL: ${pid_var}=${pid} still running after cleanup"
