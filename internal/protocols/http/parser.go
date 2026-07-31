@@ -21,9 +21,9 @@ import (
 // can carry multiple messages in sequence (HTTP/1.1 keep-alive), so on
 // body completion the state resets to look for the next start line.
 //
-// Direction is taken from the syscall:
-//   - read / recvfrom / recvmsg / readv → incoming
-//   - write / sendto / sendmsg / writev / sendfile → outgoing
+// Direction is taken from the syscall (Feed) or the SSL op (FeedSSL):
+//   - read / recvfrom / recvmsg / readv / SSLOpRead → incoming
+//   - write / sendto / sendmsg / writev / sendfile / SSLOpWrite → outgoing
 //
 // Discrimination between request and response is by the start line:
 //   - "GET / HTTP/1.1"      → request
@@ -31,6 +31,14 @@ import (
 //
 // Body length comes from Content-Length or Transfer-Encoding: chunked.
 // Messages with neither are treated as having a zero-byte body.
+//
+// Connection identity is normally (pid, fd). For TLS traffic whose fd never
+// resolved (FeedSSL, #179 — e.g. curl, which never calls SSL_set_fd, #167)
+// it is (pid, SSL*) instead — a dimension distinct from (pid, fd) by
+// construction (see connKey), mirroring Pairer's identical pairKey split
+// (#171). Feed and FeedSSL share the same state-machine core (the
+// unexported feed method); only how the stream is looked up and keyed
+// differs.
 
 type httpParseState int
 
@@ -51,10 +59,17 @@ const (
 	dirOutgoing
 )
 
+// connKey identifies a connection+direction for stream lookup. sslFallback
+// is an explicit discriminator, not inferred from fd/ssl being zero — so
+// the fd-keyed and SSL-keyed halves of the key space can never collide by
+// construction, regardless of what values fd or ssl happen to hold (same
+// reasoning as Pairer's pairKey, #171).
 type connKey struct {
-	pid uint32
-	fd  int32
-	dir direction
+	pid         uint32
+	fd          int32  // meaningful only when sslFallback is false
+	ssl         uint64 // meaningful only when sslFallback is true
+	sslFallback bool
+	dir         direction
 }
 
 type httpRequestLine struct {
@@ -79,27 +94,37 @@ const maxBufBytes = 16 * 1024
 // Beyond it the body is marked truncated and further bytes are dropped.
 const maxBodyBytes = 16 * 1024
 
-// pidFd identifies a connection across both directions. Used to thread
+// pendingKey identifies a connection across both directions, fd-keyed or
+// SSL-keyed (same discriminator shape as connKey). Used to thread
 // request-side state (e.g., the request method) over to the response side
 // for framing decisions like "HEAD responses have no body".
-type pidFd struct {
-	pid uint32
-	fd  int32
+type pendingKey struct {
+	pid         uint32
+	fd          int32
+	ssl         uint64
+	sslFallback bool
 }
 
-// stream holds parser state for one direction of one (pid, fd).
+// stream holds parser state for one direction of one connection (fd-keyed
+// or SSL-keyed, see connKey).
 type stream struct {
-	fd            int32 // copied from connKey so advance() can do per-pidFd lookups
-	buf           []byte
-	state         httpParseState
-	abandoned     bool // marked true if buf grew past maxBufBytes without progress
-	isRequest     bool // set when the start line is parsed
-	chunked       bool // Transfer-Encoding: chunked detected for this message
-	chunkRemaining int // wire bytes of current chunk still to drain
-	contentLength int
-	bodyRemaining int // wire bytes of body still to drain (not sample bytes)
-	req           httpRequestLine
-	res           httpStatusLine
+	// fd/ssl/sslFallback are copied from connKey so advance() can derive
+	// this stream's pendingKey and outgoing Messages can carry the same
+	// identity. fd is meaningful only when sslFallback is false; ssl only
+	// when it's true (mirrors connKey/Message's own split).
+	fd             int32
+	ssl            uint64
+	sslFallback    bool
+	buf            []byte
+	state          httpParseState
+	abandoned      bool // marked true if buf grew past maxBufBytes without progress
+	isRequest      bool // set when the start line is parsed
+	chunked        bool // Transfer-Encoding: chunked detected for this message
+	chunkRemaining int  // wire bytes of current chunk still to drain
+	contentLength  int
+	bodyRemaining  int // wire bytes of body still to drain (not sample bytes)
+	req            httpRequestLine
+	res            httpStatusLine
 	// Body capture (#35). A message is emitted only once its body has fully
 	// drained, so while bodyRemaining > 0 the parsed-but-bodyless message waits
 	// in pendingMsg and body sample bytes accumulate in bodyBuf (capped at
@@ -152,13 +177,11 @@ type Message struct {
 	// SSL and SSLFallback support pairing TLS-sourced messages that have no
 	// verified fd (#171): some clients (curl, confirmed in #167) never call
 	// SSL_set_fd, so the SSL_write/SSL_read uprobe (#146) plaintext can only
-	// be identified by its SSL* pointer, not a socket fd. SSLFallback's zero
-	// value (false) is today's default — every message currently produced by
-	// Feed is fd-sourced. A future TLS event source (#149) sets SSLFallback
-	// true and SSL to the observed pointer when no SSL_set_fd correlation
-	// exists for it; Fd is meaningless in that case. Never both false/set and
-	// true/unset — see Pairer, which keys strictly on one or the other and
-	// never guesses a fd for an SSLFallback message.
+	// be identified by its SSL* pointer, not a socket fd. Feed always
+	// produces fd-sourced messages (SSLFallback false); FeedSSL (#179) always
+	// produces SSL*-sourced ones (SSLFallback true, SSL set, Fd meaningless).
+	// Never both false/set and true/unset — see Pairer, which keys strictly
+	// on one or the other and never guesses a fd for an SSLFallback message.
 	SSL         uint64
 	SSLFallback bool
 }
@@ -174,11 +197,11 @@ type Header struct {
 
 type Parser struct {
 	streams map[connKey]*stream
-	// pendingMethods is a per-(pid, fd) FIFO of request methods awaiting
+	// pendingMethods is a per-connection FIFO of request methods awaiting
 	// their response. Used so the response-side parser can frame the body
 	// correctly when the request was a HEAD (response has no body even
 	// when Content-Length is present, per RFC 7230 §3.3.3).
-	pendingMethods map[pidFd][]string
+	pendingMethods map[pendingKey][]string
 	// resolve maps a PID to a display name. When non-nil it is called
 	// instead of reading Comm from the BPF event, so callers can supply
 	// the full cmdline (e.g. "python3 manage.py runserver") in place of
@@ -189,7 +212,7 @@ type Parser struct {
 func NewParser() *Parser {
 	return &Parser{
 		streams:        make(map[connKey]*stream),
-		pendingMethods: make(map[pidFd][]string),
+		pendingMethods: make(map[pendingKey][]string),
 	}
 }
 
@@ -202,9 +225,10 @@ func NewParserWithResolve(resolve func(pid uint32) string) *Parser {
 	return p
 }
 
-// Feed processes a BPF event. Returns the HTTP events whose headers
-// completed during this call (zero, one, or more if a stream contained
-// multiple pipelined messages).
+// Feed processes a plaintext syscall BPF event. Returns the HTTP events
+// whose headers completed during this call (zero, one, or more if a stream
+// contained multiple pipelined messages). Always produces fd-keyed
+// Messages (SSLFallback false) — see FeedSSL for the SSL*-keyed path.
 func (p *Parser) Feed(e *events.Event) []Message {
 	var dir direction
 	switch e.Syscall {
@@ -228,19 +252,76 @@ func (p *Parser) Feed(e *events.Event) []Message {
 		s = &stream{fd: e.Fd}
 		p.streams[key] = s
 	}
-	// Once a stream is recognised as non-HTTP, drop further bytes for it
-	// instead of recreating state on every event. The marker entry stays
-	// in the map until the fd is closed.
-	if s.abandoned {
+
+	n := int(e.PayloadLen)
+	if n > len(e.Payload) {
+		n = len(e.Payload)
+	}
+	comm := p.resolveComm(e.Pid, e.Comm)
+	return p.feed(s, e.Pid, comm, e.TsNs, e.Payload[:n], int(e.Bytes))
+}
+
+// FeedSSL processes a plaintext event captured by the SSL_write/SSL_read
+// uprobe (#146) for a connection whose fd never resolved (#167 — e.g.
+// curl, which never calls SSL_set_fd). fd-resolvable TLS traffic instead
+// goes through the ordinary Feed after translation via tls.FromSSL (#148),
+// reusing the fd-keyed stream — this method exists so the fd-less
+// remainder isn't dropped outright (#179). Every Message it emits has
+// SSLFallback true and SSL set to e.SSL; see Pairer, which requires that
+// discriminator to route pairing through its SSL*-keyed identity space.
+func (p *Parser) FeedSSL(e *events.SSLEvent) []Message {
+	var dir direction
+	switch e.Op {
+	case events.SSLOpRead:
+		dir = dirIncoming
+	case events.SSLOpWrite:
+		dir = dirOutgoing
+	default:
 		return nil
+	}
+
+	if e.Len == 0 {
+		return nil
+	}
+
+	key := connKey{pid: e.Pid, ssl: e.SSL, sslFallback: true, dir: dir}
+	s, ok := p.streams[key]
+	if !ok {
+		s = &stream{ssl: e.SSL, sslFallback: true}
+		p.streams[key] = s
 	}
 
 	n := int(e.PayloadLen)
 	if n > len(e.Payload) {
 		n = len(e.Payload)
 	}
-	payload := e.Payload[:n]
-	wireBytes := int(e.Bytes)
+	comm := p.resolveComm(e.Pid, e.Comm)
+	return p.feed(s, e.Pid, comm, e.TsNs, e.Payload[:n], int(e.Len))
+}
+
+// resolveComm looks up pid's display name via p.resolve when set, falling
+// back to the BPF-supplied comm bytes (both events.Event.Comm and
+// events.SSLEvent.Comm are [16]byte) when resolve is unset or returns "".
+func (p *Parser) resolveComm(pid uint32, fallback [16]byte) string {
+	if p.resolve != nil {
+		if comm := p.resolve(pid); comm != "" {
+			return comm
+		}
+	}
+	return string(bytes.TrimRight(fallback[:], "\x00"))
+}
+
+// feed is the shared state-machine core for Feed and FeedSSL: given a
+// stream already looked up (or created) under the caller's identity, debit
+// wireBytes/payload against any in-flight chunk or body, then hand
+// whatever's left to advance() to parse start-line/headers. Once a stream
+// is recognised as non-HTTP (abandoned), further bytes are dropped instead
+// of recreating state on every call — the marker entry stays in the map
+// until the connection closes.
+func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload []byte, wireBytes int) []Message {
+	if s.abandoned {
+		return nil
+	}
 
 	var out []Message
 
@@ -316,7 +397,7 @@ func (p *Parser) Feed(e *events.Event) []Message {
 		// Any leftover wire/sample bytes are the next message. Reset
 		// messageStartTs to 0; either the carry-over append below (next-message
 		// bytes in this event) will reseed it via the "if messageStartTs == 0"
-		// check, or the next Feed call will.
+		// check, or the next feed call will.
 		s.state = stateNeedStartLine
 		s.wireBytesSinceMessageStart = 0
 		s.wireBytesConsumed = 0
@@ -333,20 +414,13 @@ func (p *Parser) Feed(e *events.Event) []Message {
 	// whenever a message completes, so a zero value identifies a fresh stream
 	// or a fresh post-body state.
 	if s.messageStartTs == 0 {
-		s.messageStartTs = e.TsNs
+		s.messageStartTs = tsNs
 	}
 
 	s.buf = append(s.buf, payload...)
 	s.wireBytesSinceMessageStart += wireBytes
 
-	comm := ""
-	if p.resolve != nil {
-		comm = p.resolve(e.Pid)
-	}
-	if comm == "" {
-		comm = string(bytes.TrimRight(e.Comm[:], "\x00"))
-	}
-	out = append(out, p.advance(s, e.Pid, comm, e.TsNs)...)
+	out = append(out, p.advance(s, pid, comm, tsNs)...)
 
 	// If the stream is accumulating without finding HTTP structure, abandon
 	// it so it cannot grow unbounded. Body draining above never touches buf,
@@ -361,11 +435,22 @@ func (p *Parser) Feed(e *events.Event) []Message {
 
 // Close evicts both directions for the given (pid, fd). Pending data
 // (an incomplete message, or queued request methods awaiting a response
-// that will never arrive) is dropped silently.
+// that will never arrive) is dropped silently. fd-keyed counterpart to
+// CloseSSL.
 func (p *Parser) Close(pid uint32, fd int32) {
 	delete(p.streams, connKey{pid: pid, fd: fd, dir: dirIncoming})
 	delete(p.streams, connKey{pid: pid, fd: fd, dir: dirOutgoing})
-	delete(p.pendingMethods, pidFd{pid: pid, fd: fd})
+	delete(p.pendingMethods, pendingKey{pid: pid, fd: fd})
+}
+
+// CloseSSL evicts both directions for the given (pid, SSL*) — the SSL*-keyed
+// counterpart to Close, for connections fed via FeedSSL. Called when
+// SSL_free (#173) tears down a connection that was never fd-resolved.
+// Pending data is dropped silently, same as Close.
+func (p *Parser) CloseSSL(pid uint32, ssl uint64) {
+	delete(p.streams, connKey{pid: pid, ssl: ssl, sslFallback: true, dir: dirIncoming})
+	delete(p.streams, connKey{pid: pid, ssl: ssl, sslFallback: true, dir: dirOutgoing})
+	delete(p.pendingMethods, pendingKey{pid: pid, ssl: ssl, sslFallback: true})
 }
 
 // appendBody accumulates body sample bytes for the in-flight message, capped at
@@ -508,7 +593,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			// (>=200); for 1xx peek so the method stays available for the
 			// final reply. Otherwise pipelined HEAD requests get
 			// desynchronised when a prior request emits a 1xx.
-			key := pidFd{pid: pid, fd: s.fd}
+			key := pendingKey{pid: pid, fd: s.fd, ssl: s.ssl, sslFallback: s.sslFallback}
 			if s.isRequest {
 				p.pendingMethods[key] = append(p.pendingMethods[key], s.req.method)
 			} else {
@@ -529,6 +614,8 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				TsNs:          s.messageStartTs,
 				Pid:           pid,
 				Fd:            s.fd,
+				SSL:           s.ssl,
+				SSLFallback:   s.sslFallback,
 				Comm:          comm,
 				IsRequest:     s.isRequest,
 				Req:           s.req,
@@ -802,7 +889,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 // Returns "" if no request has been seen — which happens when the parser
 // started mid-stream (responses observed without their request) or when
 // the request was on a connection we did not capture from.
-func (p *Parser) popMethod(key pidFd) string {
+func (p *Parser) popMethod(key pendingKey) string {
 	q := p.pendingMethods[key]
 	if len(q) == 0 {
 		return ""
@@ -819,7 +906,7 @@ func (p *Parser) popMethod(key pidFd) string {
 // peekMethod returns the next pending request method without dequeuing.
 // Used for 1xx informational responses, where the same request will be
 // followed by a final response (>=200) that still needs the method.
-func (p *Parser) peekMethod(key pidFd) string {
+func (p *Parser) peekMethod(key pendingKey) string {
 	q := p.pendingMethods[key]
 	if len(q) == 0 {
 		return ""

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/loader"
@@ -39,9 +40,9 @@ import (
 // a custom BIO_METHOD instead, consistently across current stable versions
 // (see lib/vtls/openssl.c in curl/curl). This probe will attach to curl
 // processes but the SSL_set_fd uprobe never fires, so curl's SSL_write/
-// SSL_read payloads are captured but dropped by captureTLS today — full HTTP
-// parsing for fd-less connections needs a parser-level SSL*-keyed stream
-// that doesn't exist yet (flagged on #149 against #171's premise).
+// SSL_read payloads have no resolvable fd; captureTLS routes them through
+// Parser.FeedSSL's SSL*-keyed stream instead (#179) rather than dropping
+// them.
 
 // sslProbe is the subset of *loader.SSLFdProbe sslWatcher needs — narrowed
 // to an interface so tests can inject a fake instead of a real eBPF-backed
@@ -85,7 +86,22 @@ type sslWatcher struct {
 	find          func(pid uint32) (tls.Discovery, error)
 	attach        func(pid uint32, path string) (sslProbe, error)
 	attachPayload func(pid uint32, path string) (payloadProbe, error)
+
+	// findRetries/findRetryDelay bound how long maybeAttach retries a
+	// discovery that failed with ErrLibSSLNotFound before giving up
+	// permanently — see findWithRetry's doc comment for why this exists.
+	// Tests override these to tiny values so retry behavior can be
+	// exercised without a real wall-clock delay.
+	findRetries    int
+	findRetryDelay time.Duration
 }
+
+// defaultFindRetries/defaultFindRetryDelay give findWithRetry a ~200ms
+// total budget in production — see findWithRetry's doc comment.
+const (
+	defaultFindRetries    = 8
+	defaultFindRetryDelay = 25 * time.Millisecond
+)
 
 // attachSSLReadWrite is the real loader.AttachSSLReadWrite; tests can
 // replace it with a fake that succeeds without touching real eBPF (mirrors
@@ -108,6 +124,8 @@ func newSSLWatcher(sink output.Sink) *sslWatcher {
 			}
 			return &payloadProbeAdapter{p}, nil
 		},
+		findRetries:    defaultFindRetries,
+		findRetryDelay: defaultFindRetryDelay,
 	}
 }
 
@@ -149,8 +167,10 @@ func (w *sslWatcher) Quit() {
 
 // maybeAttach dedupes on pid, then discovers+attaches off the caller's
 // goroutine so a slow /proc scan or ELF parse never blocks the capture
-// loop. ErrLibSSLNotFound (no TLS, or a statically-linked stack) is the
-// overwhelmingly common case and stays silent; a *tls.SymbolError
+// loop. Discovery itself retries through findWithRetry to ride out the
+// freshly-exec'd-process race documented there. ErrLibSSLNotFound
+// surviving that retry budget (no TLS, or a statically-linked stack) is
+// the overwhelmingly common case and stays silent; a *tls.SymbolError
 // (stripped/nonstandard libssl) logs once, matching #144's "fail fast and
 // say so" policy for stripped binaries; any other find error (e.g. a
 // permission-denied /proc read) is unexpected and logged so discovery
@@ -171,7 +191,7 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 	w.mu.Unlock()
 
 	go func() {
-		disc, err := w.find(pid)
+		disc, err := w.findWithRetry(pid)
 		if err != nil {
 			if errors.Is(err, tls.ErrLibSSLNotFound) {
 				return
@@ -221,6 +241,28 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 
 		go captureTLS(pp.reader(), probe, w, http.NewParserWithResolve(resolveComm), http.NewPairer())
 	}()
+}
+
+// findWithRetry retries w.find while it fails with ErrLibSSLNotFound, up to
+// findRetries times with findRetryDelay between attempts. A freshly-exec'd,
+// short-lived process observed on its very first captured syscall can race
+// the dynamic linker: libssl.so isn't mapped into the process yet even
+// though it's about to be (measured on this dev VM: curl resolves within
+// ~11ms of exec, consistently well inside the ~200ms default budget). A
+// process that genuinely never loads libssl keeps failing every retry and
+// is still correctly given up on once the budget elapses. Long-lived
+// processes (already running when first observed — most servers) never
+// hit this race in practice, since by the time tinytap sees their first
+// syscall they've been fully linked for a while; this exists specifically
+// for freshly-exec'd short-lived TLS clients like curl (#167, #179).
+func (w *sslWatcher) findWithRetry(pid uint32) (tls.Discovery, error) {
+	for attempt := 0; ; attempt++ {
+		disc, err := w.find(pid)
+		if err == nil || !errors.Is(err, tls.ErrLibSSLNotFound) || attempt >= w.findRetries {
+			return disc, err
+		}
+		time.Sleep(w.findRetryDelay)
+	}
 }
 
 // Close closes every attached probe (joining errors), then the wrapped sink.

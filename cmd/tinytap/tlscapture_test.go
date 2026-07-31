@@ -114,24 +114,34 @@ func TestCaptureTLS_WriteThenReadPairsWithResolvedFd(t *testing.T) {
 	}
 }
 
-// TestCaptureTLS_FdLessTrafficDropped documents today's known gap (#149's
-// flag on #171): payload events for a connection whose fd never resolved
-// (curl, which never calls SSL_set_fd — #167) are dropped rather than
-// guessed, since the parser has no SSL*-keyed stream to feed them into yet.
-func TestCaptureTLS_FdLessTrafficDropped(t *testing.T) {
+// TestCaptureTLS_FdLessTrafficParsedAndPaired confirms fd-less payload
+// events (curl, which never calls SSL_set_fd — #167) reach Parser.FeedSSL's
+// SSL*-keyed stream (#179) instead of being dropped: a request and response
+// on the same SSL* still pair correctly with no fd ever resolved. No raw
+// events reach the sink for this path (unlike the fd-resolvable path,
+// there's no tls.FromSSL translation to an events.Event to report).
+func TestCaptureTLS_FdLessTrafficParsedAndPaired(t *testing.T) {
 	const pid, ssl = uint32(1), uint64(0xdef)
+	req := []byte("GET / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
 	rd := &fakeReader{
 		records: []ringbuf.Record{
-			{RawSample: marshalSSLEvent(t, sslWriteEvent(pid, pid, ssl, []byte("GET / HTTP/1.1\r\n\r\n")))},
+			{RawSample: marshalSSLEvent(t, sslWriteEvent(pid, pid, ssl, req))},
+			{RawSample: marshalSSLEvent(t, sslReadEvent(pid, pid, ssl, resp))},
 		},
 	}
 	sink := &fakeSink{}
 	parser, pairer := newTLSTestPipeline()
 	captureTLS(rd, fakeSSLFdLookup{}, sink, parser, pairer) // empty map: Lookup always misses
 
-	if sink.eventCount != 0 || sink.messageCount != 0 || sink.pairedCount != 0 {
-		t.Errorf("want fd-less payload dropped silently, got events=%d messages=%d paired=%d",
-			sink.eventCount, sink.messageCount, sink.pairedCount)
+	if sink.eventCount != 0 {
+		t.Errorf("want 0 raw events for the fd-less path, got %d", sink.eventCount)
+	}
+	if sink.messageCount != 2 {
+		t.Errorf("want 2 messages, got %d", sink.messageCount)
+	}
+	if sink.pairedCount != 1 {
+		t.Errorf("want 1 paired event, got %d", sink.pairedCount)
 	}
 }
 
@@ -168,19 +178,23 @@ func TestCaptureTLS_SSLFreeEvictsPendingRequestWhenFdResolved(t *testing.T) {
 }
 
 // TestCaptureTLS_SSLFreeEvictsSSLFallbackWhenFdLess confirms SSL_free (#173)
-// evicts a pending SSLFallback-keyed request via Pairer.CloseSSL when the
-// connection's fd never resolved. Nothing in captureTLS's own event loop can
-// produce an SSLFallback-pending Message yet (that needs the parser-level
-// SSL*-keyed stream flagged on #149) — the pairer is seeded directly here to
-// prove CloseSSL's wiring is correct and ready for the moment that lands.
+// evicts a pending fd-less request as ABANDONED end to end: the request
+// itself arrives through the real ringbuf → Parser.FeedSSL → Pairer.Push
+// path (#179), never resolves an fd, and SSL_free evicts it via
+// Parser.CloseSSL + Pairer.CloseSSL — no manual pairer/parser seeding.
 func TestCaptureTLS_SSLFreeEvictsSSLFallbackWhenFdLess(t *testing.T) {
 	const pid, ssl = uint32(6), uint64(0x222)
-	parser, pairer := newTLSTestPipeline()
-	pairer.Push(http.Message{Pid: pid, SSL: ssl, SSLFallback: true, IsRequest: true, TsNs: 1})
+	req := []byte("GET /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
 
 	freeEvent := events.SSLEvent{Pid: pid, Tid: pid, SSL: ssl, Op: events.SSLOpFree}
-	rd := &fakeReader{records: []ringbuf.Record{{RawSample: marshalSSLEvent(t, freeEvent)}}}
+	rd := &fakeReader{
+		records: []ringbuf.Record{
+			{RawSample: marshalSSLEvent(t, sslWriteEvent(pid, pid, ssl, req))},
+			{RawSample: marshalSSLEvent(t, freeEvent)},
+		},
+	}
 	sink := &abandonedSink{}
+	parser, pairer := newTLSTestPipeline()
 	captureTLS(rd, fakeSSLFdLookup{}, sink, parser, pairer) // empty map: fd never resolves
 
 	if len(sink.paired) != 1 {
@@ -190,6 +204,9 @@ func TestCaptureTLS_SSLFreeEvictsSSLFallbackWhenFdLess(t *testing.T) {
 	if !pe.Abandoned || !pe.SSLFallback || pe.SSL != ssl {
 		t.Errorf("want Abandoned=true SSLFallback=true SSL=%#x, got Abandoned=%v SSLFallback=%v SSL=%#x",
 			ssl, pe.Abandoned, pe.SSLFallback, pe.SSL)
+	}
+	if pe.Path != "/slow" {
+		t.Errorf("Path = %q, want /slow", pe.Path)
 	}
 }
 

@@ -96,10 +96,91 @@ func TestNewSSLWatcher_DefaultFindAndAttach(t *testing.T) {
 	}
 }
 
+// TestFindWithRetry_SucceedsAfterTransientNotFound is the concrete
+// verification for the race findWithRetry exists to ride out (measured on
+// this dev VM: curl's libssl.so isn't mapped into /proc/<pid>/maps for the
+// first ~11ms after exec — see findWithRetry's doc comment): a discovery
+// that fails with ErrLibSSLNotFound on its first attempts but succeeds
+// before the retry budget is exhausted must still return the discovery.
+func TestFindWithRetry_SucceedsAfterTransientNotFound(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	w.findRetries = 3
+	w.findRetryDelay = time.Millisecond
+	var calls int
+	want := tls.Discovery{Pid: 1, Path: "/lib/libssl.so.3"}
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		calls++
+		if calls < 3 {
+			return tls.Discovery{}, tls.ErrLibSSLNotFound
+		}
+		return want, nil
+	}
+
+	got, err := w.findWithRetry(1)
+	if err != nil {
+		t.Fatalf("findWithRetry() error = %v, want nil", err)
+	}
+	if got != want {
+		t.Errorf("findWithRetry() = %+v, want %+v", got, want)
+	}
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3 (2 transient failures + 1 success)", calls)
+	}
+}
+
+// TestFindWithRetry_GivesUpAfterExhaustingRetries confirms a process that
+// genuinely never loads libssl (the overwhelmingly common case — most
+// processes never touch TLS) is still correctly given up on once the retry
+// budget elapses, rather than retrying forever.
+func TestFindWithRetry_GivesUpAfterExhaustingRetries(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	w.findRetries = 2
+	w.findRetryDelay = time.Millisecond
+	var calls int
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		calls++
+		return tls.Discovery{}, tls.ErrLibSSLNotFound
+	}
+
+	_, err := w.findWithRetry(1)
+	if !errors.Is(err, tls.ErrLibSSLNotFound) {
+		t.Errorf("findWithRetry() error = %v, want ErrLibSSLNotFound", err)
+	}
+	if calls != 3 { // 1 initial attempt + findRetries(2) retries
+		t.Errorf("calls = %d, want 3 (1 initial + 2 retries)", calls)
+	}
+}
+
+// TestFindWithRetry_NonNotFoundErrorDoesNotRetry confirms only
+// ErrLibSSLNotFound triggers a retry — a *tls.SymbolError or an unexpected
+// error (e.g. permission denied) returns immediately, matching
+// TestSSLWatcher_OnEvent_SymbolError/UnexpectedFindError's existing
+// single-call expectations.
+func TestFindWithRetry_NonNotFoundErrorDoesNotRetry(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	w.findRetries = 5
+	w.findRetryDelay = time.Millisecond
+	var calls int
+	wantErr := errors.New("permission denied")
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		calls++
+		return tls.Discovery{}, wantErr
+	}
+
+	_, err := w.findWithRetry(1)
+	if !errors.Is(err, wantErr) {
+		t.Errorf("findWithRetry() error = %v, want %v", err, wantErr)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (no retry for a non-ErrLibSSLNotFound error)", calls)
+	}
+}
+
 func TestSSLWatcher_OnEvent_Dedup(t *testing.T) {
 	calls := make(chan struct{}, 10)
 	var findCount int
 	w := newSSLWatcher(&fakeSink{})
+	w.findRetries = 0 // isolate dedup-on-pid from findWithRetry's own retry loop
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		findCount++
 		calls <- struct{}{}
@@ -122,6 +203,7 @@ func TestSSLWatcher_OnEvent_Dedup(t *testing.T) {
 func TestSSLWatcher_OnEvent_LibSSLNotFound(t *testing.T) {
 	calls := make(chan struct{}, 1)
 	w := newSSLWatcher(&fakeSink{})
+	w.findRetries = 0 // isolate this from findWithRetry's own retry loop (tested separately)
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		defer close(calls)
 		return tls.Discovery{}, tls.ErrLibSSLNotFound

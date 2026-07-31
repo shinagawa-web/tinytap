@@ -893,7 +893,7 @@ func TestCloseEvictsPendingMethods(t *testing.T) {
 
 	p.Close(pid, fd)
 
-	if _, ok := p.pendingMethods[pidFd{pid: pid, fd: fd}]; ok {
+	if _, ok := p.pendingMethods[pendingKey{pid: pid, fd: fd}]; ok {
 		t.Error("Close: pendingMethods entry not evicted")
 	}
 }

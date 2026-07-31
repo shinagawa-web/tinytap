@@ -27,13 +27,11 @@ type sslFdLookup interface {
 // caller, guards its own sink calls with a mutex shared across every
 // captureTLS goroutine and the plaintext capture loop (see tlswatch.go).
 //
-// Only fd-resolvable connections (SSL_set_fd observed — nginx, Python, see
-// #167) get full HTTP parsing today: fdProbe.Lookup failing means the
-// connection is fd-less (e.g. curl), which needs a parser-level SSL*-keyed
-// stream that doesn't exist yet (flagged on #149 against #171's premise) —
-// those payload events are dropped here rather than guessed at. SSL_free
-// events still evict any pending SSLFallback request via Pairer.CloseSSL
-// regardless, so that path is ready the moment the parser gap closes.
+// fdProbe.Lookup failing means the connection is fd-less (e.g. curl, which
+// never calls SSL_set_fd — #167): those payload events go through
+// Parser.FeedSSL's SSL*-keyed stream (#179) instead of the fd-keyed
+// Parser.Feed, and their SSL_free events evict via Parser.CloseSSL +
+// Pairer.CloseSSL rather than the fd-keyed Close pair.
 //
 // parser and pairer are caller-constructed (mirroring fdProbe/sink) rather
 // than built internally, so each pid's captureTLS goroutine gets its own
@@ -100,6 +98,7 @@ func captureTLSWithOptions(rd ringbufReader, fdProbe sslFdLookup, sink output.Si
 				sink.OnPaired(ab)
 			}
 		case e.Op == events.SSLOpFree:
+			parser.CloseSSL(e.Pid, e.SSL)
 			for _, ab := range pairer.CloseSSL(e.Pid, e.SSL, e.TsNs) {
 				sink.OnPaired(ab)
 			}
@@ -111,6 +110,15 @@ func captureTLSWithOptions(rd ringbufReader, fdProbe sslFdLookup, sink output.Si
 					if pe, okPush := pairer.Push(m); okPush {
 						sink.OnPaired(pe)
 					}
+				}
+			}
+		default:
+			// fd-less payload event (curl, #167): fed through the SSL*-keyed
+			// stream (#179) instead of dropped.
+			for _, m := range parser.FeedSSL(&e) {
+				sink.OnMessage(m)
+				if pe, okPush := pairer.Push(m); okPush {
+					sink.OnPaired(pe)
 				}
 			}
 		}
