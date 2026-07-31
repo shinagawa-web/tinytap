@@ -8,13 +8,15 @@ const (
 )
 
 // Pairer matches HTTP requests with their responses on the same connection
-// identity and emits a single PairedEvent at the moment the response's
-// headers arrive. Requests with no response yet stay queued.
+// identity and emits a single PairedEvent once both sides are known. In the
+// common case that's the moment the response's headers arrive, with the
+// request already queued. Requests with no response yet stay queued.
 //
 // A response with no queued request (#67 — an early error response, e.g.
 // 413/417, or a 100-continue reply, arriving while the client is still
-// streaming its request body) is held rather than dropped, and paired once
-// the matching request is later emitted. heldResponses is bounded
+// streaming its request body) is held rather than dropped, and the
+// PairedEvent is instead emitted once the matching request is later pushed.
+// heldResponses is bounded
 // (maxHeldResponses, oldest dropped first) so a response whose request was
 // never captured at all — a stream joined mid-flight — cannot accumulate
 // unbounded; that bound is the reason unmatched responses were dropped in
@@ -158,9 +160,8 @@ func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 	key := keyFor(e.Pid, e.Fd, e.SSL, e.SSLFallback)
 	if e.IsRequest {
 		if i := p.indexOfHeldResponse(key); i != -1 {
-			res := p.heldResponses[i].msg.msg
-			p.heldResponses = append(p.heldResponses[:i], p.heldResponses[i+1:]...)
-			return pairRequestResponse(e, res), true
+			res := p.removeHeldResponseAt(i)
+			return pairRequestResponse(e, res.msg.msg), true
 		}
 		p.pending[key] = append(p.pending[key], timedMessage{msg: e, arrivedAt: p.now()})
 		return PairedEvent{}, false
@@ -190,12 +191,29 @@ func (p *Pairer) indexOfHeldResponse(key pairKey) int {
 	return -1
 }
 
+// removeHeldResponseAt removes and returns the held response at index i. It
+// zeroes the vacated backing-array slot before shrinking the slice — a plain
+// append(s[:i], s[i+1:]...) would leave a duplicate reference to the last
+// surviving element sitting in that now-out-of-range slot, keeping its
+// Message (and captured BodySample/Headers) reachable until some later
+// append happens to overwrite it.
+func (p *Pairer) removeHeldResponseAt(i int) heldResponse {
+	hr := p.heldResponses[i]
+	last := len(p.heldResponses) - 1
+	copy(p.heldResponses[i:], p.heldResponses[i+1:])
+	p.heldResponses[last] = heldResponse{}
+	p.heldResponses = p.heldResponses[:last]
+	return hr
+}
+
 // holdResponse records a response that arrived with no queued request,
 // evicting the globally oldest held response first if that would exceed
-// maxHeldResponses.
+// maxHeldResponses. The evicted slot is zeroed before reslicing, for the
+// same reason removeHeldResponseAt zeroes its vacated slot.
 func (p *Pairer) holdResponse(key pairKey, e Message) {
 	p.heldResponses = append(p.heldResponses, heldResponse{key: key, msg: timedMessage{msg: e, arrivedAt: p.now()}})
 	if len(p.heldResponses) > maxHeldResponses {
+		p.heldResponses[0] = heldResponse{}
 		p.heldResponses = p.heldResponses[1:]
 	}
 }
@@ -297,15 +315,24 @@ func (p *Pairer) CloseSSL(pid uint32, ssl uint64, closeTsNs uint64) []PairedEven
 // be claimed by a future request, and — critically — fd numbers get reused,
 // so leaving it in place risks a later, unrelated connection on the same
 // (pid, fd) wrongly claiming it (see TestPairerCloseDiscardsHeldResponse).
+//
+// The in-place filter below can leave a discarded entry's Message reachable
+// in the tail of the backing array (beyond the filtered slice's new
+// length) — the tail slots get explicitly zeroed after filtering so a
+// discarded response's BodySample/Headers don't outlive the discard.
 func (p *Pairer) discardHeldResponses(key pairKey) {
 	if len(p.heldResponses) == 0 {
 		return
 	}
+	orig := len(p.heldResponses)
 	kept := p.heldResponses[:0]
 	for _, hr := range p.heldResponses {
 		if hr.key != key {
 			kept = append(kept, hr)
 		}
+	}
+	for i := len(kept); i < orig; i++ {
+		p.heldResponses[i] = heldResponse{}
 	}
 	p.heldResponses = kept
 }

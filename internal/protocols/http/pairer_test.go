@@ -68,7 +68,11 @@ func TestPairerHandlesPipelining(t *testing.T) {
 	}
 }
 
-func TestPairerDropsOrphanResponse(t *testing.T) {
+// A response with no queued request never pairs on its own Push call — it
+// is held (#67) rather than paired or dropped outright, in case a matching
+// request shows up later. See TestPairerHeldResponsesAreBounded for the
+// case where no request ever arrives.
+func TestPairerOrphanResponseDoesNotPairImmediately(t *testing.T) {
 	p := NewPairer()
 	res := Message{TsNs: 100, Pid: 42, Fd: 7, IsRequest: false,
 		Res: httpStatusLine{status: 200}}
