@@ -8,9 +8,19 @@ const (
 )
 
 // Pairer matches HTTP requests with their responses on the same connection
-// identity and emits a single PairedEvent at the moment the response's
-// headers arrive. Requests with no response yet stay queued; responses
-// without a queued request are dropped (likely captured mid-stream).
+// identity and emits a single PairedEvent once both sides are known. In the
+// common case that's the moment the response's headers arrive, with the
+// request already queued. Requests with no response yet stay queued.
+//
+// A response with no queued request (#67 — an early error response, e.g.
+// 413/417, or a 100-continue reply, arriving while the client is still
+// streaming its request body) is held rather than dropped, and the
+// PairedEvent is instead emitted once the matching request is later pushed.
+// heldResponses is bounded
+// (maxHeldResponses, oldest dropped first) so a response whose request was
+// never captured at all — a stream joined mid-flight — cannot accumulate
+// unbounded; that bound is the reason unmatched responses were dropped in
+// the first place.
 //
 // HTTP/1.1 keep-alive guarantees responses are returned in request order,
 // so a simple FIFO per identity is sufficient. Chunked encoding and HTTP/2
@@ -25,8 +35,26 @@ const (
 // two unrelated exchanges. CloseSSL (#173) is the SSL*-keyed counterpart to
 // Close, driven by the SSL_free uprobe instead of the close(2) syscall.
 type Pairer struct {
-	pending map[pairKey][]timedMessage
-	now     func() time.Time
+	pending       map[pairKey][]timedMessage
+	heldResponses []heldResponse
+	now           func() time.Time
+}
+
+// maxHeldResponses bounds heldResponses across all keys combined (not
+// per-key): the number of distinct (pid, fd)/(pid, ssl) identities is itself
+// unbounded, so a per-key cap alone would not bound total memory. Chosen
+// generously relative to how rare an early/out-of-order response actually is
+// in practice — this is a safety net against a genuinely orphaned stream,
+// not a path exercised under normal traffic.
+const maxHeldResponses = 256
+
+// heldResponse is a response Push could not immediately pair, kept in
+// arrival order (oldest first) so a same-key request can claim the oldest
+// match, and so exceeding maxHeldResponses always evicts the oldest response
+// overall.
+type heldResponse struct {
+	key pairKey
+	msg timedMessage
 }
 
 // pairKey identifies a connection for pairing purposes. sslFallback is an
@@ -108,11 +136,12 @@ func newPairerWithClock(now func() time.Time) *Pairer {
 	}
 }
 
-// Push registers an HTTP event with the pairer. If the event is a request,
-// it is queued and nil is returned. If the event is a response and a
-// matching request is queued, the request is dequeued and a paired event
-// is returned. Unmatched responses (request was missed) yield nil so the
-// caller can decide whether to render them on their own.
+// Push registers an HTTP event with the pairer. If the event is a request
+// and a held response (#67) is already waiting on the same identity, they
+// pair immediately; otherwise the request is queued. If the event is a
+// response and a matching request is queued, the request is dequeued and a
+// paired event is returned; otherwise the response is held (see
+// heldResponses) so a later request can still claim it.
 //
 // A request and its response only pair when they carry the *same* identity
 // kind: an SSLFallback request never pairs with an ordinary fd-keyed
@@ -120,9 +149,9 @@ func newPairerWithClock(now func() time.Time) *Pairer {
 // versa — keyFor's discriminator makes that impossible by construction.
 //
 // A malformed SSLFallback message (SSL == 0 — no producer should ever emit
-// one, but Push does not trust that) is dropped rather than paired: keying
-// it on (pid, ssl=0) would collapse every SSL* this pid ever fails to set
-// onto one shared FIFO, reopening exactly the cross-pairing risk #171
+// one, but Push does not trust that) is dropped rather than paired or held:
+// keying it on (pid, ssl=0) would collapse every SSL* this pid ever fails to
+// set onto one shared FIFO, reopening exactly the cross-pairing risk #171
 // exists to close, just from a different bug than a guessed fd.
 func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 	if e.SSLFallback && e.SSL == 0 {
@@ -130,11 +159,16 @@ func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 	}
 	key := keyFor(e.Pid, e.Fd, e.SSL, e.SSLFallback)
 	if e.IsRequest {
+		if i := p.indexOfHeldResponse(key); i != -1 {
+			res := p.removeHeldResponseAt(i)
+			return pairRequestResponse(e, res.msg.msg), true
+		}
 		p.pending[key] = append(p.pending[key], timedMessage{msg: e, arrivedAt: p.now()})
 		return PairedEvent{}, false
 	}
 	q := p.pending[key]
 	if len(q) == 0 {
+		p.holdResponse(key, e)
 		return PairedEvent{}, false
 	}
 	req := q[0].msg
@@ -143,31 +177,76 @@ func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 	} else {
 		p.pending[key] = q[1:]
 	}
+	return pairRequestResponse(req, e), true
+}
+
+// indexOfHeldResponse returns the index of the oldest held response on key,
+// or -1 if none is held.
+func (p *Pairer) indexOfHeldResponse(key pairKey) int {
+	for i, hr := range p.heldResponses {
+		if hr.key == key {
+			return i
+		}
+	}
+	return -1
+}
+
+// removeHeldResponseAt removes and returns the held response at index i. It
+// zeroes the vacated backing-array slot before shrinking the slice — a plain
+// append(s[:i], s[i+1:]...) would leave a duplicate reference to the last
+// surviving element sitting in that now-out-of-range slot, keeping its
+// Message (and captured BodySample/Headers) reachable until some later
+// append happens to overwrite it.
+func (p *Pairer) removeHeldResponseAt(i int) heldResponse {
+	hr := p.heldResponses[i]
+	last := len(p.heldResponses) - 1
+	copy(p.heldResponses[i:], p.heldResponses[i+1:])
+	p.heldResponses[last] = heldResponse{}
+	p.heldResponses = p.heldResponses[:last]
+	return hr
+}
+
+// holdResponse records a response that arrived with no queued request,
+// evicting the globally oldest held response first if that would exceed
+// maxHeldResponses. The evicted slot is zeroed before reslicing, for the
+// same reason removeHeldResponseAt zeroes its vacated slot.
+func (p *Pairer) holdResponse(key pairKey, e Message) {
+	p.heldResponses = append(p.heldResponses, heldResponse{key: key, msg: timedMessage{msg: e, arrivedAt: p.now()}})
+	if len(p.heldResponses) > maxHeldResponses {
+		p.heldResponses[0] = heldResponse{}
+		p.heldResponses = p.heldResponses[1:]
+	}
+}
+
+// pairRequestResponse builds the PairedEvent for a matched request/response,
+// shared by the in-order path (request already queued) and the #67
+// out-of-order path (response held, matched once the request arrives).
+func pairRequestResponse(req, res Message) PairedEvent {
 	return PairedEvent{
 		ReqTsNs:    req.TsNs,
-		Latency:    time.Duration(int64(e.TsNs) - int64(req.TsNs)),
+		Latency:    time.Duration(int64(res.TsNs) - int64(req.TsNs)),
 		Pid:        req.Pid,
 		Fd:         req.Fd,
 		Comm:       req.Comm,
 		Method:     req.Req.method,
 		Path:       req.Req.path,
 		ReqVersion: req.Req.version,
-		Status:     e.Res.status,
-		Reason:     e.Res.reason,
-		ResVersion: e.Res.version,
-		ResBytes:   bodyBytes(e.ContentLength, e.BodySample),
+		Status:     res.Res.status,
+		Reason:     res.Res.reason,
+		ResVersion: res.Res.version,
+		ResBytes:   bodyBytes(res.ContentLength, res.BodySample),
 		ReqBytes:   bodyBytes(req.ContentLength, req.BodySample),
 		ReqHeaders: req.Headers,
-		ResHeaders: e.Headers,
+		ResHeaders: res.Headers,
 
 		ReqBody:          req.BodySample,
 		ReqBodyTruncated: req.BodyTruncated,
-		ResBody:          e.BodySample,
-		ResBodyTruncated: e.BodyTruncated,
+		ResBody:          res.BodySample,
+		ResBodyTruncated: res.BodyTruncated,
 
 		SSL:         req.SSL,
 		SSLFallback: req.SSLFallback,
-	}, true
+	}
 }
 
 // bodyBytes returns cl when cl is non-zero (Content-Length path), otherwise
@@ -192,6 +271,7 @@ func bodyBytes(cl int, sample []byte) int {
 // when neither close signal ever arrives (e.g. a hard crash).
 func (p *Pairer) Close(pid uint32, fd int32, closeTsNs uint64) []PairedEvent {
 	key := keyFor(pid, fd, 0, false)
+	p.discardHeldResponses(key)
 	msgs := p.pending[key]
 	if len(msgs) == 0 {
 		return nil
@@ -216,6 +296,7 @@ func (p *Pairer) Close(pid uint32, fd int32, closeTsNs uint64) []PairedEvent {
 // same keyFor discriminator Push and Close rely on.
 func (p *Pairer) CloseSSL(pid uint32, ssl uint64, closeTsNs uint64) []PairedEvent {
 	key := keyFor(pid, 0, ssl, true)
+	p.discardHeldResponses(key)
 	msgs := p.pending[key]
 	if len(msgs) == 0 {
 		return nil
@@ -227,6 +308,33 @@ func (p *Pairer) CloseSSL(pid uint32, ssl uint64, closeTsNs uint64) []PairedEven
 	}
 	delete(p.pending, key)
 	return out
+}
+
+// discardHeldResponses drops any held response on key. Called from Close and
+// CloseSSL: once a connection tears down, a held response for it can never
+// be claimed by a future request, and — critically — fd numbers get reused,
+// so leaving it in place risks a later, unrelated connection on the same
+// (pid, fd) wrongly claiming it (see TestPairerCloseDiscardsHeldResponse).
+//
+// The in-place filter below can leave a discarded entry's Message reachable
+// in the tail of the backing array (beyond the filtered slice's new
+// length) — the tail slots get explicitly zeroed after filtering so a
+// discarded response's BodySample/Headers don't outlive the discard.
+func (p *Pairer) discardHeldResponses(key pairKey) {
+	if len(p.heldResponses) == 0 {
+		return
+	}
+	orig := len(p.heldResponses)
+	kept := p.heldResponses[:0]
+	for _, hr := range p.heldResponses {
+		if hr.key != key {
+			kept = append(kept, hr)
+		}
+	}
+	for i := len(kept); i < orig; i++ {
+		p.heldResponses[i] = heldResponse{}
+	}
+	p.heldResponses = kept
 }
 
 // Sweep evicts any pending request older than timeout and returns abandoned
