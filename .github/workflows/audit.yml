@@ -20,7 +20,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # govulncheck@latest requires a newer Go than go.mod's own minimum
+      # The pinned govulncheck (see Makefile) requires a newer Go than go.mod's own minimum
       # (go.mod: 1.24.0). Provisioned separately here rather than bumping
       # go.mod for the whole module just to satisfy the audit tool — and
       # deliberately not go.mod's own version, since an older govulncheck

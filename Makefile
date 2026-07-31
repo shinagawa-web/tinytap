@@ -25,9 +25,13 @@ lint:
 
 # #159: scans go.mod's dependency surface (and this module's own code paths
 # into it) for known CVEs. `go run pkg@version` fetches govulncheck without
-# adding it to go.mod as a real dependency.
+# adding it to go.mod as a real dependency. Pinned (not @latest) so audits
+# are reproducible and a supply-chain-compromised "latest" tag can't slip
+# in unnoticed — bump intentionally (#163 will eventually automate this).
+GOVULNCHECK_VERSION := v1.6.0
+
 audit:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 test-unit:
 	go test -coverprofile=$(COVFILE) -covermode=atomic ./...
