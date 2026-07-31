@@ -75,6 +75,7 @@ type TinytapUprobeSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type TinytapUprobeProgramSpecs struct {
+	HandleSslFree      *ebpf.ProgramSpec `ebpf:"handle_ssl_free"`
 	HandleSslRead      *ebpf.ProgramSpec `ebpf:"handle_ssl_read"`
 	HandleSslReadEx    *ebpf.ProgramSpec `ebpf:"handle_ssl_read_ex"`
 	HandleSslReadExRet *ebpf.ProgramSpec `ebpf:"handle_ssl_read_ex_ret"`
@@ -145,6 +146,7 @@ type TinytapUprobeVariables struct {
 //
 // It can be passed to LoadTinytapUprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type TinytapUprobePrograms struct {
+	HandleSslFree      *ebpf.Program `ebpf:"handle_ssl_free"`
 	HandleSslRead      *ebpf.Program `ebpf:"handle_ssl_read"`
 	HandleSslReadEx    *ebpf.Program `ebpf:"handle_ssl_read_ex"`
 	HandleSslReadExRet *ebpf.Program `ebpf:"handle_ssl_read_ex_ret"`
@@ -156,6 +158,7 @@ type TinytapUprobePrograms struct {
 
 func (p *TinytapUprobePrograms) Close() error {
 	return _TinytapUprobeClose(
+		p.HandleSslFree,
 		p.HandleSslRead,
 		p.HandleSslReadEx,
 		p.HandleSslReadExRet,

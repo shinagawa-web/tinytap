@@ -23,11 +23,12 @@ import (
 const defaultRoot = "/proc"
 
 // RequiredSymbols are the libssl symbols tinytap hooks: SSL_read and
-// SSL_write to capture plaintext, and SSL_set_fd to correlate the SSL
-// object with its underlying fd. All three are public API entry points, so
+// SSL_write to capture plaintext, SSL_set_fd to correlate the SSL object
+// with its underlying fd, and SSL_free to detect connection teardown for
+// abandon detection (#173). All four are public API entry points, so
 // resolving them by name is stable across OpenSSL/BoringSSL versions —
 // tinytap never reads the internal SSL struct layout.
-var RequiredSymbols = []string{"SSL_read", "SSL_write", "SSL_set_fd"}
+var RequiredSymbols = []string{"SSL_read", "SSL_write", "SSL_set_fd", "SSL_free"}
 
 // ErrLibSSLNotFound means the process has no OpenSSL/BoringSSL shared
 // library mapped. This covers both "not using TLS at all" and "using a

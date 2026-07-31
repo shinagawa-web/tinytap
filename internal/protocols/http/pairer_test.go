@@ -484,9 +484,64 @@ func TestPairerCloseNeverEvictsSSLFallback(t *testing.T) {
 	}
 }
 
-// Sweep is the only eviction path for SSLFallback requests (see Close's
-// doc comment) — confirm it works the same way it does for fd-keyed ones,
-// and that the resulting abandoned event still carries SSL/SSLFallback.
+// CloseSSL is the SSLFallback counterpart to Close (#173) — confirm it
+// evicts a pending SSLFallback request keyed on the same (pid, ssl), and
+// that the resulting abandoned event is reported with AbandonReasonClosed
+// exactly like a real fd close does.
+func TestPairerCloseSSLEvictsSSLFallback(t *testing.T) {
+	p := NewPairer()
+	pid, ssl := uint32(42), uint64(9)
+
+	p.Push(Message{TsNs: 1, Pid: pid, SSL: ssl, SSLFallback: true, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/ssl-free"}})
+
+	got := p.CloseSSL(pid, ssl, 5)
+	if len(got) != 1 {
+		t.Fatalf("CloseSSL: want 1 abandoned event, got %d", len(got))
+	}
+	if !got[0].Abandoned || got[0].AbandonReason != AbandonReasonClosed {
+		t.Errorf("CloseSSL: Abandoned=%v AbandonReason=%q, want true/%q", got[0].Abandoned, got[0].AbandonReason, AbandonReasonClosed)
+	}
+	if !got[0].SSLFallback || got[0].SSL != ssl {
+		t.Errorf("CloseSSL: SSL=%#x SSLFallback=%v, want %#x/true", got[0].SSL, got[0].SSLFallback, ssl)
+	}
+	if got[0].Path != "/ssl-free" {
+		t.Errorf("CloseSSL: Path = %q, want /ssl-free", got[0].Path)
+	}
+
+	// The request must be gone — a second CloseSSL call finds nothing.
+	if got := p.CloseSSL(pid, ssl, 6); len(got) != 0 {
+		t.Errorf("CloseSSL: request should already be evicted, got %+v", got)
+	}
+}
+
+// CloseSSL must never evict an ordinary fd-keyed pending request, even when
+// its numeric fd happens to equal the ssl value CloseSSL was called with —
+// the mirror image of TestPairerCloseNeverEvictsSSLFallback, confirming
+// keyFor's discriminator protects both directions.
+func TestPairerCloseSSLNeverEvictsFdKeyed(t *testing.T) {
+	p := NewPairer()
+	pid := uint32(42)
+	const sameValue = 9
+
+	p.Push(Message{TsNs: 1, Pid: pid, Fd: sameValue, IsRequest: true,
+		Req: httpRequestLine{method: "GET", path: "/fd-keyed"}})
+
+	if got := p.CloseSSL(pid, sameValue, 2); len(got) != 0 {
+		t.Errorf("CloseSSL(ssl=%d) must not evict an fd-keyed request with Fd=%d, got %+v", sameValue, sameValue, got)
+	}
+
+	pe, ok := p.Push(Message{TsNs: 3, Pid: pid, Fd: sameValue, IsRequest: false,
+		Res: httpStatusLine{status: 200}})
+	if !ok || pe.Path != "/fd-keyed" {
+		t.Errorf("want the fd-keyed request to survive CloseSSL and pair normally, got %+v ok=%v", pe, ok)
+	}
+}
+
+// Sweep remains the fallback eviction path for both key spaces when neither
+// Close nor CloseSSL ever fires (e.g. a hard crash) — confirm it still works
+// for SSLFallback requests, and that the resulting abandoned event still
+// carries SSL/SSLFallback.
 func TestPairerSweepEvictsSSLFallbackTimeout(t *testing.T) {
 	now := time.Now()
 	p := newPairerWithClock(func() time.Time { return now })
