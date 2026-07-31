@@ -12,6 +12,13 @@
 #   4. Writev: GET against a server that calls writev(2) directly with two
 #      iovecs (headers, body) → exercises the #111 multi-iovec sampling path
 #      (bpf/tinytap.bpf.c's read_iov) that #3's sendfile path never touches.
+#   5. TLS: GET against a Python HTTPS server (self-signed cert, no Docker/
+#      nginx needed) → the SSL_write/SSL_read uprobe pipeline (#146/#148)
+#      must decrypt and pair the exchange exactly like a plaintext one. This
+#      is deliberately not the nginx docker-compose scenario from #149's
+#      issue text (this VM has no Docker) — it validates the same wiring
+#      (sslWatcher → captureTLS → tls.FromSSL → Parser/Pairer) end-to-end
+#      against a real TLS handshake instead.
 #
 # Usage: bash scripts/test-e2e.sh
 # Exit code 0 = all assertions passed; non-zero = failure.
@@ -22,18 +29,22 @@ PORT="${PORT:-18080}"
 SLOW_PORT="${SLOW_PORT:-18081}"
 FILE_PORT="${FILE_PORT:-18082}"
 WRITEV_PORT="${WRITEV_PORT:-18083}"
+TLS_PORT="${TLS_PORT:-18084}"
 URL="http://localhost:${PORT}/"
 TT_OUT=/tmp/tinytap-e2e.log
 PY_LOG=/tmp/tinytap-e2e-py.log
 SLOW_LOG=/tmp/tinytap-e2e-slow.log
 FILE_LOG=/tmp/tinytap-e2e-file.log
 WRITEV_LOG=/tmp/tinytap-e2e-writev.log
+TLS_LOG=/tmp/tinytap-e2e-tls.log
+TLS_CERT_DIR=/tmp/tinytap-e2e-tls-certs
 
 PY_PID=""
 SLOW_PY_PID=""
 SLOW_CURL_PID=""
 FILE_PID=""
 WRITEV_PID=""
+TLS_PY_PID=""
 FAILURES=0
 
 cleanup() {
@@ -52,6 +63,9 @@ cleanup() {
     fi
     if [[ -n "${WRITEV_PID}" ]]; then
         kill "${WRITEV_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${TLS_PY_PID}" ]]; then
+        kill "${TLS_PY_PID}" 2>/dev/null || true
     fi
     wait 2>/dev/null || true
 }
@@ -76,6 +90,28 @@ wait_for_tinytap() {
         fi
         sleep 0.1
     done
+    return 1
+}
+
+# wait_for_tls_attach waits for sslWatcher to finish its background
+# discovery+attach for pid (a /proc scan + ELF symbol check, off the capture
+# loop — see tlswatch.go). Until the "uprobes attached" line appears, any
+# SSL_write/SSL_read the pid does happens before the uprobe is watching and
+# won't be captured — so the TLS scenario must wait here before firing the
+# request it actually asserts on, not just wait for the port to accept TCP
+# connections. 30s (vs. 5s for wait_for_tinytap) because this involves two
+# uprobe attaches plus a /proc+ELF scan, and CI runners are measurably
+# slower than a dedicated dev VM for this path.
+wait_for_tls_attach() {
+    local pid=$1
+    for _ in $(seq 1 300); do
+        if grep -q "SSL_write/SSL_read/SSL_free uprobes attached for pid ${pid}" "${TT_OUT}" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    echo "  (tinytap output so far:)"
+    cat "${TT_OUT}" 2>/dev/null || true
     return 1
 }
 
@@ -249,6 +285,57 @@ go build -o /tmp/tinytap-e2e-writevserver /tmp/tinytap-e2e-writevserver.go
 WRITEV_PID=$!
 wait_for_port localhost "${WRITEV_PORT}" || { echo "FAIL: writev server did not listen on ${WRITEV_PORT}"; exit 1; }
 
+# ── Scenario 5 setup: Python HTTPS server (SSL_write/SSL_read/SSL_free uprobe
+# pipeline, #149) ─────────────────────────────────────────────────────────────
+# A self-signed cert + Python's ssl-wrapped http.server is enough to exercise
+# the real uprobe pipeline end-to-end without Docker/nginx: Python's ssl
+# module calls SSL_set_fd for its synchronous socket path (see #167), so this
+# lands on the fd-resolvable path captureTLS supports today.
+echo "==> TLS: generating self-signed cert"
+mkdir -p "${TLS_CERT_DIR}"
+openssl req -x509 -newkey rsa:2048 -keyout "${TLS_CERT_DIR}/key.pem" -out "${TLS_CERT_DIR}/cert.pem" \
+    -days 1 -nodes -subj "/CN=localhost" >/dev/null 2>&1
+
+echo "==> Python HTTPS server on ${TLS_PORT}"
+cat > /tmp/tinytap-e2e-tlsserver.py <<PYEOF
+import http.server, ssl
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"tls":"ok"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass  # keep TLS_LOG quiet; failures still surface via curl's exit code
+
+httpd = http.server.HTTPServer(("127.0.0.1", ${TLS_PORT}), Handler)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain("${TLS_CERT_DIR}/cert.pem", "${TLS_CERT_DIR}/key.pem")
+httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+httpd.serve_forever()
+PYEOF
+python3 /tmp/tinytap-e2e-tlsserver.py >"${TLS_LOG}" 2>&1 &
+TLS_PY_PID=$!
+wait_for_port localhost "${TLS_PORT}" || { echo "FAIL: TLS server did not listen on ${TLS_PORT}"; exit 1; }
+
+# AttachSSLSetFd/AttachSSLReadWrite deliberately never chmod their target
+# themselves (a capture tool silently mutating a system library's
+# permissions would be a surprising side effect — see load_uprobe.go's
+# ErrLibSSLNotExecutable doc). Debian/Ubuntu ships libssl3 without the
+# execute bit (mode 0644), unlike libc.so.6, so this e2e harness — which is
+# already responsible for the rest of the test environment's setup — sets
+# it explicitly instead of silently failing every SSL_set_fd/SSL_write/
+# SSL_read/SSL_free attach for the rest of this run.
+LIBSSL_PATH="$(ldconfig -p | grep 'libssl\.so\.3' | awk '{print $NF}' | head -1)"
+if [[ -n "${LIBSSL_PATH}" && ! -x "${LIBSSL_PATH}" ]]; then
+    echo "==> chmod +x ${LIBSSL_PATH} (Debian/Ubuntu ships libssl3 without the execute bit)"
+    sudo chmod +x "${LIBSSL_PATH}"
+fi
+
 # ── Start tinytap ─────────────────────────────────────────────────────────────
 echo "==> sudo /tmp/tinytap-e2e --output stdout"
 : >"${TT_OUT}"
@@ -270,6 +357,19 @@ curl -fsS --retry 3 --retry-delay 0 "http://localhost:${FILE_PORT}/file" >/dev/n
 # ── Scenario 4: writev (multi-iovec) ──────────────────────────────────────────
 echo "==> firing writev request"
 curl -fsS --retry 3 --retry-delay 0 "http://localhost:${WRITEV_PORT}/" >/dev/null
+
+# ── Scenario 5: TLS ────────────────────────────────────────────────────────────
+# The warm-up request triggers sslWatcher's pid discovery (it fires off the
+# first observed event for this pid, same as every other scenario's server);
+# the uprobe isn't attached yet when THIS request's SSL_write/SSL_read
+# happen, so only the second request is expected to show up in TT_OUT.
+echo "==> firing TLS warm-up request (triggers SSL uprobe discovery+attach)"
+curl -fsSk --retry 3 --retry-delay 0 "https://localhost:${TLS_PORT}/" >/dev/null
+
+wait_for_tls_attach "${TLS_PY_PID}" || { echo "FAIL: TLS uprobes did not attach for pid ${TLS_PY_PID}"; exit 1; }
+
+echo "==> firing TLS request"
+curl -fsSk --retry 3 --retry-delay 0 "https://localhost:${TLS_PORT}/" >/dev/null
 
 # ── Scenario 2: abandoned request via kill -9 ────────────────────────────────
 echo "==> firing request to slow server"
@@ -296,6 +396,7 @@ assert_contains "POST / captured"         "\[${PY_PID}\].*POST[[:space:]]+/"
 assert_contains "abandoned: peer closed"  "ABANDONED.*peer closed"
 assert_contains "sendfile: GET /file paired with 200" "\[${FILE_PID}\].*GET[[:space:]]+/file[[:space:]].*200"
 assert_contains "writev: GET / paired with 200" "\[${WRITEV_PID}\].*GET[[:space:]]+/[[:space:]].*200"
+assert_contains "TLS: GET / paired with 200 (decrypted via SSL uprobe)" "\[${TLS_PY_PID}\].*GET[[:space:]]+/[[:space:]].*200"
 
 # The sendfile payload-capture kprobe (#68) attaches on arm64 and amd64 (#112);
 # on any other GOARCH, internal/loader/load.go logs a "skipping" line instead of
