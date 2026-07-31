@@ -1,0 +1,20 @@
+# Backing compose file for scripts/test-e2e-nginx.sh (#178). NGINX_IMAGE
+# lets the script run the same scenario against both a Debian-based image
+# (nginx:latest) and an Alpine-based one (nginx:alpine) — the two nginx
+# variants #144's open questions asked about.
+services:
+  backend:
+    image: python:3-alpine
+    command: python3 -m http.server 80
+    expose:
+      - "80"
+
+  nginx:
+    image: ${NGINX_IMAGE:-nginx:latest}
+    depends_on:
+      - backend
+    ports:
+      - "18443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro

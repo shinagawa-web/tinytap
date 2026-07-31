@@ -2,6 +2,8 @@
 
 > Part of v0.4.0 (#37). Manual exploration — each row is filled in by running tinytap against a real server and observing the captured traffic.
 >
+> This table covers plaintext HTTP only. For TLS-terminating servers (nginx, etc.) captured via the `SSL_write`/`SSL_read` libssl uprobe, see [`tls-compat.md`](tls-compat.md) instead — it's a different capture mechanism with a different visibility model, not just a new row here.
+>
 > Verification criteria reset (this revision) now that #36 (256 B → 4096 B payload cap), #111 (writev/readv multi-iovec sampling), #116 (chunked CRLF-drop no longer abandons), and #117 (binary body TUI placeholder) have all landed. Every server row below — including ones previously filled in — starts over from scratch against the current criteria; nothing from an earlier revision of this doc should be assumed to still hold.
 
 ## How to read this table
