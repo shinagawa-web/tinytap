@@ -67,7 +67,7 @@ exits before any eBPF load), and `config init` (above).
 ## Current limitations
 
 - HTTP/1.1 only — no HTTP/2, gRPC, or other protocols yet
-- TLS capture covers processes that have `libssl.so` loaded and call `SSL_set_fd` directly (nginx, Python's `ssl` module, etc.); clients that hand OpenSSL a custom `BIO` instead (e.g. curl) have their plaintext captured but not yet paired into an exchange (#179) — see [`docs/tls-compat.md`](docs/tls-compat.md)
+- TLS capture needs a dynamically linked `libssl.so`, so statically linked TLS stacks are invisible — that includes Go's `crypto/tls` and therefore Go-based proxies like Traefik and Caddy. Clients that hand OpenSSL a custom `BIO` instead of calling `SSL_set_fd` (e.g. curl) are captured and paired, but keyed on the `SSL*` pointer rather than a socket fd, so their exchanges are marked `[ssl-keyed, fd unverified]` — see [`docs/tls-compat.md`](docs/tls-compat.md)
 - Single host — no cross-container attribution or cross-service correlation yet
 - Response bodies are sampled up to a fixed per-syscall cap, not captured in full (see [`docs/server-compat.md`](docs/server-compat.md) for exactly how each server's syscall pattern affects this)
 - `sendfile`-based transfers only carry payload bytes on amd64/arm64 — other architectures see the exchange but not the sampled body
