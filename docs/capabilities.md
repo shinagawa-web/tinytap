@@ -4,21 +4,35 @@
 
 ## The minimal set
 
-Plaintext HTTP capture (syscall tracepoints, the `sendfile` payload kprobe,
-ringbuf) needs three capabilities:
+Plaintext HTTP capture (syscall tracepoints, ringbuf) needs three
+capabilities on every architecture:
 
 ```bash
 sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip ./tinytap
 ./tinytap   # no sudo
 ```
 
-TLS capture (the `SSL_set_fd`/`SSL_write`/`SSL_read`/`SSL_free` libssl
-uprobes, #146/#147/#173) needs one more, `cap_sys_admin` — see
-[Why TLS capture needs `cap_sys_admin`](#why-tls-capture-needs-cap_sys_admin)
-below for why:
+That's enough for the core capture path everywhere, and for the optional
+`sendfile` payload-capture kprobe (`internal/loader/load_kprobe.go`) on
+arm64 — but **not** for that same kprobe on x86_64, which additionally
+needs `cap_syslog` (see the table below). Its failure degrades gracefully
+either way (`tryAttachKprobe` logs and continues, sendfile events just
+carry no payload bytes), so this only matters if you want full-fidelity
+`sendfile` capture on x86_64:
 
 ```bash
-sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip ./tinytap
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_syslog=eip ./tinytap
+./tinytap   # no sudo
+```
+
+TLS capture (the `SSL_set_fd`/`SSL_write`/`SSL_read`/`SSL_free` libssl
+uprobes, #146/#147/#173) needs `cap_sys_admin` on top of the base three —
+see [Why TLS capture needs `cap_sys_admin`](#why-tls-capture-needs-cap_sys_admin)
+below for why. Combined with the x86_64 kprobe requirement above, the set
+`scripts/test-e2e.sh` actually runs under is:
+
+```bash
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog=eip ./tinytap
 ./tinytap   # no sudo
 ```
 
@@ -39,6 +53,7 @@ script for the fix (built into the repo root instead). Check with `findmnt -T
 | `cap_perfmon` | Attaching the tracepoint/kprobe/fentry programs (`perf_event_open`-backed attach paths) | Removing it: `load program: operation not permitted (MEMLOCK may be too low...)` at `BPF_PROG_LOAD` |
 | `cap_dac_read_search` | Opening `/sys/kernel/tracing/events/syscalls/*/id` to resolve tracepoint IDs — these files aren't world-readable | Removing it: `permission denied` opening `.../sys_enter_accept4/id` |
 | `cap_sys_admin` | TLS only: dynamically registering a new uprobe (`SSL_set_fd` et al.) at an arbitrary file+offset | Removing it: `attach uprobe SSL_set_fd: creating perf_uprobe PMU: ... opening perf event: permission denied` — see below |
+| `cap_syslog` | x86_64 only: reading real (non-zeroed) kernel symbol addresses from `/proc/kallsyms` for the `sendfile` payload-capture kprobe | CI (amd64, GitHub Actions runner): `populating kallsyms caches: ... symbol vmemmap_base: restricted by kernel.kptr_restrict and/or net.core.bpf_jit_harden sysctls (sendfile payload capture disabled)` without it; adding it made the CI `e2e` job pass |
 
 `cap_sys_resource` is never needed (see below for why). `cap_net_admin`
 (mentioned as a maybe in #157) isn't needed either — tinytap only attaches
@@ -54,6 +69,7 @@ A build of `cmd/tinytap` (arm64, kernel 6.17) had its file capabilities set via 
 3. Dropping `cap_sys_resource` (in addition to no `cap_sys_admin`) — still attached cleanly.
 4. Dropping `cap_perfmon` or `cap_bpf` individually (from the 3-capability set) — each broke a distinct step (see table above), confirming both are load-bearing.
 5. Running the full `scripts/test-e2e.sh` suite (which also exercises the TLS scenario, unlike the manual check above) under the 3-capability set: every plaintext scenario passed, but the TLS scenario failed to attach its uprobe — see next section. Adding `cap_sys_admin` back made the whole suite pass, including TLS.
+6. CI (GitHub Actions, amd64) surfaced a second, arch-specific gap: with the same 4-capability set that passed on arm64, the `e2e` job's sendfile-payload-kprobe assertion failed — `populating kallsyms caches: ... restricted by kernel.kptr_restrict` — because x86_64's kprobe path resolves live kernel symbol addresses from `/proc/kallsyms` (see `load_kprobe.go`'s doc comment: arm64 uses compile-time constants instead) and the runner's `kptr_restrict` hides real addresses without `CAP_SYSLOG`. Adding `cap_syslog` fixed it; CI is green with all five capabilities.
 
 ### Why `cap_sys_resource` turned out not to matter
 
@@ -127,5 +143,5 @@ revisited then.
 ## Known gaps
 
 - **Kernel version**: this was verified on Linux 6.17. `CAP_PERFMON` as a distinct capability (split from `CAP_SYS_ADMIN`) only exists from 5.8 onward — the same floor tinytap already requires for `BPF_MAP_TYPE_RINGBUF` (see README's Requirements). Kernels between 5.8 and whatever version relaxed `BPF_PROG_TYPE_TRACING` attach checks may still need `cap_sys_admin` for the fentry step specifically; if so, that step degrades gracefully (`tryAttachKprobe` logs and continues without `sendfile` payload bytes — see its doc comment in `load_kprobe.go`), it does not block startup.
-- **x86_64**: only tested on arm64. The kprobe payload-capture path uses different mechanisms per arch (arm64 constants vs. x86_64 live KASLR ksyms, see `load_kprobe.go`'s doc comment) — worth re-running this same drop-one-at-a-time test on amd64.
+- **x86_64**: confirmed via CI (GitHub Actions runner, amd64, kernel version not controlled by us) — the base three capabilities plus `cap_sys_admin` (TLS) work the same as on arm64, but the `sendfile` payload-capture kprobe additionally needs `cap_syslog` there (see the table above and #194). Not yet re-run on a real amd64 dev box outside CI, so the exact `kptr_restrict` level that makes `cap_syslog` sufficient (vs. a stricter setting where nothing short of root would work) isn't independently confirmed.
 - **Whether `cap_sys_admin` can be narrowed further for TLS** (e.g. some combination that doesn't include full `cap_sys_admin`) wasn't investigated beyond confirming it's sufficient — `cap_sys_admin` was tested as a single addition, not bisected further, since it's already the kernel's documented gate for dynamic uprobe/kprobe registration.
