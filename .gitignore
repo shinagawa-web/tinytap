@@ -3,6 +3,9 @@
 /tinytap-e2e
 /tinytap-ngx-e2e
 
+# GoReleaser local build output (`goreleaser release --snapshot --clean`)
+/dist/
+
 # Claude Code local settings (track shared settings.json, ignore the rest)
 .claude/*
 !.claude/settings.json
