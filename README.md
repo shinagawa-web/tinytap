@@ -184,7 +184,9 @@ source ~/.bashrc
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [`LICENSE`](LICENSE). Exception: [`bpf/vmlinux.h`](bpf/vmlinux.h) is
+generated from the Linux kernel's BTF info and is distributed under the
+kernel's GPL-2.0 license instead.
 
 ## References
 
