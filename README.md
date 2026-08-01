@@ -36,7 +36,7 @@ build's version, commit, and date, and exits without needing root.
 ## Current limitations
 
 - HTTP/1.1 only — no HTTP/2, gRPC, or other protocols yet
-- TLS capture covers processes that link `libssl` and call `SSL_set_fd` directly (nginx, Python's `ssl` module, etc.); clients that hand OpenSSL a custom `BIO` instead (e.g. curl) have their plaintext captured but not yet paired into an exchange (#179) — see [`docs/tls-compat.md`](docs/tls-compat.md)
+- TLS capture covers processes that have `libssl.so` loaded and call `SSL_set_fd` directly (nginx, Python's `ssl` module, etc.); clients that hand OpenSSL a custom `BIO` instead (e.g. curl) have their plaintext captured but not yet paired into an exchange (#179) — see [`docs/tls-compat.md`](docs/tls-compat.md)
 - Single host — no cross-container attribution or cross-service correlation yet
 - Response bodies are sampled up to a fixed per-syscall cap, not captured in full (see [`docs/server-compat.md`](docs/server-compat.md) for exactly how each server's syscall pattern affects this)
 - `sendfile`-based transfers only carry payload bytes on amd64/arm64 — other architectures see the exchange but not the sampled body
@@ -142,7 +142,7 @@ and known gaps (older kernels, x86_64).
 
 ## Status & Roadmap
 
-Released so far: `v0.1.0` (HTTP request/response visible), `v0.2.0` (Bubble Tea TUI), `v0.3.0` (filtering + test foundation), `v0.4.0` (server capture & compatibility — see [`docs/server-compat.md`](docs/server-compat.md)), `v0.5.0` (HTTPS support via libssl uprobes — see [`docs/tls-compat.md`](docs/tls-compat.md)), `v0.6.0` (production readiness). `v0.7.0` (real-hardware bring-up) is in progress — see [#198](https://github.com/shinagawa-web/tinytap/issues/198).
+Released so far: `v0.1.0` (HTTP request/response visible), `v0.2.0` (Bubble Tea TUI), `v0.3.0` (filtering + test foundation), `v0.4.0` (server capture & compatibility — see [`docs/server-compat.md`](docs/server-compat.md)), `v0.5.0` (HTTPS support via libssl uprobes — see [`docs/tls-compat.md`](docs/tls-compat.md)), `v0.6.0` (production readiness). `v0.7.0` (real-hardware bring-up) is in progress — see [#198](https://github.com/shinagawa-web/tinytap/issues/198). (`v0.4.0` has no corresponding git tag — `git tag` jumps from `v0.3.0` to `v0.5.0` — left alone rather than backfilled; see #206.)
 
 Full roadmap (near-term steps and longer-term vision) lives in [#19](https://github.com/shinagawa-web/tinytap/issues/19), kept out of the README so this stays focused on what tinytap does today.
 
