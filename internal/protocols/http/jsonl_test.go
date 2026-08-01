@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestEncodeJSONLRoundTrips(t *testing.T) {
@@ -40,6 +41,31 @@ func TestEncodeJSONLNoTrailingNewline(t *testing.T) {
 	}
 	if bytes.ContainsRune(b, '\n') {
 		t.Errorf("EncodeJSONL must not embed a newline — callers join lines to build JSONL: %q", b)
+	}
+}
+
+// TestRoundTripJSONLPreservesAllFields is what makes routing render.go's
+// formatters through roundTripJSONL (PairedEvent -> JSONL -> text, #192)
+// safe rather than a silent, lossy detour: every field, populated with a
+// distinct non-zero value, must survive the encode/decode trip unchanged.
+func TestRoundTripJSONLPreservesAllFields(t *testing.T) {
+	pe := PairedEvent{
+		ReqTsNs: 111, Latency: 222 * time.Millisecond, Pid: 333, Fd: 444,
+		Comm: "curl", Method: "GET", Path: "/x", ReqVersion: "HTTP/1.1",
+		Status: 200, Reason: "OK", ResVersion: "HTTP/1.0",
+		ResBytes: 555, ReqBytes: 666,
+		ReqHeaders: []Header{{Name: "A", Value: "1"}},
+		ResHeaders: []Header{{Name: "B", Value: "2"}},
+		Abandoned:  true, AbandonReason: AbandonReasonTimeout,
+		ReqBody: []byte("req"), ReqBodyTruncated: true,
+		ResBody: []byte("res"), ResBodyTruncated: true,
+		SSL: 777, SSLFallback: true,
+	}
+
+	got := roundTripJSONL(pe)
+
+	if !reflect.DeepEqual(got, pe) {
+		t.Errorf("roundTripJSONL lost or changed a field:\n got: %+v\nwant: %+v", got, pe)
 	}
 }
 

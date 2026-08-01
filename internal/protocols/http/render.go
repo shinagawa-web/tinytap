@@ -71,13 +71,17 @@ const sslFallbackMarker = "  [ssl-keyed, fd unverified]"
 // keep typical short paths aligned; long paths overflow rather than truncate.
 //
 // This is a deliberately curated subset of PairedEvent, not the full
-// record — EncodeJSONL (jsonl.go) is that. jsonl_test.go's
-// TestPairedEventFieldsAreClassified is what keeps this curation honest:
-// it fails if a new PairedEvent field isn't consciously placed in or kept
-// out of this line (#192).
+// record — EncodeJSONL (jsonl.go) is that. p is round-tripped through the
+// JSONL encoding before anything below reads it (roundTripJSONL, jsonl.go),
+// so this line is genuinely derived from the JSONL representation rather
+// than an independent reader of the same struct (#192); jsonl_test.go's
+// TestPairedEventFieldsAreClassified is what keeps the curation itself
+// honest, failing if a new PairedEvent field isn't consciously placed in
+// or kept out of this line.
 //
 //	2026-08-01T12:47:57.005+09:00  python3[27122]  GET   /                        200    1304B     0.3ms
 func RenderPaired(p PairedEvent, when time.Time) string {
+	p = roundTripJSONL(p)
 	latencyMs := float64(p.Latency) / float64(time.Millisecond)
 	who := fmt.Sprintf("%s[%d]", p.Comm, p.Pid)
 	line := fmt.Sprintf("%s  %-16s %-5s %-24s %3d %8s %9s",
@@ -98,6 +102,7 @@ func RenderPaired(p PairedEvent, when time.Time) string {
 //
 //	2026-08-01T12:47:57.005+09:00  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
 func RenderAbandoned(p PairedEvent, when time.Time) string {
+	p = roundTripJSONL(p)
 	latencyMs := float64(p.Latency) / float64(time.Millisecond)
 	who := fmt.Sprintf("%s[%d]", p.Comm, p.Pid)
 	line := fmt.Sprintf("%s  %-16s %-5s %-24s %-12s %9s  (%s)",
@@ -117,7 +122,11 @@ func RenderAbandoned(p PairedEvent, when time.Time) string {
 // request start line and headers (prefixed `>`), then the response start line
 // and headers (prefixed `<`), in on-wire order. Indented so they read as
 // belonging to the summary line above. Body contents follow once #35 lands.
+// Like RenderPaired/RenderAbandoned, p is round-tripped through the JSONL
+// encoding first (roundTripJSONL, jsonl.go) so this is genuinely derived
+// from the JSONL representation, not an independent reader (#192).
 func RenderPairedDetail(p PairedEvent) []string {
+	p = roundTripJSONL(p)
 	lines := make([]string, 0, len(p.ReqHeaders)+len(p.ResHeaders)+2)
 	lines = append(lines, fmt.Sprintf("    > %s %s %s", p.Method, p.Path, p.ReqVersion))
 	for _, h := range p.ReqHeaders {
