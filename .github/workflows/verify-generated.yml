@@ -1,0 +1,53 @@
+name: verify-generated
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bpf/**"
+      - "internal/loader/bpf/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "bpf/**"
+      - "internal/loader/bpf/**"
+  workflow_dispatch:
+
+jobs:
+  verify-generated:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Pinned so bpf2go's output doesn't drift with whatever clang the
+      # runner image happens to ship — see #207.
+      - name: Install clang 14
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-14 llvm-14
+
+      - name: Regenerate bpf2go bindings
+        env:
+          BPF2GO_CC: clang-14
+        run: make generate
+
+      - name: Fail if committed artifacts are out of sync with bpf/*.c
+        run: |
+          if ! git diff --exit-code -- bpf internal/loader/bpf; then
+            echo "::error::Committed bpf2go artifacts (internal/loader/bpf/*_bpf*.go, *.o) don't match bpf/*.c. Run 'make generate' with clang-14 and commit the result."
+            exit 1
+          fi
