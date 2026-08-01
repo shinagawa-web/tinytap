@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -67,6 +68,38 @@ func TestRoundTripJSONLPreservesAllFields(t *testing.T) {
 	if !reflect.DeepEqual(got, pe) {
 		t.Errorf("roundTripJSONL lost or changed a field:\n got: %+v\nwant: %+v", got, pe)
 	}
+}
+
+// TestRoundTripJSONLPanicsOnEncodeError exercises roundTripJSONL's encode
+// failure branch, otherwise unreachable since PairedEvent's fields are all
+// JSON-safe — it documents (and enforces via coverage) that a future field
+// breaking that invariant fails loudly rather than silently.
+func TestRoundTripJSONLPanicsOnEncodeError(t *testing.T) {
+	orig := jsonMarshal
+	defer func() { jsonMarshal = orig }()
+	jsonMarshal = func(any) ([]byte, error) { return nil, errors.New("boom") }
+
+	defer func() {
+		if recover() == nil {
+			t.Errorf("expected roundTripJSONL to panic on an encode error")
+		}
+	}()
+	roundTripJSONL(PairedEvent{})
+}
+
+// TestRoundTripJSONLPanicsOnDecodeError is the decode-side counterpart to
+// TestRoundTripJSONLPanicsOnEncodeError.
+func TestRoundTripJSONLPanicsOnDecodeError(t *testing.T) {
+	orig := jsonUnmarshal
+	defer func() { jsonUnmarshal = orig }()
+	jsonUnmarshal = func([]byte, any) error { return errors.New("boom") }
+
+	defer func() {
+		if recover() == nil {
+			t.Errorf("expected roundTripJSONL to panic on a decode error")
+		}
+	}()
+	roundTripJSONL(PairedEvent{})
 }
 
 // summaryFields are read (directly or via the caller-supplied `when` derived
