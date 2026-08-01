@@ -1,9 +1,12 @@
 package http
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestRenderPairedEventMatchesSpecFormat(t *testing.T) {
@@ -146,4 +149,22 @@ func TestNewTimeAnchorCorrelatesRealClocks(t *testing.T) {
 	if got := a.WallTime(a.bpfStart); !got.Equal(a.wallStart) {
 		t.Errorf("WallTime(bpfStart) = %v, want %v", got, a.wallStart)
 	}
+}
+
+// A clock_gettime failure must not be silently swallowed into a zero-valued
+// anchor that would corrupt every later WallTime conversion with no signal
+// — NewTimeAnchor must fail loud instead.
+func TestNewTimeAnchorPanicsOnClockGettimeError(t *testing.T) {
+	orig := clockGettime
+	defer func() { clockGettime = orig }()
+	clockGettime = func(int32, *unix.Timespec) error {
+		return errors.New("simulated clock_gettime failure")
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Error("NewTimeAnchor should panic when clock_gettime fails")
+		}
+	}()
+	NewTimeAnchor()
 }

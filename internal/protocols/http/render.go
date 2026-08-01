@@ -26,16 +26,27 @@ type TimeAnchor struct {
 	bpfStart  uint64
 }
 
+// clockGettime is a var so tests can force the failure path below; every
+// production caller uses the real syscall.
+var clockGettime = unix.ClockGettime
+
 // NewTimeAnchor samples wall-clock time and CLOCK_MONOTONIC back-to-back.
 // CLOCK_MONOTONIC is the same clock domain the kernel's bpf_ktime_get_ns()
 // reads (bpf-helpers(7): "time elapsed since system boot... does not include
 // time the system was suspended") — so the two readings correlate directly
-// with the ktime values events arrive with. clock_gettime cannot fail for
-// this fixed, valid clock id on Linux, so its error return is discarded.
+// with the ktime values events arrive with.
+//
+// clock_gettime is not expected to fail for this fixed, valid clock id on
+// Linux, but silently ignoring an error here would leave ts at its zero
+// value and corrupt every WallTime conversion for the rest of the process's
+// life with no signal — exactly the kind of silent bad data this anchor
+// redesign exists to eliminate. Fail loud instead.
 func NewTimeAnchor() TimeAnchor {
 	var ts unix.Timespec
 	wall := time.Now()
-	_ = unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts)
+	if err := clockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		panic(fmt.Sprintf("clock_gettime(CLOCK_MONOTONIC): %v", err))
+	}
 	return TimeAnchor{wallStart: wall, bpfStart: uint64(ts.Nano())}
 }
 
