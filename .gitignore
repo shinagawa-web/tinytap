@@ -1,5 +1,7 @@
 # Build artifacts
 /tinytap
+/tinytap-e2e
+/tinytap-ngx-e2e
 
 # Claude Code local settings (track shared settings.json, ignore the rest)
 .claude/*

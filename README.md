@@ -57,6 +57,9 @@ cd ~/tinytap && go build ./...
 sudo ./tinytap
 ```
 
+Root isn't actually required — see [Running without full root](#running-without-full-root)
+for the minimal `setcap` invocation.
+
 Or via `make`:
 
 ```bash
@@ -114,6 +117,27 @@ For the user, this means **tinytap doesn't need to be installed inside container
 
 - Linux kernel 5.8+ (tinytap's event transport is `BPF_MAP_TYPE_RINGBUF`, added in 5.8 — see [Toolchain](#toolchain))
 - macOS/Windows users run tinytap inside a Linux VM (Lima, WSL2, etc.) — there is no native macOS/Windows build and none is planned, since eBPF is Linux-only
+
+### Running without full root
+
+`sudo ./tinytap` is the simplest path, but tinytap doesn't need full root.
+Plaintext HTTP capture needs three Linux capabilities:
+
+```bash
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip ./tinytap
+./tinytap
+```
+
+TLS capture (the libssl uprobes) needs one more, `cap_sys_admin`:
+
+```bash
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip ./tinytap
+./tinytap
+```
+
+See [`docs/capabilities.md`](docs/capabilities.md) for what each capability
+is for, why TLS needs the broader `cap_sys_admin`, how this was verified,
+and known gaps (older kernels, x86_64).
 
 ## Status & Roadmap
 
