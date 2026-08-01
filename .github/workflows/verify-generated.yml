@@ -59,6 +59,14 @@ jobs:
           BPF2GO_CC: clang-17
         run: make generate
 
+      - name: DEBUG upload regenerated kprobe objects
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kprobe-objects
+          path: |
+            internal/loader/bpf/tinytapkprobe_arm64_bpfel.o
+            internal/loader/bpf/tinytapkprobe_x86_bpfel.o
+
       - name: Fail if committed artifacts are out of sync with bpf/*.c
         run: |
           if ! git diff --exit-code -- bpf internal/loader/bpf; then
