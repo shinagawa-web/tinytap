@@ -47,6 +47,32 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# SBOM per release artifact (syft, run by GoReleaser — see the release
+# workflow's "Install syft" step for how the binary gets onto PATH).
+sboms:
+  - id: archive
+    artifacts: archive
+
+# Keyless signing via GitHub Actions OIDC (cosign v3's ambient credential
+# detection picks up the Actions OIDC token — no key material needed). The
+# bundle format combines the certificate and signature into one
+# .sigstore.json file (cosign v3 dropped the old --output-certificate/
+# --output-signature flags in favor of --bundle). Only checksums.txt is
+# signed directly; since every archive and the SBOMs are already listed by
+# digest inside checksums.txt, signing that one file transitively covers
+# all of them without a signature-per-artifact fan-out.
+signs:
+  - id: checksums
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes # skip the interactive confirmation prompt — required for CI
+    artifacts: checksum
+    output: true
+
 snapshot:
   version_template: "{{ incpatch .Version }}-dev"
 

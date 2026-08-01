@@ -102,6 +102,40 @@ make run-raw   # build + run with output = "stdout" against whatever's already r
 Run `make install` once per checkout (or worktree) to install the pre-push
 hook that runs lint, tests, and coverage checks before every push.
 
+### Verifying a release download
+
+Every [tagged release](https://github.com/shinagawa-web/tinytap/releases)
+publishes, alongside the `linux_amd64`/`linux_arm64` archives:
+
+- `checksums.txt` — SHA-256 of every archive and SBOM in the release
+- `checksums.txt.sigstore.json` — a keyless [cosign](https://docs.sigstore.dev/cosign/overview/)
+  signature over `checksums.txt`, minted from the release workflow's own
+  GitHub Actions OIDC identity (no private key is stored anywhere)
+- `<archive>.sbom.json` — an SBOM for each archive ([syft](https://github.com/anchore/syft),
+  SPDX format)
+
+Verify the archive you downloaded matches the checksum:
+
+```bash
+sha256sum --check --ignore-missing checksums.txt
+```
+
+Verify `checksums.txt` itself was produced by tinytap's release workflow
+(requires [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) v3+):
+
+```bash
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp "^https://github.com/shinagawa-web/tinytap/\.github/workflows/release\.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+```
+
+Since every archive and SBOM is listed by digest inside `checksums.txt`,
+a passing `cosign verify-blob` on `checksums.txt` plus a passing
+`sha256sum --check` on the archive establishes the whole chain: this exact
+archive came from this exact release workflow run.
+
 ## Where tinytap Runs
 
 There are two distinct environments to keep in mind, and they answer two different questions.
