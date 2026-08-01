@@ -46,6 +46,7 @@ TT_BIN="${PWD}/tinytap-e2e"
 # instead of hand-rolling an equivalent harness. Scenarios that need a
 # dropped capability are expected to fail — that's the point of the exercise.
 TT_CAPS="${TT_CAPS:-cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog}"
+TT_CFG=/tmp/tinytap-e2e-config.toml
 TT_OUT=/tmp/tinytap-e2e.log
 PY_LOG=/tmp/tinytap-e2e-py.log
 SLOW_LOG=/tmp/tinytap-e2e-slow.log
@@ -395,9 +396,10 @@ if [[ -n "${LIBSSL_PATH}" && ! -x "${LIBSSL_PATH}" ]]; then
 fi
 
 # ── Start tinytap (unprivileged — see the setcap call above) ─────────────────
-echo "==> ${TT_BIN} --output stdout"
+printf 'output = "stdout"\n' >"${TT_CFG}"
+echo "==> ${TT_BIN} --config ${TT_CFG}"
 : >"${TT_OUT}"
-"${TT_BIN}" --output stdout >"${TT_OUT}" 2>&1 &
+"${TT_BIN}" --config "${TT_CFG}" >"${TT_OUT}" 2>&1 &
 wait_for_tinytap || { echo "FAIL: tinytap did not become ready"; exit 1; }
 
 # ── Scenario 1: normal requests ───────────────────────────────────────────────

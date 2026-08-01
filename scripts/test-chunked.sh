@@ -23,6 +23,7 @@ NGINX_CONF=/tmp/tinytap-chunked-nginx.conf
 NGINX_PID_FILE=/tmp/tinytap-chunked-nginx.pid
 SRV_PY=/tmp/tinytap-chunked-srv.py
 TT_BIN=/tmp/tinytap-chunked
+TT_CFG=/tmp/tinytap-chunked-config.toml
 
 OUTPUT_MODE="tui"
 if [[ "${1:-}" == "--stdout" ]]; then
@@ -121,7 +122,8 @@ wait_for_port 127.0.0.1 "${PROXY_PORT}"
 ) &
 
 # ── run tinytap ──────────────────────────────────────────────────────────────
-echo "==> sudo ${TT_BIN} --output ${OUTPUT_MODE}"
+printf 'output = "%s"\n' "${OUTPUT_MODE}" > "${TT_CFG}"
+echo "==> sudo ${TT_BIN} --config ${TT_CFG}   (output = ${OUTPUT_MODE})"
 echo "    (curl fires automatically in ~2 s; Ctrl-C to stop)"
 echo ""
-sudo "${TT_BIN}" --output "${OUTPUT_MODE}"
+sudo "${TT_BIN}" --config "${TT_CFG}"

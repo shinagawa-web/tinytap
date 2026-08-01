@@ -6,9 +6,10 @@
 
 ![tinytap's TUI capturing live HTTP traffic: a scrolling table of requests with a detail panel](docs/tui-demo.gif)
 
-The `--output tui` mode above shows the live request table (`j`/`k` to scroll),
-the detail panel (`Enter` to open, `b` to toggle the hex body view). Regenerate
-it with `vhs scripts/tinytap.tape` from the Mac host — see
+The TUI mode shown above (`output = "tui"` in the config file — see
+[Configuration](#configuration)) shows the live request table (`j`/`k` to
+scroll), the detail panel (`Enter` to open, `b` to toggle the hex body view).
+Regenerate it with `vhs scripts/tinytap.tape` from the Mac host — see
 [`docs/recording-tui-gifs.md`](docs/recording-tui-gifs.md) for the full
 hand-off procedure.
 
@@ -25,13 +26,34 @@ line-oriented stream:
 12:47:57.005  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
 ```
 
-`--output auto` (the default) picks the TUI when stdout/stdin are an
+`output = "auto"` (the default) picks the TUI when stdout/stdin are an
 interactive terminal of at least 120x24; otherwise it prints guidance and
 exits rather than silently streaming — the line stream is opt-in via
-`--output stdout`. `--output tui` forces the TUI (and exits the same way if
-the terminal can't host it); `-v` / `--verbose` hangs the full
+`output = "stdout"`. `output = "tui"` forces the TUI (and exits the same way
+if the terminal can't host it); `verbose = true` hangs the full
 request/response headers under each stdout line. `--version` prints the
 build's version, commit, and date, and exits without needing root.
+
+## Configuration
+
+Session settings (`output`, `verbose`, and process filters) live in a TOML
+config file, not CLI flags. Search order when `--config <path>` isn't given:
+`./tinytap.toml`, then `$XDG_CONFIG_HOME/tinytap/config.toml` (falling back
+to `~/.config/tinytap/config.toml`) — finding neither is not an error, the
+defaults below apply.
+
+```toml
+output = "auto"   # auto | stdout | tui
+verbose = false
+
+[filter]
+pid  = []         # []uint32 — schema only, not yet enforced by the BPF program (#211)
+comm = []         # []string — schema only, not yet enforced by the BPF program (#211)
+```
+
+The only CLI flags are one-shot actions, not session settings: `--config
+<path>` (point at an alternate config file) and `--version` (build metadata,
+exits before any eBPF load).
 
 ## Current limitations
 
@@ -65,7 +87,7 @@ Or via `make`:
 
 ```bash
 make run       # orchestrated smoke test: starts a demo HTTP server, fires a request, shows the capture
-make run-raw   # build + run with --output stdout against whatever's already running
+make run-raw   # build + run with output = "stdout" against whatever's already running
 ```
 
 Run `make install` once per checkout (or worktree) to install the pre-push

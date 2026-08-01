@@ -23,7 +23,8 @@ run: build
 	@bash scripts/demo.sh
 
 run-raw: build
-	sudo ./$(BIN) --output stdout
+	@printf 'output = "stdout"\n' > /tmp/tinytap-run-raw.toml
+	sudo ./$(BIN) --config /tmp/tinytap-run-raw.toml
 
 lint:
 	$(GOLINT) run

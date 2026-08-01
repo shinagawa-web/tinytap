@@ -1,4 +1,4 @@
-# vhs tape for tinytap's --output tui, driven by scripts/demo-tui.sh.
+# vhs tape for tinytap's TUI mode, driven by scripts/demo-tui.sh.
 #
 # eBPF only runs on Linux, so this can't record on the Mac host directly —
 # it shells into the Lima VM where tinytap is actually built and run, and

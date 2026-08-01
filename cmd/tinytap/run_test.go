@@ -10,6 +10,7 @@ import (
 
 	"github.com/cilium/ebpf/ringbuf"
 
+	"github.com/shinagawa-web/tinytap/internal/config"
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/output"
 	httpproto "github.com/shinagawa-web/tinytap/internal/protocols/http"
@@ -117,50 +118,21 @@ func TestParseFlags_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.outputMode != "auto" {
-		t.Errorf("want auto, got %s", cfg.outputMode)
+	if cfg.configPath != "" {
+		t.Errorf("configPath = %q, want empty", cfg.configPath)
 	}
-	if cfg.verbose {
-		t.Error("want verbose=false")
-	}
-}
-
-func TestParseFlags_ValidModes(t *testing.T) {
-	for _, mode := range []string{"auto", "stdout", "tui"} {
-		cfg, err := parseFlags([]string{"--output", mode})
-		if err != nil {
-			t.Errorf("mode %s: %v", mode, err)
-		}
-		if cfg.outputMode != mode {
-			t.Errorf("want %s, got %s", mode, cfg.outputMode)
-		}
+	if cfg.showVersion {
+		t.Error("want showVersion=false")
 	}
 }
 
-func TestParseFlags_InvalidMode(t *testing.T) {
-	_, err := parseFlags([]string{"--output", "invalid"})
-	if err == nil {
-		t.Error("want error for invalid mode")
-	}
-}
-
-func TestParseFlags_VerboseShort(t *testing.T) {
-	cfg, err := parseFlags([]string{"-v"})
+func TestParseFlags_ConfigPath(t *testing.T) {
+	cfg, err := parseFlags([]string{"--config", "/tmp/custom.toml"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.verbose {
-		t.Error("want verbose=true")
-	}
-}
-
-func TestParseFlags_VerboseLong(t *testing.T) {
-	cfg, err := parseFlags([]string{"--verbose"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.verbose {
-		t.Error("want verbose=true")
+	if cfg.configPath != "/tmp/custom.toml" {
+		t.Errorf("configPath = %q, want /tmp/custom.toml", cfg.configPath)
 	}
 }
 
@@ -175,16 +147,6 @@ func TestParseFlags_Version(t *testing.T) {
 	cfg, err := parseFlags([]string{"--version"})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !cfg.showVersion {
-		t.Error("want showVersion=true")
-	}
-}
-
-func TestParseFlags_VersionSkipsOutputValidation(t *testing.T) {
-	cfg, err := parseFlags([]string{"--output", "bad", "--version"})
-	if err != nil {
-		t.Fatalf("want no error, --version should bypass --output validation, got %v", err)
 	}
 	if !cfg.showVersion {
 		t.Error("want showVersion=true")
@@ -222,20 +184,47 @@ func TestRun_Version(t *testing.T) {
 	}
 }
 
-func TestRun_InvalidMode(t *testing.T) {
+func TestRun_ConfigError(t *testing.T) {
 	old := os.Args
-	os.Args = []string{"tinytap", "--output", "bad"}
+	os.Args = []string{"tinytap"}
 	defer func() { os.Args = old }()
 
+	oldLoadConfig := loadConfig
+	loadConfig = func(string) (config.Config, error) { return config.Config{}, errors.New("bad config") }
+	defer func() { loadConfig = oldLoadConfig }()
+
 	if err := run(); err == nil {
-		t.Error("want error for invalid mode")
+		t.Error("want error from loadConfig")
+	}
+}
+
+func TestRun_PassesConfigPathToLoadConfig(t *testing.T) {
+	old := os.Args
+	os.Args = []string{"tinytap", "--config", "/some/path.toml"}
+	defer func() { os.Args = old }()
+
+	var gotPath string
+	oldLoadConfig := loadConfig
+	loadConfig = func(path string) (config.Config, error) {
+		gotPath = path
+		return config.Config{}, errors.New("stop here")
+	}
+	defer func() { loadConfig = oldLoadConfig }()
+
+	_ = run()
+	if gotPath != "/some/path.toml" {
+		t.Errorf("loadConfig called with %q, want /some/path.toml", gotPath)
 	}
 }
 
 func TestRun_OutputExit(t *testing.T) {
 	old := os.Args
-	os.Args = []string{"tinytap"} // auto — no TTY in CI
+	os.Args = []string{"tinytap"}
 	defer func() { os.Args = old }()
+
+	oldLoadConfig := loadConfig
+	loadConfig = func(string) (config.Config, error) { return config.Config{Output: "auto"}, nil }
+	defer func() { loadConfig = oldLoadConfig }()
 
 	oldFn := isTerminalFn
 	isTerminalFn = func(int) bool { return false }
@@ -249,8 +238,12 @@ func TestRun_OutputExit(t *testing.T) {
 
 func TestRun_LoadBPFError(t *testing.T) {
 	old := os.Args
-	os.Args = []string{"tinytap", "--output", "stdout"}
+	os.Args = []string{"tinytap"}
 	defer func() { os.Args = old }()
+
+	oldLoadConfig := loadConfig
+	loadConfig = func(string) (config.Config, error) { return config.Config{Output: "stdout"}, nil }
+	defer func() { loadConfig = oldLoadConfig }()
 
 	oldLoad := loadBPF
 	loadBPF = func(uint32) (bpfSession, error) { return nil, errors.New("no eBPF") }
@@ -263,8 +256,12 @@ func TestRun_LoadBPFError(t *testing.T) {
 
 func TestRun_TeardownError(t *testing.T) {
 	old := os.Args
-	os.Args = []string{"tinytap", "--output", "stdout"}
+	os.Args = []string{"tinytap"}
 	defer func() { os.Args = old }()
+
+	oldLoadConfig := loadConfig
+	loadConfig = func(string) (config.Config, error) { return config.Config{Output: "stdout"}, nil }
+	defer func() { loadConfig = oldLoadConfig }()
 
 	oldLoad := loadBPF
 	loadBPF = func(uint32) (bpfSession, error) {
@@ -283,8 +280,12 @@ func TestRun_TeardownError(t *testing.T) {
 
 func TestRun_RoutesToStdout(t *testing.T) {
 	old := os.Args
-	os.Args = []string{"tinytap", "--output", "stdout"}
+	os.Args = []string{"tinytap"}
 	defer func() { os.Args = old }()
+
+	oldLoadConfig := loadConfig
+	loadConfig = func(string) (config.Config, error) { return config.Config{Output: "stdout"}, nil }
+	defer func() { loadConfig = oldLoadConfig }()
 
 	oldLoad := loadBPF
 	loadBPF = func(uint32) (bpfSession, error) { return &fakeBPF{rd: newFakeRC()}, nil }
@@ -307,6 +308,10 @@ func TestRun_RoutesToTUI(t *testing.T) {
 	old := os.Args
 	os.Args = []string{"tinytap"}
 	defer func() { os.Args = old }()
+
+	oldLoadConfig := loadConfig
+	loadConfig = func(string) (config.Config, error) { return config.Config{Output: "auto"}, nil }
+	defer func() { loadConfig = oldLoadConfig }()
 
 	oldIsTerminal := isTerminalFn
 	isTerminalFn = func(int) bool { return true }

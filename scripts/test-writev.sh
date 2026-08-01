@@ -13,6 +13,7 @@ set -euo pipefail
 
 PORT="${PORT:-19080}"
 TT_OUT=/tmp/tinytap-writev.log
+TT_CFG=/tmp/tinytap-writev-config.toml
 SRV_LOG=/tmp/tinytap-writev-srv.log
 FAILURES=0
 
@@ -92,9 +93,10 @@ for _ in $(seq 1 50); do
 done
 
 # ── Start tinytap ─────────────────────────────────────────────────────────────
-echo "==> sudo /tmp/tinytap-writev --output stdout"
+printf 'output = "stdout"\n' >"${TT_CFG}"
+echo "==> sudo /tmp/tinytap-writev --config ${TT_CFG}"
 : >"${TT_OUT}"
-sudo /tmp/tinytap-writev --output stdout >"${TT_OUT}" 2>&1 &
+sudo /tmp/tinytap-writev --config "${TT_CFG}" >"${TT_OUT}" 2>&1 &
 
 for _ in $(seq 1 50); do
     grep -q "tinytap running" "${TT_OUT}" 2>/dev/null && break
