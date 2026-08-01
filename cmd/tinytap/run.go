@@ -11,15 +11,17 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/shinagawa-web/tinytap/internal/config"
 	"github.com/shinagawa-web/tinytap/internal/output"
 	"github.com/shinagawa-web/tinytap/internal/output/stdout"
 	"github.com/shinagawa-web/tinytap/internal/output/tui"
 )
 
-// appConfig holds the parsed CLI flags.
+// appConfig holds the parsed CLI flags. Session settings (output mode,
+// verbose, filters) live in the TOML config file (#217) instead — this is
+// only the one-shot actions and the config file's own location.
 type appConfig struct {
-	outputMode  string
-	verbose     bool
+	configPath  string
 	showVersion bool
 }
 
@@ -27,22 +29,12 @@ type appConfig struct {
 func parseFlags(args []string) (appConfig, error) {
 	fs := flag.NewFlagSet("tinytap", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	outputMode := fs.String("output", "auto", "output mode: auto (TUI on a terminal), stdout (line stream), tui")
-	verbose := fs.Bool("v", false, "verbose: hang request/response headers under each exchange (stdout only)")
-	fs.BoolVar(verbose, "verbose", false, "alias for -v")
+	configPath := fs.String("config", "", "path to config file (default: ./tinytap.toml, then $XDG_CONFIG_HOME/tinytap/config.toml)")
 	showVersion := fs.Bool("version", false, "print version, commit, and build date, then exit")
 	if err := fs.Parse(args); err != nil {
 		return appConfig{}, err
 	}
-	if *showVersion {
-		return appConfig{showVersion: true}, nil
-	}
-	switch *outputMode {
-	case "auto", "stdout", "tui":
-	default:
-		return appConfig{}, fmt.Errorf("invalid --output %q: want auto, stdout, or tui", *outputMode)
-	}
-	return appConfig{outputMode: *outputMode, verbose: *verbose}, nil
+	return appConfig{configPath: *configPath, showVersion: *showVersion}, nil
 }
 
 // bpfSession abstracts *loader.Tinytap so run() can be tested without eBPF.
@@ -73,6 +65,7 @@ var (
 	newStdoutSink func(verbose bool) output.Sink = defaultNewStdoutSink
 	doRunStdout  func(ringbufCloser, bool)    = runStdout
 	doRunTUI     func(ringbufCloser, int, int) = runTUI
+	loadConfig   func(path string) (config.Config, error) = config.Load
 )
 
 func defaultNewTUISink(w, h int) tuiSink          { return tui.New(w, h) }
@@ -88,7 +81,12 @@ func run() error {
 		return nil
 	}
 
-	decision, w, h := decideOutput(cfg.outputMode, isTerminalFn, getSizeFn)
+	conf, err := loadConfig(cfg.configPath)
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+
+	decision, w, h := decideOutput(conf.Output, isTerminalFn, getSizeFn)
 	if decision == outputExit {
 		return errSilentExit
 	}
@@ -106,7 +104,7 @@ func run() error {
 	if decision == outputTUI {
 		doRunTUI(tt.reader(), w, h)
 	} else {
-		doRunStdout(tt.reader(), cfg.verbose)
+		doRunStdout(tt.reader(), conf.Verbose)
 	}
 	return nil
 }

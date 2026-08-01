@@ -1,6 +1,6 @@
 # Recording TUI demo GIFs
 
-How to record a GIF of `tinytap`'s `--output tui` mode (e.g. `docs/tui-demo.gif`).
+How to record a GIF of `tinytap`'s TUI mode (`output = "tui"` in its config file; e.g. `docs/tui-demo.gif`).
 
 **Everything runs on the Mac host.** You do *not* install `vhs` inside the Lima
 VM. `vhs`/`ttyd`/`ffmpeg`/the headless browser that captures frames all live on
@@ -45,8 +45,8 @@ rendered.
 Copy `scripts/tinytap.tape` as a starting point — its header and the four rules
 below are the load-bearing parts. The matching traffic generator is
 `scripts/demo-tui.sh` (starts `python3 -m http.server`, fires varied requests,
-then runs `sudo ./tinytap --output tui` in the foreground so the tape can drive
-the live TUI).
+then runs `sudo ./tinytap --config ...` (`output = "tui"`) in the foreground so
+the tape can drive the live TUI).
 
 1. **Connect with `ssh -t`, not `limactl shell … -- cmd`.** The `limactl shell`
    *command* form does **not** allocate a remote TTY, so `tinytap`'s TUI refuses

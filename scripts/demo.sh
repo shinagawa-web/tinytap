@@ -16,6 +16,7 @@ PORT="${PORT:-8081}"
 URL="http://localhost:${PORT}/"
 TT_LOG=/tmp/tinytap-demo.log
 TT_RAW=/tmp/tinytap-demo-raw.log
+TT_CFG=/tmp/tinytap-demo-config.toml
 PY_LOG=/tmp/tinytap-demo-py.log
 GREP_RE='(python3|curl)[^][]*\[[0-9]+\]'
 
@@ -66,9 +67,10 @@ python3 -m http.server "${PORT}" > "${PY_LOG}" 2>&1 &
 PY_PID=$!
 wait_for_port localhost "${PORT}" || { echo "http.server failed to listen on ${PORT}" >&2; exit 1; }
 
-echo "==> sudo ./tinytap --output stdout   (raw log: ${TT_RAW})"
+printf 'output = "stdout"\n' > "${TT_CFG}"
+echo "==> sudo ./tinytap --config ${TT_CFG}   (raw log: ${TT_RAW})"
 : > "${TT_RAW}"
-sudo ./tinytap --output stdout > "${TT_RAW}" 2>&1 &
+sudo ./tinytap --config "${TT_CFG}" > "${TT_RAW}" 2>&1 &
 TT_PID=$!
 wait_for_tinytap || { echo "tinytap did not become ready" >&2; exit 1; }
 

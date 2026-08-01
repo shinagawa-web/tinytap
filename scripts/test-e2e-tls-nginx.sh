@@ -30,6 +30,7 @@ PORT="${PORT:-18443}"
 # it's built into the repo root instead (gitignored, like the plain `tinytap`
 # build artifact).
 TT_BIN="${PWD}/tinytap-ngx-e2e"
+TT_CFG=/tmp/tinytap-ngx-e2e-config.toml
 TT_OUT=/tmp/tinytap-ngx-e2e.log
 FAILURES=0
 
@@ -139,9 +140,10 @@ run_scenario() {
     fi
     wait_for_port localhost "${PORT}" || { echo "FAIL: nginx (${image}) did not listen on ${PORT}"; exit 1; }
 
-    echo "==> ${TT_BIN} --output stdout"
+    printf 'output = "stdout"\n' >"${TT_CFG}"
+    echo "==> ${TT_BIN} --config ${TT_CFG}"
     : >"${TT_OUT}"
-    "${TT_BIN}" --output stdout >"${TT_OUT}" 2>&1 &
+    "${TT_BIN}" --config "${TT_CFG}" >"${TT_OUT}" 2>&1 &
     wait_for_tinytap || { echo "FAIL: tinytap did not become ready"; exit 1; }
 
     echo "==> firing warm-up request (triggers SSL uprobe discovery+attach for the nginx worker)"

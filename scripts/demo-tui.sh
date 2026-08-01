@@ -2,10 +2,10 @@
 # Self-contained TUI showcase, driven by scripts/tinytap.tape (`vhs`).
 #
 # Starts `python3 -m http.server`, fires a handful of varied requests in the
-# background, then runs `sudo ./tinytap --output tui` in the foreground so
-# the tape can drive the live table directly (scroll, open the detail
-# panel, quit with `q`). Cleans up the server and traffic generator once
-# the TUI exits.
+# background, then runs `sudo ./tinytap --config ...` (output = "tui") in
+# the foreground so the tape can drive the live table directly (scroll,
+# open the detail panel, quit with `q`). Cleans up the server and traffic
+# generator once the TUI exits.
 
 set -euo pipefail
 
@@ -13,6 +13,7 @@ PORT="${PORT:-8082}"
 BASE="http://localhost:${PORT}"
 DEMO_DIR="$(mktemp -d)"
 PY_LOG=/tmp/tinytap-tape-py.log
+TT_CFG="${DEMO_DIR}/tinytap.toml"
 
 PY_PID=""
 TRAFFIC_PID=""
@@ -61,4 +62,5 @@ wait_for_port localhost "${PORT}" || { echo "http.server failed to listen on ${P
 ) &
 TRAFFIC_PID=$!
 
-sudo ./tinytap --output tui
+printf 'output = "tui"\n' > "${TT_CFG}"
+sudo ./tinytap --config "${TT_CFG}"

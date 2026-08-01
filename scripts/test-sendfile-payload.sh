@@ -17,6 +17,7 @@ WORKTREE="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${PORT:-19180}"
 TT_OUT=/tmp/tinytap-sf.log
 TT_ERR=/tmp/tinytap-sf.err
+TT_CFG=/tmp/tinytap-sf-config.toml
 SRV_LOG=/tmp/tinytap-sf-srv.log
 FAILURES=0
 
@@ -94,9 +95,10 @@ for _ in $(seq 1 50); do
 done
 
 # ── Start tinytap ─────────────────────────────────────────────────────────────
-echo "==> sudo /tmp/tinytap-sf --output stdout"
+printf 'output = "stdout"\n' >"${TT_CFG}"
+echo "==> sudo /tmp/tinytap-sf --config ${TT_CFG}"
 : >"${TT_OUT}" >"${TT_ERR}"
-sudo /tmp/tinytap-sf --output stdout >"${TT_OUT}" 2>"${TT_ERR}" &
+sudo /tmp/tinytap-sf --config "${TT_CFG}" >"${TT_OUT}" 2>"${TT_ERR}" &
 
 for _ in $(seq 1 50); do
     grep -q "tinytap running" "${TT_OUT}" 2>/dev/null && break
