@@ -72,6 +72,10 @@ func defaultNewTUISink(w, h int) tuiSink          { return tui.New(w, h) }
 func defaultNewStdoutSink(verbose bool) output.Sink { return stdout.New(verbose) }
 
 func run() error {
+	if len(os.Args) > 1 && os.Args[1] == "config" {
+		return runConfigCmd(os.Args[2:])
+	}
+
 	cfg, err := parseFlags(os.Args[1:])
 	if err != nil {
 		return err
