@@ -9,6 +9,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Also stands as the untruncated case's byte-for-byte regression check for
+// #190: ResBodyTruncated is false (its zero value) here, same as before
+// that field's kept/total formatting existed.
 func TestRenderPairedEventMatchesSpecFormat(t *testing.T) {
 	pe := PairedEvent{
 		Pid: 5936, Fd: 7, Comm: "python3",
@@ -43,25 +46,6 @@ func TestRenderPairedResponseBodyTruncated(t *testing.T) {
 	}
 	if strings.Contains(got, " 1304B") {
 		t.Errorf("truncated line should not also show the plain total, got %q", got)
-	}
-}
-
-// An untruncated response's line is unaffected — same "<total>B" format as
-// before ResBodyTruncated existed (#190's "Done when": byte-for-byte
-// unchanged for the untruncated case).
-func TestRenderPairedResponseBodyNotTruncatedUnchanged(t *testing.T) {
-	pe := PairedEvent{
-		Pid: 5936, Fd: 7, Comm: "python3",
-		Method: "GET", Path: "/", ReqVersion: "HTTP/1.1",
-		Status: 200, Reason: "OK", ResVersion: "HTTP/1.0",
-		ResBytes: 649,
-		Latency:  1200 * time.Microsecond,
-	}
-	when := time.Date(2026, 6, 8, 19, 35, 24, 123_000_000, time.UTC)
-	got := RenderPaired(pe, when)
-	want := "2026-06-08T19:35:24.123+00:00  python3[5936]    GET   /                        200     649B     1.2ms"
-	if got != want {
-		t.Errorf("\n got: %q\nwant: %q", got, want)
 	}
 }
 
