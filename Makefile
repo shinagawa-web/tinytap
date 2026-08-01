@@ -8,7 +8,7 @@ COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: all generate build run run-raw lint govulncheck test-unit check-coverage test-e2e test-integration install install-hooks clean
+.PHONY: all generate build run run-raw lint govulncheck test-unit check-coverage test-e2e test-integration install install-hooks release-check clean
 
 all: generate build
 
@@ -62,6 +62,13 @@ GOLINT  := $(shell go env GOPATH)/bin/golangci-lint
 test-integration:
 	sudo $(GOBIN) test -tags=privileged -v ./internal/loader/
 
+# Local dry run of the release pipeline (#196) — builds both arches and
+# packages archives under dist/ without publishing anything (--snapshot
+# skips the git-tag/publish requirements goreleaser release would need).
+release-check:
+	goreleaser check
+	goreleaser release --snapshot --clean
+
 install: install-hooks
 
 install-hooks:
@@ -74,3 +81,4 @@ install-hooks:
 clean:
 	rm -f $(BIN) internal/loader/bpf/tinytap_bpf*.go internal/loader/bpf/tinytap_bpf*.o
 	rm -f internal/loader/bpf/fixture/fixture_bpf*.go internal/loader/bpf/fixture/fixture_bpf*.o
+	rm -rf dist

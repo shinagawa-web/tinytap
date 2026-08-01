@@ -1,0 +1,59 @@
+version: 2
+
+project_name: tinytap
+
+# The BPF object files bpf2go emits are already committed under
+# internal/loader/bpf/ (see #207, which verifies in CI that they stay in
+# sync with bpf/*.c) and embedded into the Go binary via //go:embed. So
+# there's no separate clang/libbpf build step at release time — just a
+# normal cross-compiled `go build`.
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: tinytap
+    main: ./cmd/tinytap
+    binary: tinytap
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: tinytap
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: shinagawa-web
+    name: tinytap
