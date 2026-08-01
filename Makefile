@@ -3,6 +3,11 @@ COVERAGE_THRESHOLD ?= 100
 COVFILE            := /tmp/tinytap-cover.out
 FILTERED           := /tmp/tinytap-cover-filtered.out
 
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
 .PHONY: all generate build run run-raw lint govulncheck test-unit check-coverage test-e2e test-integration install install-hooks clean
 
 all: generate build
@@ -12,7 +17,7 @@ generate:
 	cd internal/loader/bpf/fixture && go generate
 
 build:
-	go build -o $(BIN) ./cmd/tinytap
+	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/tinytap
 
 run: build
 	@bash scripts/demo.sh
