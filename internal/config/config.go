@@ -3,12 +3,21 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 )
+
+// encodeTOML is injected so tests can force an encode failure — the real
+// encoder can't fail on Config's plain scalar/slice fields, so this branch
+// is otherwise unreachable from Init's exported behavior.
+var encodeTOML = func(w io.Writer, v any) error {
+	return toml.NewEncoder(w).Encode(v)
+}
 
 // Config holds tinytap's session settings.
 type Config struct {
@@ -62,6 +71,41 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// Init writes a fully-populated default config file to path, so that
+// `tinytap config init && tinytap` just works with no further edits.
+// Refuses to overwrite an existing file unless force is true.
+//
+// Generated from the same Config/FilterConfig structs Load decodes into
+// (via toml.Encoder), rather than a hand-maintained string template, so the
+// written file can't drift from the real schema when a field is added.
+func Init(path string, force bool) error {
+	if !force {
+		ok, err := exists(path)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return fmt.Errorf("%s already exists (use --force to overwrite)", path)
+		}
+	}
+
+	cfg := defaultConfig()
+	// Non-nil so the encoder writes "pid = []" / "comm = []" instead of
+	// omitting the keys entirely — the file should show every key, even
+	// ones defaulting to empty.
+	cfg.Filter = FilterConfig{PID: []uint32{}, Comm: []string{}}
+
+	var buf bytes.Buffer
+	buf.WriteString("# tinytap config file — see README.md's Configuration section for field docs.\n\n")
+	if err := encodeTOML(&buf, cfg); err != nil {
+		return fmt.Errorf("encode default config: %w", err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }
 
 // find returns the first existing candidate in the search order, or "" if

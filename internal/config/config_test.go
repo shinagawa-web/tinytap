@@ -1,8 +1,11 @@
 package config
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -256,6 +259,119 @@ func TestLoad_GetwdError(t *testing.T) {
 
 	if _, err := Load(""); err == nil {
 		t.Error("want error when the cwd no longer exists")
+	}
+}
+
+// --- Init ---
+
+func TestInit_WritesLoadableDefaultFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tinytap.toml")
+
+	if err := Init(path, false); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("generated file didn't load: %v", err)
+	}
+	if cfg.Output != "auto" {
+		t.Errorf("Output = %q, want auto", cfg.Output)
+	}
+	if cfg.Verbose {
+		t.Error("Verbose = true, want false")
+	}
+}
+
+func TestInit_WrittenFileListsFilterKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tinytap.toml")
+
+	if err := Init(path, false); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	for _, want := range []string{"output = \"auto\"", "verbose = false", "[filter]", "pid = []", "comm = []"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Init() output = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
+func TestInit_RefusesExistingWithoutForce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tinytap.toml")
+	write(t, path, "output = \"stdout\"\n")
+
+	err := Init(path, false)
+	if err == nil {
+		t.Fatal("want error for an existing file without --force")
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "output = \"stdout\"\n" {
+		t.Errorf("existing file was modified: %q", string(data))
+	}
+}
+
+func TestInit_ForceOverwritesExisting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tinytap.toml")
+	write(t, path, "output = \"stdout\"\n")
+
+	if err := Init(path, true); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Output != "auto" {
+		t.Errorf("Output = %q, want auto (overwritten with defaults)", cfg.Output)
+	}
+}
+
+func TestInit_ExistsStatErrorPropagates(t *testing.T) {
+	parent := t.TempDir()
+	locked := filepath.Join(parent, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(locked, "tinytap.toml")
+	write(t, path, "")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(locked, 0o755) }()
+
+	if err := Init(path, false); err == nil {
+		t.Error("want error for a permission-denied stat, not a silent overwrite refusal")
+	}
+}
+
+func TestInit_EncodeErrorPropagates(t *testing.T) {
+	old := encodeTOML
+	encodeTOML = func(io.Writer, any) error { return errors.New("boom") }
+	defer func() { encodeTOML = old }()
+
+	path := filepath.Join(t.TempDir(), "tinytap.toml")
+	if err := Init(path, false); err == nil {
+		t.Error("want error propagated from encodeTOML")
+	}
+}
+
+func TestInit_WriteFileErrorPropagates(t *testing.T) {
+	// A directory as the target path: os.WriteFile fails with EISDIR.
+	path := t.TempDir()
+
+	if err := Init(path, true); err == nil {
+		t.Error("want error when the target path can't be written")
 	}
 }
 
