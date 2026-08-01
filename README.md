@@ -184,7 +184,7 @@ source ~/.bashrc
 
 ## License
 
-Not yet licensed — no `LICENSE` file is checked in. MIT is the intended license once one is added.
+MIT — see [`LICENSE`](LICENSE).
 
 ## References
 
