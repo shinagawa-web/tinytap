@@ -6,8 +6,14 @@ permissions:
 on:
   push:
     branches: [main]
+    paths:
+      - "bpf/**"
+      - "internal/loader/bpf/**"
   pull_request:
     branches: [main]
+    paths:
+      - "bpf/**"
+      - "internal/loader/bpf/**"
   workflow_dispatch:
 
 jobs:
@@ -28,11 +34,16 @@ jobs:
           cache: true
 
       # Pinned so bpf2go's output doesn't drift with whatever clang the
-      # runner image happens to ship — see #207.
-      - name: Install clang 14
+      # runner image happens to ship — see #207. ubuntu-22.04's default
+      # apt-get clang-14 was tried first and rejected: it emits a
+      # bpf_probe_read_user call the verifier refuses to load
+      # ("R2 unbounded memory access"), so this installs from the official
+      # LLVM apt repo instead of the distro package.
+      - name: Install clang 17
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-14 llvm-14
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 17
 
       # ubuntu-22.04's apt libbpf-dev is 0.5.0, which predates the
       # BPF_UPROBE macro bpf/tinytap_uprobe.bpf.c uses (added in a later
@@ -45,12 +56,12 @@ jobs:
 
       - name: Regenerate bpf2go bindings
         env:
-          BPF2GO_CC: clang-14
+          BPF2GO_CC: clang-17
         run: make generate
 
       - name: Fail if committed artifacts are out of sync with bpf/*.c
         run: |
           if ! git diff --exit-code -- bpf internal/loader/bpf; then
-            echo "::error::Committed bpf2go artifacts (internal/loader/bpf/*_bpf*.go, *.o) don't match bpf/*.c. Run 'make generate' with clang-14 and commit the result."
+            echo "::error::Committed bpf2go artifacts (internal/loader/bpf/*_bpf*.go, *.o) don't match bpf/*.c. Run 'make generate' with clang-17 and commit the result."
             exit 1
           fi
