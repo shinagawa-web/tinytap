@@ -32,7 +32,16 @@ jobs:
       - name: Install clang 14
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-14 llvm-14 libbpf-dev
+          sudo apt-get install -y clang-14 llvm-14
+
+      # ubuntu-22.04's apt libbpf-dev is 0.5.0, which predates the
+      # BPF_UPROBE macro bpf/tinytap_uprobe.bpf.c uses (added in a later
+      # libbpf release) — build a pinned, known-good libbpf from source and
+      # install its headers over /usr/include/bpf instead.
+      - name: Install libbpf 1.6.2 headers
+        run: |
+          git clone --depth 1 --branch v1.6.2 https://github.com/libbpf/libbpf.git /tmp/libbpf
+          sudo make -C /tmp/libbpf/src install_headers PREFIX=/usr
 
       - name: Regenerate bpf2go bindings
         env:
