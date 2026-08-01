@@ -19,6 +19,7 @@ func TestPrintVersion(t *testing.T) {
 	}
 	os.Stdout = w
 	defer func() { os.Stdout = oldStdout }()
+	defer func() { _ = r.Close() }()
 
 	printVersion()
 
