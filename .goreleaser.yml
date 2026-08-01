@@ -9,7 +9,12 @@ project_name: tinytap
 # normal cross-compiled `go build`.
 before:
   hooks:
+    # Verify, don't mutate: `go mod tidy` followed by a diff check fails the
+    # release if go.mod/go.sum aren't already tidy, instead of silently
+    # rewriting them and publishing a binary that no longer matches the
+    # tagged commit's source.
     - go mod tidy
+    - git diff --exit-code -- go.mod go.sum
 
 builds:
   - id: tinytap
