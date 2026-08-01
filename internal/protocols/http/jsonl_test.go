@@ -105,12 +105,14 @@ func TestRoundTripJSONLPanicsOnDecodeError(t *testing.T) {
 // summaryFields are read (directly or via the caller-supplied `when` derived
 // from ReqTsNs) by RenderPaired/RenderAbandoned, tinytap's one-line stdout
 // summary — either unconditionally or depending on the exchange kind (e.g.
-// Status only for a completed pair). Abandoned itself selects which of the
-// two renderers runs, so it counts as reaching the output too.
+// Status only for a completed pair, ResBody/ResBodyTruncated only when a
+// response body was actually truncated, #190). Abandoned itself selects
+// which of the two renderers runs, so it counts as reaching the output too.
 var summaryFields = map[string]bool{
 	"ReqTsNs": true, "Latency": true, "Pid": true, "Comm": true,
 	"Method": true, "Path": true, "Status": true, "ResBytes": true,
 	"Abandoned": true, "AbandonReason": true, "SSLFallback": true,
+	"ResBody": true, "ResBodyTruncated": true,
 }
 
 // detailFields are read only by RenderPairedDetail, the -v continuation
@@ -121,13 +123,14 @@ var detailFields = map[string]bool{
 }
 
 // jsonlOnlyFields are captured on PairedEvent but never rendered as text
-// today — reachable only through EncodeJSONL. ReqBodyTruncated and
-// ResBodyTruncated landing here (rather than in summaryFields) is exactly
-// the gap #190 tracks; move them to summaryFields once that's fixed.
+// today — reachable only through EncodeJSONL. ReqBody/ReqBodyTruncated stay
+// here deliberately: #190 scoped the truncation-visibility fix to the
+// response side only, since request body bytes aren't printed in the
+// summary line at all yet (request-body truncation visibility can follow
+// once request bytes appear in the output, or in -v detail once #35 lands).
 var jsonlOnlyFields = map[string]bool{
 	"Fd": true, "ReqBytes": true, "ReqBody": true,
-	"ReqBodyTruncated": true, "ResBody": true, "ResBodyTruncated": true,
-	"SSL": true,
+	"ReqBodyTruncated": true, "SSL": true,
 }
 
 // TestPairedEventFieldsAreClassified is the drift guard #192 exists to add.
@@ -135,9 +138,10 @@ var jsonlOnlyFields = map[string]bool{
 // three sets above. Add a field to PairedEvent without updating one of
 // them, and this test fails — the silent gap that let ReqBodyTruncated/
 // ResBodyTruncated exist on the struct without ever reaching
-// RenderPaired/RenderAbandoned (#190) can't happen again unnoticed, even
-// though EncodeJSONL itself can never drop a field (it's a plain
-// encoding/json reflection over the whole struct).
+// RenderPaired/RenderAbandoned (fixed for the response side by #190; the
+// request side is still deliberately jsonl-only, see jsonlOnlyFields) can't
+// happen again unnoticed, even though EncodeJSONL itself can never drop a
+// field (it's a plain encoding/json reflection over the whole struct).
 func TestPairedEventFieldsAreClassified(t *testing.T) {
 	typ := reflect.TypeOf(PairedEvent{})
 	for i := 0; i < typ.NumField(); i++ {

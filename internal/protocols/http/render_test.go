@@ -25,6 +25,46 @@ func TestRenderPairedEventMatchesSpecFormat(t *testing.T) {
 	}
 }
 
+// A truncated response body prints "<kept>/<total>B" instead of the plain
+// "<total>B" (#190), so stdout can distinguish a full capture from a
+// partial one without relying on the TUI.
+func TestRenderPairedResponseBodyTruncated(t *testing.T) {
+	pe := PairedEvent{
+		Pid: 5936, Fd: 7, Comm: "python3",
+		Method: "GET", Path: "/", ReqVersion: "HTTP/1.1",
+		Status: 200, Reason: "OK", ResVersion: "HTTP/1.0",
+		ResBytes: 1304, ResBody: make([]byte, 512), ResBodyTruncated: true,
+		Latency: 300 * time.Microsecond,
+	}
+	when := time.Date(2026, 6, 8, 19, 35, 24, 123_000_000, time.UTC)
+	got := RenderPaired(pe, when)
+	if !strings.Contains(got, "512/1304B") {
+		t.Errorf("truncated line should show kept/total bytes, got %q", got)
+	}
+	if strings.Contains(got, " 1304B") {
+		t.Errorf("truncated line should not also show the plain total, got %q", got)
+	}
+}
+
+// An untruncated response's line is unaffected — same "<total>B" format as
+// before ResBodyTruncated existed (#190's "Done when": byte-for-byte
+// unchanged for the untruncated case).
+func TestRenderPairedResponseBodyNotTruncatedUnchanged(t *testing.T) {
+	pe := PairedEvent{
+		Pid: 5936, Fd: 7, Comm: "python3",
+		Method: "GET", Path: "/", ReqVersion: "HTTP/1.1",
+		Status: 200, Reason: "OK", ResVersion: "HTTP/1.0",
+		ResBytes: 649,
+		Latency:  1200 * time.Microsecond,
+	}
+	when := time.Date(2026, 6, 8, 19, 35, 24, 123_000_000, time.UTC)
+	got := RenderPaired(pe, when)
+	want := "2026-06-08T19:35:24.123+00:00  python3[5936]    GET   /                        200     649B     1.2ms"
+	if got != want {
+		t.Errorf("\n got: %q\nwant: %q", got, want)
+	}
+}
+
 func TestRenderPairedDetailHasStartLinesAndHeaders(t *testing.T) {
 	pe := PairedEvent{
 		Method: "GET", Path: "/", ReqVersion: "HTTP/1.1",
