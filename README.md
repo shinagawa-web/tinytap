@@ -152,7 +152,7 @@ Full roadmap (near-term steps and longer-term vision) lives in [#19](https://git
 |---|---|---|
 | eBPF lib | `github.com/cilium/ebpf` | Pure Go, modern, standard for new projects |
 | Build | `bpf2go` (part of cilium/ebpf) | Generates Go bindings from C code |
-| Compiler | `clang` 14+ | Standard for eBPF, supports BTF |
+| Compiler | `clang` 17+ | Standard for eBPF, supports BTF. `clang-14` compiles cleanly but the emitted `bpf_probe_read_user` call fails the kernel verifier (`R2 unbounded memory access`) — CI pins 17 (#207); 15/16 untested |
 | Go | 1.24+ | |
 | Kernel | Linux 5.8+ | Required for `BPF_MAP_TYPE_RINGBUF`, tinytap's event transport |
 | Architecture | amd64 + arm64 | Need arm64 for Apple Silicon Lima VM |
