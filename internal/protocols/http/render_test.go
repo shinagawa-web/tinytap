@@ -9,6 +9,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Also stands as the untruncated case's byte-for-byte regression check for
+// #190: ResBodyTruncated is false (its zero value) here, same as before
+// that field's kept/total formatting existed.
 func TestRenderPairedEventMatchesSpecFormat(t *testing.T) {
 	pe := PairedEvent{
 		Pid: 5936, Fd: 7, Comm: "python3",
@@ -22,6 +25,27 @@ func TestRenderPairedEventMatchesSpecFormat(t *testing.T) {
 	want := "2026-06-08T19:35:24.123+00:00  python3[5936]    GET   /                        200     649B     1.2ms"
 	if got != want {
 		t.Errorf("\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// A truncated response body prints "<kept>/<total>B" instead of the plain
+// "<total>B" (#190), so stdout can distinguish a full capture from a
+// partial one without relying on the TUI.
+func TestRenderPairedResponseBodyTruncated(t *testing.T) {
+	pe := PairedEvent{
+		Pid: 5936, Fd: 7, Comm: "python3",
+		Method: "GET", Path: "/", ReqVersion: "HTTP/1.1",
+		Status: 200, Reason: "OK", ResVersion: "HTTP/1.0",
+		ResBytes: 1304, ResBody: make([]byte, 512), ResBodyTruncated: true,
+		Latency: 300 * time.Microsecond,
+	}
+	when := time.Date(2026, 6, 8, 19, 35, 24, 123_000_000, time.UTC)
+	got := RenderPaired(pe, when)
+	if !strings.Contains(got, "512/1304B") {
+		t.Errorf("truncated line should show kept/total bytes, got %q", got)
+	}
+	if strings.Contains(got, " 1304B") {
+		t.Errorf("truncated line should not also show the plain total, got %q", got)
 	}
 }
 

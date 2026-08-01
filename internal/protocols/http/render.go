@@ -79,16 +79,30 @@ const sslFallbackMarker = "  [ssl-keyed, fd unverified]"
 // honest, failing if a new PairedEvent field isn't consciously placed in
 // or kept out of this line.
 //
+// When ResBodyTruncated is true, the bytes field prints "<kept>/<total>B"
+// (e.g. "512/1304B" — how much of the body tinytap actually captured versus
+// the declared/observed total) instead of the plain "<total>B" (#190). This
+// also surfaces the pre-existing ambiguity in that total: bodyBytes()
+// (pairer.go) returns Content-Length when present, so a lone number could
+// already mean "what the server declared" rather than "what tinytap saw" —
+// printing both numbers together removes the guesswork whenever a
+// truncation makes that gap matter.
+//
 //	2026-08-01T12:47:57.005+09:00  python3[27122]  GET   /                        200    1304B     0.3ms
+//	2026-08-01T12:47:57.005+09:00  python3[27122]  GET   /                        200  512/1304B     0.3ms
 func RenderPaired(p PairedEvent, when time.Time) string {
 	p = roundTripJSONL(p)
 	latencyMs := float64(p.Latency) / float64(time.Millisecond)
 	who := fmt.Sprintf("%s[%d]", p.Comm, p.Pid)
+	resBytes := fmt.Sprintf("%dB", p.ResBytes)
+	if p.ResBodyTruncated {
+		resBytes = fmt.Sprintf("%d/%dB", len(p.ResBody), p.ResBytes)
+	}
 	line := fmt.Sprintf("%s  %-16s %-5s %-24s %3d %8s %9s",
 		when.Format(timeFormat),
 		who,
 		p.Method, p.Path, p.Status,
-		fmt.Sprintf("%dB", p.ResBytes),
+		resBytes,
 		fmt.Sprintf("%.1fms", latencyMs))
 	if p.SSLFallback {
 		line += sslFallbackMarker

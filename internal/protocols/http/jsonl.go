@@ -35,9 +35,10 @@ func EncodeJSONL(p PairedEvent) ([]byte, error) {
 // human-readable line by first surviving the JSONL encoding. Combined with
 // TestPairedEventFieldsAreClassified (jsonl_test.go), which forces every
 // PairedEvent field to be consciously placed in or kept out of the summary
-// line, this replaces the silent field-by-field drift that let
-// ReqBodyTruncated/ResBodyTruncated exist without ever reaching stdout
-// (#190).
+// line, this replaces the silent field-by-field drift that previously let
+// ResBodyTruncated exist on the struct without ever reaching stdout (#190,
+// fixed for the response side; ReqBodyTruncated is still deliberately
+// jsonl-only, see jsonl_test.go's jsonlOnlyFields).
 //
 // PairedEvent's fields are all JSON-safe — round-tripping cannot fail for
 // the type as it stands today. A failure here would mean a future field
