@@ -189,8 +189,8 @@ check_no_leftover_processes() {
 echo "==> building tinytap"
 go build -o "${TT_BIN}" ./cmd/tinytap/
 
-echo "==> setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin on tinytap-e2e (see docs/capabilities.md — cap_sys_admin is for the TLS uprobe scenario)"
-sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip "${TT_BIN}"
+echo "==> setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog on tinytap-e2e (see docs/capabilities.md — cap_sys_admin is for the TLS uprobe scenario, cap_syslog is for x86_64's live kallsyms lookup in the sendfile payload-capture kprobe)"
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog=eip "${TT_BIN}"
 
 # ── Scenario 2 setup: slow server (never responds) ───────────────────────────
 # A Python server that accepts a connection but never sends a response,
