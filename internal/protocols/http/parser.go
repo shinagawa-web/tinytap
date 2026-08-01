@@ -191,8 +191,8 @@ type Message struct {
 // canonicalisation or lowercasing, so the detail panel shows exactly what was
 // sent. Order is preserved (the slice mirrors wire order).
 type Header struct {
-	Name  string
-	Value string
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 type Parser struct {

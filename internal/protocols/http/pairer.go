@@ -89,40 +89,45 @@ type timedMessage struct {
 // and response have been matched on the same (pid, fd). It carries every
 // HTTP-level field the parser surfaced — even ones the default render
 // line doesn't print — so future detail views (TUI row-expand, structured
-// export) don't need to reach back into the parser layer.
+// export) don't need to reach back into the parser layer. It's the single
+// struct every output derives from: see jsonl.go's EncodeJSONL for the
+// full-fidelity JSON encoding, and jsonl_test.go's
+// TestPairedEventFieldsAreClassified for the drift guard that keeps the
+// curated stdout summary line (render.go) honest about which fields it
+// does and doesn't show (#192).
 //
 // When Abandoned is true the event represents a request that never received
 // a response; Status is 0 and AbandonReason describes why.
 type PairedEvent struct {
-	ReqTsNs       uint64        // request first-byte timestamp (BPF ktime ns)
-	Latency       time.Duration // res.TsNs - req.TsNs, or elapsed wall time for abandoned
-	Pid           uint32
-	Fd            int32
-	Comm          string
-	Method        string
-	Path          string
-	ReqVersion    string // request start-line HTTP version (e.g. "HTTP/1.1")
-	Status        int
-	Reason        string   // response reason phrase (e.g. "OK", "Not Found")
-	ResVersion    string   // response start-line HTTP version
-	ResBytes      int      // response body bytes: Content-Length when present, else len(ResBody) (chunked)
-	ReqBytes      int      // request body bytes: Content-Length when present, else len(ReqBody) (chunked)
-	ReqHeaders    []Header // request headers in on-wire order
-	ResHeaders    []Header // response headers in on-wire order
-	Abandoned     bool     // true when the request never received a response
-	AbandonReason string   // AbandonReasonClosed or AbandonReasonTimeout
+	ReqTsNs       uint64        `json:"reqTsNs"`   // request first-byte timestamp (BPF ktime ns)
+	Latency       time.Duration `json:"latencyNs"` // res.TsNs - req.TsNs, or elapsed wall time for abandoned
+	Pid           uint32        `json:"pid"`
+	Fd            int32         `json:"fd"`
+	Comm          string        `json:"comm"`
+	Method        string        `json:"method"`
+	Path          string        `json:"path"`
+	ReqVersion    string        `json:"reqVersion"` // request start-line HTTP version (e.g. "HTTP/1.1")
+	Status        int           `json:"status"`
+	Reason        string        `json:"reason"`                  // response reason phrase (e.g. "OK", "Not Found")
+	ResVersion    string        `json:"resVersion"`              // response start-line HTTP version
+	ResBytes      int           `json:"resBytes"`                // response body bytes: Content-Length when present, else len(ResBody) (chunked)
+	ReqBytes      int           `json:"reqBytes"`                // request body bytes: Content-Length when present, else len(ReqBody) (chunked)
+	ReqHeaders    []Header      `json:"reqHeaders"`              // request headers in on-wire order
+	ResHeaders    []Header      `json:"resHeaders"`              // response headers in on-wire order
+	Abandoned     bool          `json:"abandoned"`               // true when the request never received a response
+	AbandonReason string        `json:"abandonReason,omitempty"` // AbandonReasonClosed or AbandonReasonTimeout
 	// Captured body samples (#35). Empty when the message carried no body.
 	// *Truncated marks that some body bytes were lost (sample cap or budget).
-	ReqBody          []byte
-	ReqBodyTruncated bool
-	ResBody          []byte
-	ResBodyTruncated bool
+	ReqBody          []byte `json:"reqBody,omitempty"`
+	ReqBodyTruncated bool   `json:"reqBodyTruncated"`
+	ResBody          []byte `json:"resBody,omitempty"`
+	ResBodyTruncated bool   `json:"resBodyTruncated"`
 	// SSL and SSLFallback mirror Message's fields of the same name (#171).
 	// When SSLFallback is true, Fd carries no meaning — this pair was matched
 	// on (Pid, SSL) instead, and renderers must show it as such rather than
 	// display Fd as if it were verified.
-	SSL         uint64
-	SSLFallback bool
+	SSL         uint64 `json:"ssl,omitempty"`
+	SSLFallback bool   `json:"sslFallback"`
 }
 
 func NewPairer() *Pairer {

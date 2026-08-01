@@ -709,7 +709,7 @@ func TestPairerLeakSmokeTest(t *testing.T) {
 
 	for i := range 1000 {
 		fd := int32(i % 10)
-		p.Push(Message{TsNs: uint64(i*2), Pid: pid, Fd: fd, IsRequest: true,
+		p.Push(Message{TsNs: uint64(i * 2), Pid: pid, Fd: fd, IsRequest: true,
 			Req: httpRequestLine{method: "GET", path: "/x"}})
 		p.Push(Message{TsNs: uint64(i*2 + 1), Pid: pid, Fd: fd, IsRequest: false,
 			Res: httpStatusLine{status: 200}})
