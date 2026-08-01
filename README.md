@@ -120,18 +120,24 @@ For the user, this means **tinytap doesn't need to be installed inside container
 
 ### Running without full root
 
-`sudo ./tinytap` is the simplest path, but tinytap doesn't need full root: it
-only needs three Linux capabilities. Grant them to the binary and run it as a
-regular user instead:
+`sudo ./tinytap` is the simplest path, but tinytap doesn't need full root.
+Plaintext HTTP capture needs three Linux capabilities:
 
 ```bash
 sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip ./tinytap
 ./tinytap
 ```
 
+TLS capture (the libssl uprobes) needs one more, `cap_sys_admin`:
+
+```bash
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip ./tinytap
+./tinytap
+```
+
 See [`docs/capabilities.md`](docs/capabilities.md) for what each capability
-is for, how this was verified, and known gaps (older kernels, the TLS uprobe
-path).
+is for, why TLS needs the broader `cap_sys_admin`, how this was verified,
+and known gaps (older kernels, x86_64).
 
 ## Status & Roadmap
 

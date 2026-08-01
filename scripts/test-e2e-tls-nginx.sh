@@ -15,13 +15,21 @@
 # namespace, so tinytap (running on the host) sees them like any other
 # process — no container-aware code needed on tinytap's side.
 #
-# Requires: docker, docker compose (v2 plugin), sudo (eBPF attach), openssl.
+# Requires: docker, docker compose (v2 plugin), openssl. tinytap itself runs
+# unprivileged via setcap, including cap_sys_admin since every scenario here
+# is a TLS uprobe attach (see docs/capabilities.md); sudo is still needed for
+# docker compose and the libssl chmod below.
 # Usage: bash scripts/test-e2e-tls-nginx.sh
 
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")/docker/nginx-tls" && pwd)"
 PORT="${PORT:-18443}"
+# setcap'd file capabilities are silently dropped at exec on a nosuid mount
+# (e.g. /tmp is nosuid on this dev VM) — TT_BIN must live somewhere else, so
+# it's built into the repo root instead (gitignored, like the plain `tinytap`
+# build artifact).
+TT_BIN="${PWD}/tinytap-ngx-e2e"
 TT_OUT=/tmp/tinytap-ngx-e2e.log
 FAILURES=0
 
@@ -29,7 +37,8 @@ command -v docker >/dev/null 2>&1 || { echo "FAIL: docker not found — see #178
 sudo docker compose version >/dev/null 2>&1 || { echo "FAIL: docker compose (v2 plugin) not found — see #178"; exit 1; }
 
 cleanup() {
-    sudo pkill -INT -x tinytap-ngx-e2e 2>/dev/null || true
+    pkill -INT -x tinytap-ngx-e2e 2>/dev/null || true
+    rm -f "${TT_BIN}"
     (cd "${DIR}" && sudo docker compose down -v --timeout 1 >/dev/null 2>&1) || true
     wait 2>/dev/null || true
 }
@@ -87,7 +96,10 @@ assert_contains() {
 }
 
 echo "==> building tinytap"
-go build -o /tmp/tinytap-ngx-e2e ./cmd/tinytap/
+go build -o "${TT_BIN}" ./cmd/tinytap/
+
+echo "==> setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin on tinytap-ngx-e2e (see docs/capabilities.md)"
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip "${TT_BIN}"
 
 echo "==> generating self-signed cert"
 mkdir -p "${DIR}/certs"
@@ -127,9 +139,9 @@ run_scenario() {
     fi
     wait_for_port localhost "${PORT}" || { echo "FAIL: nginx (${image}) did not listen on ${PORT}"; exit 1; }
 
-    echo "==> sudo /tmp/tinytap-ngx-e2e --output stdout"
+    echo "==> ${TT_BIN} --output stdout"
     : >"${TT_OUT}"
-    sudo /tmp/tinytap-ngx-e2e --output stdout >"${TT_OUT}" 2>&1 &
+    "${TT_BIN}" --output stdout >"${TT_OUT}" 2>&1 &
     wait_for_tinytap || { echo "FAIL: tinytap did not become ready"; exit 1; }
 
     echo "==> firing warm-up request (triggers SSL uprobe discovery+attach for the nginx worker)"
@@ -147,7 +159,7 @@ run_scenario() {
     curl -fsSk --retry 3 --retry-delay 0 "https://localhost:${PORT}/" >/dev/null
     sleep 0.3
 
-    sudo pkill -INT -x tinytap-ngx-e2e 2>/dev/null || true
+    pkill -INT -x tinytap-ngx-e2e 2>/dev/null || true
     wait 2>/dev/null || true
 
     assert_contains "${label}: GET / paired with 200 (decrypted via SSL uprobe)" \

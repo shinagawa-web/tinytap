@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # End-to-end test: starts tinytap and python http.server, fires known HTTP
 # requests, and asserts the captured output matches expected patterns.
-# Requires root (sudo) to attach eBPF probes.
+# Runs tinytap itself unprivileged, granted capabilities via setcap (see
+# docs/capabilities.md — the TLS scenario below needs cap_sys_admin in
+# addition to cap_dac_read_search/cap_perfmon/cap_bpf) rather than under
+# sudo — sudo is still used for the one-off setcap call and the libssl
+# chmod below, both of which mutate files outside this script's own process.
 #
 # Scenarios:
 #   1. Normal: GET / HEAD / POST against python http.server → paired lines.
@@ -31,6 +35,11 @@ FILE_PORT="${FILE_PORT:-18082}"
 WRITEV_PORT="${WRITEV_PORT:-18083}"
 TLS_PORT="${TLS_PORT:-18084}"
 URL="http://localhost:${PORT}/"
+# setcap'd file capabilities are silently dropped at exec on a nosuid mount
+# (e.g. /tmp is nosuid on this dev VM) — TT_BIN must live somewhere else, so
+# it's built into the repo root instead (gitignored, like the plain `tinytap`
+# build artifact).
+TT_BIN="${PWD}/tinytap-e2e"
 TT_OUT=/tmp/tinytap-e2e.log
 PY_LOG=/tmp/tinytap-e2e-py.log
 SLOW_LOG=/tmp/tinytap-e2e-slow.log
@@ -48,7 +57,8 @@ TLS_PY_PID=""
 FAILURES=0
 
 cleanup() {
-    sudo pkill -INT -x tinytap-e2e 2>/dev/null || true
+    pkill -INT -x tinytap-e2e 2>/dev/null || true
+    rm -f "${TT_BIN}"
     if [[ -n "${PY_PID}" ]]; then
         kill "${PY_PID}" 2>/dev/null || true
     fi
@@ -153,9 +163,8 @@ assert_absent() {
 check_no_leftover_processes() {
     local leftover=0
 
-    # tinytap-e2e has no tracked PID (it runs under `sudo ... &`, so the
-    # backgrounded job is sudo, not the binary itself) — matched by name,
-    # the same way cleanup()'s `pkill -INT -x tinytap-e2e` targets it.
+    # tinytap-e2e has no tracked PID here — matched by name instead, the
+    # same way cleanup()'s `pkill -INT -x tinytap-e2e` targets it.
     if pgrep -x tinytap-e2e >/dev/null 2>&1; then
         echo "FAIL: tinytap-e2e still running after cleanup"
         pgrep -a -x tinytap-e2e || true
@@ -178,7 +187,10 @@ check_no_leftover_processes() {
 }
 
 echo "==> building tinytap"
-go build -o /tmp/tinytap-e2e ./cmd/tinytap/
+go build -o "${TT_BIN}" ./cmd/tinytap/
+
+echo "==> setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin on tinytap-e2e (see docs/capabilities.md — cap_sys_admin is for the TLS uprobe scenario)"
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip "${TT_BIN}"
 
 # ── Scenario 2 setup: slow server (never responds) ───────────────────────────
 # A Python server that accepts a connection but never sends a response,
@@ -376,10 +388,10 @@ if [[ -n "${LIBSSL_PATH}" && ! -x "${LIBSSL_PATH}" ]]; then
     sudo chmod +x "${LIBSSL_PATH}"
 fi
 
-# ── Start tinytap ─────────────────────────────────────────────────────────────
-echo "==> sudo /tmp/tinytap-e2e --output stdout"
+# ── Start tinytap (unprivileged — see the setcap call above) ─────────────────
+echo "==> ${TT_BIN} --output stdout"
 : >"${TT_OUT}"
-sudo /tmp/tinytap-e2e --output stdout >"${TT_OUT}" 2>&1 &
+"${TT_BIN}" --output stdout >"${TT_OUT}" 2>&1 &
 wait_for_tinytap || { echo "FAIL: tinytap did not become ready"; exit 1; }
 
 # ── Scenario 1: normal requests ───────────────────────────────────────────────

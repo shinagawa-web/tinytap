@@ -4,33 +4,92 @@
 
 ## The minimal set
 
+Plaintext HTTP capture (syscall tracepoints, the `sendfile` payload kprobe,
+ringbuf) needs three capabilities:
+
 ```bash
 sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip ./tinytap
 ./tinytap   # no sudo
 ```
+
+TLS capture (the `SSL_set_fd`/`SSL_write`/`SSL_read`/`SSL_free` libssl
+uprobes, #146/#147/#173) needs one more, `cap_sys_admin` — see
+[Why TLS capture needs `cap_sys_admin`](#why-tls-capture-needs-cap_sys_admin)
+below for why:
+
+```bash
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip ./tinytap
+./tinytap   # no sudo
+```
+
+**The binary must live on a filesystem mounted without `nosuid`.** The
+kernel silently drops file capabilities (not just the setuid/setgid bits)
+at exec time for binaries on a `nosuid` mount — `setcap` itself succeeds,
+`getcap` still shows the capabilities, but the process starts with none of
+them and fails as if `setcap` had never been run. `/tmp` is `nosuid` on this
+dev VM (`findmnt -T /tmp`), which is exactly the mistake `scripts/test-e2e.sh`
+and `scripts/test-e2e-tls-nginx.sh` made on the first pass of wiring this up
+(both originally built the e2e binary into `/tmp`) — see `TT_BIN` in each
+script for the fix (built into the repo root instead). Check with `findmnt -T
+<path>` before relying on `setcap` anywhere new.
 
 | Capability | What it's for | Confirmed by |
 |---|---|---|
 | `cap_bpf` | Loading BPF programs and maps (`BPF_PROG_LOAD`, `BPF_MAP_CREATE`) | Removing it made `rlimit.RemoveMemlock()` itself fail (see below) |
 | `cap_perfmon` | Attaching the tracepoint/kprobe/fentry programs (`perf_event_open`-backed attach paths) | Removing it: `load program: operation not permitted (MEMLOCK may be too low...)` at `BPF_PROG_LOAD` |
 | `cap_dac_read_search` | Opening `/sys/kernel/tracing/events/syscalls/*/id` to resolve tracepoint IDs — these files aren't world-readable | Removing it: `permission denied` opening `.../sys_enter_accept4/id` |
+| `cap_sys_admin` | TLS only: dynamically registering a new uprobe (`SSL_set_fd` et al.) at an arbitrary file+offset | Removing it: `attach uprobe SSL_set_fd: creating perf_uprobe PMU: ... opening perf event: permission denied` — see below |
 
-Neither `cap_sys_admin` nor `cap_sys_resource` is needed. `cap_net_admin` (mentioned as a maybe in #157) isn't needed either — tinytap only attaches syscall tracepoints, a kprobe, and libssl uprobes, none of which touch netfilter/tc.
+`cap_sys_resource` is never needed (see below for why). `cap_net_admin`
+(mentioned as a maybe in #157) isn't needed either — tinytap only attaches
+syscall tracepoints, a kprobe, and libssl uprobes, none of which touch
+netfilter/tc.
 
 ## How this was verified
 
-A build of `cmd/tinytap` (arm64, kernel 6.17) had its file capabilities set via `setcap` and was run as a non-root user with `--output stdout`, dropping one capability at a time from the naive starting guess (`cap_dac_read_search,cap_sys_admin,cap_sys_resource,cap_perfmon,cap_bpf`) and checking whether it still attached cleanly:
+A build of `cmd/tinytap` (arm64, kernel 6.17) had its file capabilities set via `setcap` and was run as a non-root user, dropping one capability at a time from the naive starting guess (`cap_dac_read_search,cap_sys_admin,cap_sys_resource,cap_perfmon,cap_bpf`) and checking whether it still attached cleanly:
 
-1. Dropping `cap_sys_admin` — still attached cleanly, including the optional `fentry/tcp_sendmsg_locked` kprobe (`internal/loader/load_kprobe.go`) that captures `sendfile` payload bytes. On this kernel, `BPF_PROG_TYPE_TRACING` attach didn't require it.
+1. Dropping `cap_sys_admin` — still attached cleanly at startup, including the optional `fentry/tcp_sendmsg_locked` kprobe (`internal/loader/load_kprobe.go`) that captures `sendfile` payload bytes. On this kernel, `BPF_PROG_TYPE_TRACING` attach didn't require it. (TLS uprobe attach — which happens later, dynamically, not at startup — turned out to be a different story; see below.)
 2. Dropping `cap_dac_read_search` (in addition) — failed at tracepoint-ID lookup (see table above). Restored.
 3. Dropping `cap_sys_resource` (in addition to no `cap_sys_admin`) — still attached cleanly.
 4. Dropping `cap_perfmon` or `cap_bpf` individually (from the 3-capability set) — each broke a distinct step (see table above), confirming both are load-bearing.
+5. Running the full `scripts/test-e2e.sh` suite (which also exercises the TLS scenario, unlike the manual check above) under the 3-capability set: every plaintext scenario passed, but the TLS scenario failed to attach its uprobe — see next section. Adding `cap_sys_admin` back made the whole suite pass, including TLS.
 
 ### Why `cap_sys_resource` turned out not to matter
 
 `internal/loader/load.go` calls `rlimit.RemoveMemlock()` unconditionally before loading anything. Raising `RLIMIT_MEMLOCK`'s hard limit is normally gated on `CAP_SYS_RESOURCE`. But `cilium/ebpf`'s `rlimit.RemoveMemlock()` first probes whether the kernel accounts BPF memory via memcg instead (Linux 5.11+) — if that probe succeeds, it skips touching the rlimit entirely. The probe itself needs `CAP_BPF`. That's why removing `cap_bpf` (not `cap_sys_resource`) is what broke `RemoveMemlock()` in testing above: without `cap_bpf` the probe failed, the code fell back to actually raising the rlimit, and that fell back path is what needs `cap_sys_resource`.
 
 Practically: on a 5.11+ kernel, `cap_bpf` alone covers this path. On an older kernel (5.8–5.10) that lacks memcg-based BPF accounting, tinytap would additionally need `cap_sys_resource` to raise `RLIMIT_MEMLOCK` — untested here since the dev VM runs 6.17.
+
+### Why TLS capture needs `cap_sys_admin`
+
+The plaintext capture path only ever attaches to tracepoints and kernel
+functions the kernel already exposes as attach points (`syscalls:sys_enter_*`
+tracepoints, `tcp_sendmsg_locked` via fentry) — none of that requires
+defining anything new, so `cap_perfmon` (added in 5.8 specifically to cover
+this class of attach) is enough.
+
+`AttachSSLSetFd`/`AttachSSLReadWrite` (`internal/loader/load_uprobe.go`) are
+different: a uprobe targets an arbitrary file+offset inside a specific
+process's mapped library (`libssl.so.3` at whatever address `SSL_set_fd`
+resolved to), which doesn't exist as a kernel-known attach point ahead of
+time. `cilium/ebpf`'s `link.OpenExecutable(...).Uprobe(...)` creates it by
+calling `perf_event_open` against the kernel's dynamic `uprobe` PMU
+(`/sys/bus/event_source/devices/uprobe`) — registering a brand-new trace
+point, not attaching to an existing one. That's the same class of operation
+as writing to the legacy `uprobe_events`/`kprobe_events` control files, and
+the kernel still gates it on `CAP_SYS_ADMIN` rather than `CAP_PERFMON`
+(confirmed on 6.17 — see the table above for the exact permission-denied
+error without it).
+
+Practical effect: `sslWatcher`'s dynamic uprobe attach (see
+[Why not an in-process privilege drop](#why-not-an-in-process-privilege-drop)) needs
+`cap_sys_admin` for tinytap's entire runtime whenever TLS capture is in use.
+`cap_sys_admin` is broad enough that this materially weakens the "not full
+root" story for anyone who wants TLS capture — running plaintext-only with
+the 3-capability set is meaningfully more restricted than running with TLS
+enabled. If TLS capture is optional in the future (a `--no-tls` flag), the
+3-capability set alone would be enough whenever it's off.
 
 ## Why not an in-process privilege drop
 
@@ -46,16 +105,16 @@ tinytap's entire lifetime: every time `OnEvent` sees a not-yet-seen pid,
 loaded libssl and, if so, attaches a fresh `SSL_set_fd` uprobe and a fresh
 `SSL_write`/`SSL_read`/`SSL_free` uprobe to it (`AttachSSLSetFd` /
 `AttachSSLReadWrite`, both in `internal/loader/load_uprobe.go`) — each a new
-`BPF_PROG_LOAD` plus a new `perf_event_open`-backed attach, needing
-`cap_bpf` and `cap_perfmon` again, at whatever point during the run that
-process happens to first appear.
+`BPF_PROG_LOAD` plus a new dynamic uprobe registration, needing `cap_bpf`,
+`cap_perfmon`, and (per the previous section) `cap_sys_admin` again, at
+whatever point during the run that process happens to first appear.
 
-So dropping `cap_bpf`/`cap_perfmon` right after the initial `Load()` would
-silently break TLS capture for every process discovered afterward —
-`maybeAttach` only logs the resulting permission error
+So dropping capabilities right after the initial `Load()` would silently
+break TLS capture for every process discovered afterward — `maybeAttach`
+only logs the resulting permission error
 (`log.Printf("tls: attach SSL_set_fd for pid %d (%s): %v", ...)`), it
 doesn't stop tinytap, so the regression wouldn't be obvious from the
-outside. Given that, the two currently-shipped capabilities need to stay
+outside. Given that, all the capabilities tinytap starts with need to stay
 live for the whole process, and `setcap` + non-root (above) is the
 supported way to run with reduced privilege — no in-process drop is
 implemented. This is the "document why it can't" fallback #157 explicitly
@@ -68,5 +127,5 @@ revisited then.
 ## Known gaps
 
 - **Kernel version**: this was verified on Linux 6.17. `CAP_PERFMON` as a distinct capability (split from `CAP_SYS_ADMIN`) only exists from 5.8 onward — the same floor tinytap already requires for `BPF_MAP_TYPE_RINGBUF` (see README's Requirements). Kernels between 5.8 and whatever version relaxed `BPF_PROG_TYPE_TRACING` attach checks may still need `cap_sys_admin` for the fentry step specifically; if so, that step degrades gracefully (`tryAttachKprobe` logs and continues without `sendfile` payload bytes — see its doc comment in `load_kprobe.go`), it does not block startup.
-- **TLS uprobe path** (`internal/loader/load_uprobe.go`, `SSL_set_fd`/`SSL_read`/`SSL_write`): not exercised by the drop-one-at-a-time test above, since it attaches dynamically to a discovered process's libssl rather than at startup (see previous section). It opens the target process's executable/library (`link.OpenExecutable`) and, per `internal/tls/discover.go`, reads the target process's own `/proc/<pid>/maps` to find where libssl is mapped — reading another user's `/proc/<pid>/maps` needs `ptrace_may_access` to succeed, which may require `cap_sys_ptrace` in addition to the three capabilities above when tinytap runs as a different user than the processes it's watching. Untested here — needs its own empirical pass with a cross-user target process.
 - **x86_64**: only tested on arm64. The kprobe payload-capture path uses different mechanisms per arch (arm64 constants vs. x86_64 live KASLR ksyms, see `load_kprobe.go`'s doc comment) — worth re-running this same drop-one-at-a-time test on amd64.
+- **Whether `cap_sys_admin` can be narrowed further for TLS** (e.g. some combination that doesn't include full `cap_sys_admin`) wasn't investigated beyond confirming it's sufficient — `cap_sys_admin` was tested as a single addition, not bisected further, since it's already the kernel's documented gate for dynamic uprobe/kprobe registration.
