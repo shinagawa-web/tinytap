@@ -13,7 +13,7 @@
 | Python `ssl`-wrapped `http.server` | `scripts/test-e2e.sh` (no Docker) | ✅ calls `SSL_set_fd` (#167) | ✅ paired, decrypted correctly |
 | nginx, Debian-based (`nginx:latest`) | `scripts/test-e2e-tls-nginx.sh` (docker-compose, #178) | ✅ calls `SSL_set_fd` directly (`ngx_ssl_create_connection()`) | ✅ paired, decrypted correctly |
 | nginx, Alpine-based (`nginx:alpine`) | `scripts/test-e2e-tls-nginx.sh` (docker-compose, #178) | ✅ same as above | ✅ paired, decrypted correctly |
-| curl | investigated in #167 | ❌ never calls `SSL_set_fd` (custom `BIO_METHOD` + `SSL_set_bio`) | ⚠️ plaintext captured by the uprobe but dropped before the HTTP parser today — needs the SSL*-keyed parser stream tracked in #179 |
+| curl | `internal/protocols/http/parser_ssl_fdless_test.go`, `cmd/tinytap/tlscapture_test.go` | ❌ never calls `SSL_set_fd` (custom `BIO_METHOD` + `SSL_set_bio`) | ✅ paired via `Parser.FeedSSL`'s SSL*-keyed stream (#179) |
 
 ## nginx docker-compose validation (#178)
 
