@@ -3,27 +3,54 @@ package http
 import (
 	"fmt"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
-// TimeAnchor converts BPF ktime (monotonic ns since boot) values into
-// wall clock time by remembering the first (wall, ktime) pair we observed
-// and linearly extrapolating from there. This is accurate to within the
-// userspace processing delay of the first event (sub-millisecond in
-// practice) — good enough for the demo line but not for ground-truth
-// forensics. A future refactor could switch to clock_gettime(CLOCK_BOOTTIME)
-// for a static offset that doesn't depend on the first event.
+// timeFormat is the layout used by RenderPaired/RenderAbandoned. It carries
+// full date and a fixed-width timezone offset (never the bare "Z" RFC 3339
+// allows for UTC) so every stdout line is unambiguous once redirected to a
+// file and read back later, independent of the reader's local time (#193).
+const timeFormat = "2006-01-02T15:04:05.000-07:00"
+
+// TimeAnchor converts BPF ktime (monotonic ns since boot) values into wall
+// clock time via a single fixed (wall, ktime) correlation point captured once
+// by NewTimeAnchor. Every timestamp is then a pure linear offset from that
+// point, so accuracy no longer depends on how long any particular event took
+// to reach userspace — the previous design anchored on the first observed
+// event instead, inheriting that event's (usually sub-millisecond, but
+// unbounded in the worst case) delivery delay as error for every timestamp
+// after it.
 type TimeAnchor struct {
 	wallStart time.Time
 	bpfStart  uint64
-	set       bool
 }
 
-func (a *TimeAnchor) WallTime(tsNs uint64) time.Time {
-	if !a.set {
-		a.wallStart = time.Now()
-		a.bpfStart = tsNs
-		a.set = true
+// clockGettime is a var so tests can force the failure path below; every
+// production caller uses the real syscall.
+var clockGettime = unix.ClockGettime
+
+// NewTimeAnchor samples wall-clock time and CLOCK_MONOTONIC back-to-back.
+// CLOCK_MONOTONIC is the same clock domain the kernel's bpf_ktime_get_ns()
+// reads (bpf-helpers(7): "time elapsed since system boot... does not include
+// time the system was suspended") — so the two readings correlate directly
+// with the ktime values events arrive with.
+//
+// clock_gettime is not expected to fail for this fixed, valid clock id on
+// Linux, but silently ignoring an error here would leave ts at its zero
+// value and corrupt every WallTime conversion for the rest of the process's
+// life with no signal — exactly the kind of silent bad data this anchor
+// redesign exists to eliminate. Fail loud instead.
+func NewTimeAnchor() TimeAnchor {
+	var ts unix.Timespec
+	wall := time.Now()
+	if err := clockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		panic(fmt.Sprintf("clock_gettime(CLOCK_MONOTONIC): %v", err))
 	}
+	return TimeAnchor{wallStart: wall, bpfStart: uint64(ts.Nano())}
+}
+
+func (a TimeAnchor) WallTime(tsNs uint64) time.Time {
 	delta := int64(tsNs) - int64(a.bpfStart)
 	return a.wallStart.Add(time.Duration(delta))
 }
@@ -43,12 +70,12 @@ const sslFallbackMarker = "  [ssl-keyed, fd unverified]"
 // start lines show up under `-v` via RenderPairedDetail. The column widths
 // keep typical short paths aligned; long paths overflow rather than truncate.
 //
-//	12:47:57.005  python3[27122]  GET   /                        200    1304B     0.3ms
+//	2026-08-01T12:47:57.005+09:00  python3[27122]  GET   /                        200    1304B     0.3ms
 func RenderPaired(p PairedEvent, when time.Time) string {
 	latencyMs := float64(p.Latency) / float64(time.Millisecond)
 	who := fmt.Sprintf("%s[%d]", p.Comm, p.Pid)
 	line := fmt.Sprintf("%s  %-16s %-5s %-24s %3d %8s %9s",
-		when.Format("15:04:05.000"),
+		when.Format(timeFormat),
 		who,
 		p.Method, p.Path, p.Status,
 		fmt.Sprintf("%dB", p.ResBytes),
@@ -63,12 +90,12 @@ func RenderPaired(p PairedEvent, when time.Time) string {
 // received a response. Columns align with RenderPaired: the status+bytes
 // field (12 chars) is replaced by the literal "ABANDONED".
 //
-//	12:47:57.005  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
+//	2026-08-01T12:47:57.005+09:00  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
 func RenderAbandoned(p PairedEvent, when time.Time) string {
 	latencyMs := float64(p.Latency) / float64(time.Millisecond)
 	who := fmt.Sprintf("%s[%d]", p.Comm, p.Pid)
 	line := fmt.Sprintf("%s  %-16s %-5s %-24s %-12s %9s  (%s)",
-		when.Format("15:04:05.000"),
+		when.Format(timeFormat),
 		who,
 		p.Method, p.Path,
 		"ABANDONED",

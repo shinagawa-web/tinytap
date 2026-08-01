@@ -32,7 +32,7 @@ type Sink struct {
 // caller (so the first frame is laid out correctly before Bubble Tea's own
 // WindowSizeMsg arrives). It does not start the UI — call Run for that.
 func New(width, height int) *Sink {
-	s := &Sink{}
+	s := &Sink{anchor: http.NewTimeAnchor()}
 	s.prog = tea.NewProgram(newModel(width, height), tea.WithAltScreen())
 	return s
 }

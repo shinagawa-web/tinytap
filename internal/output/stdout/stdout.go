@@ -36,7 +36,7 @@ type Sink struct {
 // verbose is set, each summary line is followed by its request/response
 // start lines and headers.
 func New(verbose bool) *Sink {
-	return &Sink{w: os.Stdout, verbose: verbose}
+	return &Sink{w: os.Stdout, verbose: verbose, anchor: http.NewTimeAnchor()}
 }
 
 // OnEvent is a no-op: stdout does not print raw per-syscall lines (#63). The

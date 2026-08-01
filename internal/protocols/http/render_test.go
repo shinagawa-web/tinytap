@@ -1,9 +1,12 @@
 package http
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestRenderPairedEventMatchesSpecFormat(t *testing.T) {
@@ -16,7 +19,7 @@ func TestRenderPairedEventMatchesSpecFormat(t *testing.T) {
 	}
 	when := time.Date(2026, 6, 8, 19, 35, 24, 123_000_000, time.UTC)
 	got := RenderPaired(pe, when)
-	want := "19:35:24.123  python3[5936]    GET   /                        200     649B     1.2ms"
+	want := "2026-06-08T19:35:24.123+00:00  python3[5936]    GET   /                        200     649B     1.2ms"
 	if got != want {
 		t.Errorf("\n got: %q\nwant: %q", got, want)
 	}
@@ -56,7 +59,7 @@ func TestRenderAbandonedFormat(t *testing.T) {
 	}
 	when := time.Date(2026, 6, 8, 12, 47, 57, 5_000_000, time.UTC)
 	got := RenderAbandoned(pe, when)
-	want := "12:47:57.005  curl[1234]       GET   /api                     ABANDONED       12.3ms  (peer closed)"
+	want := "2026-06-08T12:47:57.005+00:00  curl[1234]       GET   /api                     ABANDONED       12.3ms  (peer closed)"
 	if got != want {
 		t.Errorf("\n got: %q\nwant: %q", got, want)
 	}
@@ -110,20 +113,58 @@ func TestRenderAbandonedSSLFallbackMarker(t *testing.T) {
 	}
 }
 
-// TimeAnchor must extrapolate correctly for events whose ktime is before
-// (smaller than) the anchor — a request that landed slightly earlier than
-// its response, where we anchor on the response.
-func TestTimeAnchorExtrapolatesBackwards(t *testing.T) {
-	var a TimeAnchor
-	resTs := uint64(2_000_000_000)
-	resWall := a.WallTime(resTs)
-	// Request 5 ms earlier (in BPF ns).
-	reqWall := a.WallTime(resTs - 5_000_000)
+// WallTime is a pure linear offset from the anchor's fixed (wall, ktime)
+// point — unlike the previous design, no call re-anchors it. This covers
+// both directions: a ktime after the anchor and one before it (a request
+// that landed slightly earlier than the response the anchor happened to be
+// taken from).
+func TestTimeAnchorWallTimeIsLinearInKtime(t *testing.T) {
+	a := TimeAnchor{wallStart: time.Date(2026, 6, 8, 19, 35, 24, 0, time.UTC), bpfStart: 2_000_000_000}
+	resWall := a.WallTime(2_000_000_000)
+	reqWall := a.WallTime(2_000_000_000 - 5_000_000)
+	laterWall := a.WallTime(2_000_000_000 + 5_000_000)
+	if !resWall.Equal(a.wallStart) {
+		t.Errorf("WallTime at the anchor ktime should equal wallStart, got %v", resWall)
+	}
 	if delta := resWall.Sub(reqWall); delta != 5*time.Millisecond {
-		t.Errorf("want 5ms gap, got %v", delta)
+		t.Errorf("want 5ms gap before the anchor, got %v", delta)
 	}
-	// Anchoring is one-shot; the second event must not have reset it.
-	if !strings.HasPrefix(reqWall.Format("15:04:05.000"), resWall.Add(-5*time.Millisecond).Format("15:04:05.00")) {
-		t.Errorf("reqWall=%v should be 5ms before resWall=%v", reqWall, resWall)
+	if delta := laterWall.Sub(resWall); delta != 5*time.Millisecond {
+		t.Errorf("want 5ms gap after the anchor, got %v", delta)
 	}
+}
+
+// NewTimeAnchor must correlate real wall-clock and monotonic time at the
+// moment it's called, not at whatever moment the first event happens to
+// arrive (#193).
+func TestNewTimeAnchorCorrelatesRealClocks(t *testing.T) {
+	before := time.Now()
+	a := NewTimeAnchor()
+	after := time.Now()
+
+	if a.wallStart.Before(before) || a.wallStart.After(after) {
+		t.Errorf("wallStart=%v should fall within [%v, %v]", a.wallStart, before, after)
+	}
+	// WallTime at the anchor's own ktime must reproduce wallStart exactly.
+	if got := a.WallTime(a.bpfStart); !got.Equal(a.wallStart) {
+		t.Errorf("WallTime(bpfStart) = %v, want %v", got, a.wallStart)
+	}
+}
+
+// A clock_gettime failure must not be silently swallowed into a zero-valued
+// anchor that would corrupt every later WallTime conversion with no signal
+// — NewTimeAnchor must fail loud instead.
+func TestNewTimeAnchorPanicsOnClockGettimeError(t *testing.T) {
+	orig := clockGettime
+	defer func() { clockGettime = orig }()
+	clockGettime = func(int32, *unix.Timespec) error {
+		return errors.New("simulated clock_gettime failure")
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Error("NewTimeAnchor should panic when clock_gettime fails")
+		}
+	}()
+	NewTimeAnchor()
 }
