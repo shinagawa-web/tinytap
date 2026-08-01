@@ -366,6 +366,55 @@ func TestInit_EncodeErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestInit_CreatesParentDirs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "dirs", "tinytap.toml")
+
+	if err := Init(path, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err != nil {
+		t.Fatalf("generated file didn't load: %v", err)
+	}
+}
+
+func TestInit_FilterDefaultsSurviveNilNormalization(t *testing.T) {
+	old := defaultConfig
+	defaultConfig = func() Config {
+		return Config{Output: "auto", Filter: FilterConfig{PID: []uint32{99}}}
+	}
+	defer func() { defaultConfig = old }()
+
+	path := filepath.Join(t.TempDir(), "tinytap.toml")
+	if err := Init(path, false); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Filter.PID) != 1 || cfg.Filter.PID[0] != 99 {
+		t.Errorf("Filter.PID = %v, want [99] (a non-nil default must survive Init's nil-normalization)", cfg.Filter.PID)
+	}
+	if cfg.Filter.Comm == nil {
+		t.Error("Filter.Comm = nil, want normalized to []string{}")
+	}
+}
+
+func TestInit_MkdirAllErrorPropagates(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	write(t, blocker, "") // a regular file, not a directory
+	path := filepath.Join(blocker, "sub", "tinytap.toml")
+
+	// force=true so the pre-check (which would itself fail to stat a path
+	// under a non-directory) is skipped, isolating MkdirAll's own error.
+	if err := Init(path, true); err == nil {
+		t.Error("want error when the parent directory can't be created")
+	}
+}
+
 func TestInit_WriteFileErrorPropagates(t *testing.T) {
 	// A directory as the target path: os.WriteFile fails with EISDIR.
 	path := t.TempDir()

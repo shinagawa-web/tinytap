@@ -33,7 +33,9 @@ type FilterConfig struct {
 	Comm []string `toml:"comm"`
 }
 
-func defaultConfig() Config {
+// defaultConfig is a var (not a plain func) so tests can verify Init()
+// preserves whatever it returns instead of clobbering it.
+var defaultConfig = func() Config {
 	return Config{Output: "auto"}
 }
 
@@ -92,15 +94,27 @@ func Init(path string, force bool) error {
 	}
 
 	cfg := defaultConfig()
-	// Non-nil so the encoder writes "pid = []" / "comm = []" instead of
-	// omitting the keys entirely — the file should show every key, even
-	// ones defaulting to empty.
-	cfg.Filter = FilterConfig{PID: []uint32{}, Comm: []string{}}
+	// Normalize nil slices to empty so the encoder writes "pid = []" /
+	// "comm = []" instead of omitting the keys entirely — the file should
+	// show every key, even ones defaulting to empty. Only the nil case is
+	// touched, so this can't clobber a non-nil default defaultConfig()
+	// might set in the future.
+	if cfg.Filter.PID == nil {
+		cfg.Filter.PID = []uint32{}
+	}
+	if cfg.Filter.Comm == nil {
+		cfg.Filter.Comm = []string{}
+	}
 
 	var buf bytes.Buffer
 	buf.WriteString("# tinytap config file — see README.md's Configuration section for field docs.\n\n")
 	if err := encodeTOML(&buf, cfg); err != nil {
 		return fmt.Errorf("encode default config: %w", err)
+	}
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create %s: %w", dir, err)
+		}
 	}
 	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
