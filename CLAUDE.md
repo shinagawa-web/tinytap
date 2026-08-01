@@ -6,7 +6,7 @@ This is an OSS project. All communication, code comments, commit messages, PR de
 
 ## Project
 
-`tinytap` is a learning project — a tiny eBPF-based HTTP traffic capture tool. See `README.md` for project overview and vision.
+`tinytap` is a tiny eBPF-based HTTP traffic capture tool. See `README.md` for project overview and vision.
 
 ## Architecture
 
