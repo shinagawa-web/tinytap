@@ -42,10 +42,14 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("getwd: %w", err)
 		}
 		home, _ := os.UserHomeDir() // best-effort; "" just drops that candidate
-		path = find(cwd, os.Getenv("XDG_CONFIG_HOME"), home)
-		if path == "" {
+		found, err := find(cwd, os.Getenv("XDG_CONFIG_HOME"), home)
+		if err != nil {
+			return Config{}, err
+		}
+		if found == "" {
 			return defaultConfig(), nil
 		}
+		path = found
 	} else if _, err := os.Stat(path); err != nil {
 		return Config{}, fmt.Errorf("--config %s: %w", path, err)
 	}
@@ -61,28 +65,51 @@ func Load(path string) (Config, error) {
 }
 
 // find returns the first existing candidate in the search order, or "" if
-// none exist. A pure function of its inputs so the search order is
-// testable without touching the real cwd, env, or home directory.
-func find(cwd, xdgConfigHome, home string) string {
+// none exist. Returns an error if a candidate can't be stat'd for a reason
+// other than not existing (e.g. permission denied on a parent directory) —
+// that should surface as a real error, not silently fall through to
+// defaults. A pure function of its inputs so the search order is testable
+// without touching the real cwd, env, or home directory.
+func find(cwd, xdgConfigHome, home string) (string, error) {
 	if cwd != "" {
-		if p := filepath.Join(cwd, "tinytap.toml"); exists(p) {
-			return p
+		p := filepath.Join(cwd, "tinytap.toml")
+		ok, err := exists(p)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return p, nil
 		}
 	}
 	if xdgConfigHome == "" && home != "" {
 		xdgConfigHome = filepath.Join(home, ".config")
 	}
 	if xdgConfigHome != "" {
-		if p := filepath.Join(xdgConfigHome, "tinytap", "config.toml"); exists(p) {
-			return p
+		p := filepath.Join(xdgConfigHome, "tinytap", "config.toml")
+		ok, err := exists(p)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return p, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
-func exists(path string) bool {
+// exists reports whether path is stat-able. A "not found" error is not
+// exceptional — it just means this candidate isn't the one — but any other
+// error (permission denied, I/O error) is returned so the caller can
+// surface it instead of silently treating it as "doesn't exist".
+func exists(path string) (bool, error) {
 	_, err := os.Stat(path)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 func (c Config) validate() error {
