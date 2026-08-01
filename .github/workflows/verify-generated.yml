@@ -61,7 +61,12 @@ jobs:
 
       - name: Fail if committed artifacts are out of sync with bpf/*.c
         run: |
-          if ! git diff --exit-code -- bpf internal/loader/bpf; then
+          # git diff alone misses newly generated files bpf2go hasn't
+          # emitted before (they're untracked, not modified) — git status
+          # --porcelain catches both.
+          if [ -n "$(git status --porcelain -- bpf internal/loader/bpf)" ]; then
+            git status --porcelain -- bpf internal/loader/bpf
+            git diff -- bpf internal/loader/bpf
             echo "::error::Committed bpf2go artifacts (internal/loader/bpf/*_bpf*.go, *.o) don't match bpf/*.c. Run 'make generate' with clang-17 and commit the result."
             exit 1
           fi
