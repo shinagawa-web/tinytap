@@ -70,6 +70,12 @@ const sslFallbackMarker = "  [ssl-keyed, fd unverified]"
 // start lines show up under `-v` via RenderPairedDetail. The column widths
 // keep typical short paths aligned; long paths overflow rather than truncate.
 //
+// This is a deliberately curated subset of PairedEvent, not the full
+// record — EncodeJSONL (jsonl.go) is that. jsonl_test.go's
+// TestPairedEventFieldsAreClassified is what keeps this curation honest:
+// it fails if a new PairedEvent field isn't consciously placed in or kept
+// out of this line (#192).
+//
 //	2026-08-01T12:47:57.005+09:00  python3[27122]  GET   /                        200    1304B     0.3ms
 func RenderPaired(p PairedEvent, when time.Time) string {
 	latencyMs := float64(p.Latency) / float64(time.Millisecond)
