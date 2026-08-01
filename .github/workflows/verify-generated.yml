@@ -6,14 +6,8 @@ permissions:
 on:
   push:
     branches: [main]
-    paths:
-      - "bpf/**"
-      - "internal/loader/bpf/**"
   pull_request:
     branches: [main]
-    paths:
-      - "bpf/**"
-      - "internal/loader/bpf/**"
   workflow_dispatch:
 
 jobs:
