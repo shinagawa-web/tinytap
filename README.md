@@ -184,7 +184,9 @@ source ~/.bashrc
 
 ## License
 
-Not yet licensed — no `LICENSE` file is checked in. MIT is the intended license once one is added.
+MIT — see [`LICENSE`](LICENSE). Exception: [`bpf/vmlinux.h`](bpf/vmlinux.h) is
+generated from the Linux kernel's BTF info and is distributed under the
+kernel's GPL-2.0 license instead.
 
 ## References
 
