@@ -12,5 +12,12 @@ var (
 )
 
 func printVersion() {
-	fmt.Printf("tinytap %s (commit %s, built %s)\n", version, commit, date)
+	fmt.Println(versionLine())
+}
+
+// versionLine is the single-line build identity string, shared by
+// printVersion and `tinytap doctor`'s report header (#209) so a pasted
+// bug report carries it either way.
+func versionLine() string {
+	return fmt.Sprintf("tinytap %s (commit %s, built %s)", version, commit, date)
 }

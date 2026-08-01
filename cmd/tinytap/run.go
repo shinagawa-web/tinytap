@@ -75,6 +75,9 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "config" {
 		return runConfigCmd(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "doctor" {
+		return runDoctorCmd()
+	}
 
 	cfg, err := parseFlags(os.Args[1:])
 	if err != nil {
@@ -97,7 +100,7 @@ func run() error {
 
 	tt, err := loadBPF(uint32(os.Getpid()))
 	if err != nil {
-		return fmt.Errorf("load: %w", err)
+		return classifyLoadError(err)
 	}
 	defer func() {
 		if err := tt.Close(); err != nil {
