@@ -18,8 +18,9 @@ import (
 
 // appConfig holds the parsed CLI flags.
 type appConfig struct {
-	outputMode string
-	verbose    bool
+	outputMode  string
+	verbose     bool
+	showVersion bool
 }
 
 // parseFlags parses args using a fresh FlagSet so it is safe to call from tests.
@@ -29,8 +30,12 @@ func parseFlags(args []string) (appConfig, error) {
 	outputMode := fs.String("output", "auto", "output mode: auto (TUI on a terminal), stdout (line stream), tui")
 	verbose := fs.Bool("v", false, "verbose: hang request/response headers under each exchange (stdout only)")
 	fs.BoolVar(verbose, "verbose", false, "alias for -v")
+	showVersion := fs.Bool("version", false, "print version, commit, and build date, then exit")
 	if err := fs.Parse(args); err != nil {
 		return appConfig{}, err
+	}
+	if *showVersion {
+		return appConfig{showVersion: true}, nil
 	}
 	switch *outputMode {
 	case "auto", "stdout", "tui":
@@ -78,6 +83,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if cfg.showVersion {
+		printVersion()
+		return nil
+	}
 
 	decision, w, h := decideOutput(cfg.outputMode, isTerminalFn, getSizeFn)
 	if decision == outputExit {
@@ -115,7 +124,7 @@ func closeOnInterrupt(rd io.Closer, stop <-chan os.Signal) {
 func runStdout(rd ringbufCloser, verbose bool) {
 	sink := newSSLWatcher(newStdoutSink(verbose))
 	defer closeSink(sink)
-	log.Println("tinytap running — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.")
+	log.Printf("tinytap running (version %s) — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.", version)
 	stop := make(chan os.Signal, 1)
 	// SIGTERM alongside SIGINT (#154): without it, a supervisor's or test
 	// harness's graceful-shutdown signal (conventionally SIGTERM, e.g.

@@ -30,7 +30,8 @@ interactive terminal of at least 120x24; otherwise it prints guidance and
 exits rather than silently streaming — the line stream is opt-in via
 `--output stdout`. `--output tui` forces the TUI (and exits the same way if
 the terminal can't host it); `-v` / `--verbose` hangs the full
-request/response headers under each stdout line.
+request/response headers under each stdout line. `--version` prints the
+build's version, commit, and date, and exits without needing root.
 
 ## Current limitations
 

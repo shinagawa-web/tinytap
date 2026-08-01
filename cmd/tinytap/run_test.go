@@ -171,6 +171,26 @@ func TestParseFlags_UnknownFlag(t *testing.T) {
 	}
 }
 
+func TestParseFlags_Version(t *testing.T) {
+	cfg, err := parseFlags([]string{"--version"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.showVersion {
+		t.Error("want showVersion=true")
+	}
+}
+
+func TestParseFlags_VersionSkipsOutputValidation(t *testing.T) {
+	cfg, err := parseFlags([]string{"--output", "bad", "--version"})
+	if err != nil {
+		t.Fatalf("want no error, --version should bypass --output validation, got %v", err)
+	}
+	if !cfg.showVersion {
+		t.Error("want showVersion=true")
+	}
+}
+
 // --- run() ---
 
 func TestRun_ParseFlagsError(t *testing.T) {
@@ -180,6 +200,25 @@ func TestRun_ParseFlagsError(t *testing.T) {
 
 	if err := run(); err == nil {
 		t.Error("want error for unknown flag")
+	}
+}
+
+func TestRun_Version(t *testing.T) {
+	old := os.Args
+	os.Args = []string{"tinytap", "--version"}
+	defer func() { os.Args = old }()
+
+	// loadBPF must not be called for --version — it should exit before any
+	// eBPF loading, so it works without root or capabilities.
+	oldLoad := loadBPF
+	loadBPF = func(uint32) (bpfSession, error) {
+		t.Fatal("loadBPF must not be called for --version")
+		return nil, nil
+	}
+	defer func() { loadBPF = oldLoad }()
+
+	if err := run(); err != nil {
+		t.Fatalf("want nil error, got %v", err)
 	}
 }
 
