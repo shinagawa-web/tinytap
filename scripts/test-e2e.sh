@@ -40,6 +40,12 @@ URL="http://localhost:${PORT}/"
 # it's built into the repo root instead (gitignored, like the plain `tinytap`
 # build artifact).
 TT_BIN="${PWD}/tinytap-e2e"
+# The capability set granted to TT_BIN via setcap. Overridable so the
+# drop-one-at-a-time verification in docs/capabilities.md can re-run this
+# suite under a reduced set (e.g. TT_CAPS=cap_dac_read_search,cap_perfmon,cap_bpf)
+# instead of hand-rolling an equivalent harness. Scenarios that need a
+# dropped capability are expected to fail — that's the point of the exercise.
+TT_CAPS="${TT_CAPS:-cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog}"
 TT_OUT=/tmp/tinytap-e2e.log
 PY_LOG=/tmp/tinytap-e2e-py.log
 SLOW_LOG=/tmp/tinytap-e2e-slow.log
@@ -189,8 +195,8 @@ check_no_leftover_processes() {
 echo "==> building tinytap"
 go build -o "${TT_BIN}" ./cmd/tinytap/
 
-echo "==> setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog on tinytap-e2e (see docs/capabilities.md — cap_sys_admin is for the TLS uprobe scenario, cap_syslog is for x86_64's live kallsyms lookup in the sendfile payload-capture kprobe)"
-sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog=eip "${TT_BIN}"
+echo "==> setcap ${TT_CAPS} on tinytap-e2e (see docs/capabilities.md — cap_sys_admin is for the TLS uprobe scenario, cap_syslog is for x86_64's live kallsyms lookup in the sendfile payload-capture kprobe)"
+sudo setcap "${TT_CAPS}=eip" "${TT_BIN}"
 
 # ── Scenario 2 setup: slow server (never responds) ───────────────────────────
 # A Python server that accepts a connection but never sends a response,
