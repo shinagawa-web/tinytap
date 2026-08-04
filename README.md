@@ -67,7 +67,7 @@ exits before any eBPF load), and `config init` (above).
 ## Current limitations
 
 - HTTP/1.1 only — no HTTP/2, gRPC, or other protocols yet
-- TLS capture covers processes that have `libssl.so` loaded and call `SSL_set_fd` directly (nginx, Python's `ssl` module, etc.); clients that hand OpenSSL a custom `BIO` instead (e.g. curl) have their plaintext captured but not yet paired into an exchange (#179) — see [`docs/tls-compat.md`](docs/tls-compat.md)
+- TLS capture covers processes that have `libssl.so` loaded and call `SSL_set_fd` directly (nginx, Python's `ssl` module, etc.); clients that hand OpenSSL a custom `BIO` instead (e.g. curl) are paired via a separate SSL*-keyed stream (#179) — see [`docs/tls-compat.md`](docs/tls-compat.md)
 - Single host — no cross-container attribution or cross-service correlation yet
 - Response bodies are sampled up to a fixed per-syscall cap, not captured in full (see [`docs/server-compat.md`](docs/server-compat.md) for exactly how each server's syscall pattern affects this)
 - `sendfile`-based transfers only carry payload bytes on amd64/arm64 — other architectures see the exchange but not the sampled body
