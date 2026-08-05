@@ -3,3 +3,4 @@ coverage:
     - "**/*_bpfel.go"
     - "**/*_bpfeb.go"
     - "internal/loader/load.go"
+    - "internal/doctor/dryrun_real.go"

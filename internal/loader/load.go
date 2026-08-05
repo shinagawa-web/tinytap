@@ -12,6 +12,39 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
 )
 
+// TracepointSpec names one syscalls tracepoint Load attaches to, plus an
+// optional fallback name tried when the primary one doesn't exist on this
+// kernel (see the sendfile/sendfile64 comment below).
+type TracepointSpec struct {
+	Name     string
+	Fallback string
+}
+
+// Tracepoints is the exact list Load attaches, in attach order — exported
+// so internal/doctor's preflight check can confirm each one exists under
+// /sys/kernel/tracing/events/syscalls/ without duplicating (and risking
+// drift from) this list.
+var Tracepoints = []TracepointSpec{
+	{Name: "sys_enter_accept4"},
+	{Name: "sys_enter_read"},
+	{Name: "sys_enter_write"},
+	{Name: "sys_enter_close"},
+	{Name: "sys_enter_recvfrom"},
+	{Name: "sys_enter_sendto"},
+	{Name: "sys_enter_recvmsg"},
+	{Name: "sys_enter_sendmsg"},
+	{Name: "sys_enter_writev"},
+	{Name: "sys_enter_readv"},
+	// sendfile tracepoint name varies by kernel: most expose sendfile64,
+	// but some kernels (older or with different config) expose sendfile.
+	{Name: "sys_enter_sendfile64", Fallback: "sys_enter_sendfile"},
+	{Name: "sys_exit_read"},
+	{Name: "sys_exit_recvfrom"},
+	{Name: "sys_exit_recvmsg"},
+	{Name: "sys_exit_readv"},
+	{Name: "sys_exit_sendfile64", Fallback: "sys_exit_sendfile"},
+}
+
 // Load locks memory, loads the BPF spec, sets the `own_pid` variable so
 // the BPF side can skip events from this process (and avoid a logging
 // feedback loop), attaches all tracepoints, and opens the ringbuf. On
@@ -35,37 +68,35 @@ func Load(ownPid uint32) (*Tinytap, error) {
 		return nil, fmt.Errorf("load objects: %w", err)
 	}
 
-	attaches := []struct {
-		name     string
-		fallback string // alternate tracepoint name tried when name is absent
-		prog     *ebpf.Program
-	}{
-		{"sys_enter_accept4", "", tt.objs.HandleAccept4},
-		{"sys_enter_read", "", tt.objs.HandleRead},
-		{"sys_enter_write", "", tt.objs.HandleWrite},
-		{"sys_enter_close", "", tt.objs.HandleClose},
-		{"sys_enter_recvfrom", "", tt.objs.HandleRecvfrom},
-		{"sys_enter_sendto", "", tt.objs.HandleSendto},
-		{"sys_enter_recvmsg", "", tt.objs.HandleRecvmsg},
-		{"sys_enter_sendmsg", "", tt.objs.HandleSendmsg},
-		{"sys_enter_writev", "", tt.objs.HandleWritev},
-		{"sys_enter_readv", "", tt.objs.HandleReadv},
-		// sendfile tracepoint name varies by kernel: most expose sendfile64,
-		// but some kernels (older or with different config) expose sendfile.
-		{"sys_enter_sendfile64", "sys_enter_sendfile", tt.objs.HandleSendfile},
-		{"sys_exit_read", "", tt.objs.HandleExitRead},
-		{"sys_exit_recvfrom", "", tt.objs.HandleExitRecvfrom},
-		{"sys_exit_recvmsg", "", tt.objs.HandleExitRecvmsg},
-		{"sys_exit_readv", "", tt.objs.HandleExitReadv},
-		{"sys_exit_sendfile64", "sys_exit_sendfile", tt.objs.HandleExitSendfile},
+	progs := []*ebpf.Program{
+		tt.objs.HandleAccept4,
+		tt.objs.HandleRead,
+		tt.objs.HandleWrite,
+		tt.objs.HandleClose,
+		tt.objs.HandleRecvfrom,
+		tt.objs.HandleSendto,
+		tt.objs.HandleRecvmsg,
+		tt.objs.HandleSendmsg,
+		tt.objs.HandleWritev,
+		tt.objs.HandleReadv,
+		tt.objs.HandleSendfile,
+		tt.objs.HandleExitRead,
+		tt.objs.HandleExitRecvfrom,
+		tt.objs.HandleExitRecvmsg,
+		tt.objs.HandleExitReadv,
+		tt.objs.HandleExitSendfile,
 	}
-	for _, a := range attaches {
-		tp, err := link.Tracepoint("syscalls", a.name, a.prog, nil)
-		if err != nil && a.fallback != "" {
-			tp, err = link.Tracepoint("syscalls", a.fallback, a.prog, nil)
+	if len(progs) != len(Tracepoints) {
+		return nil, fmt.Errorf("progs (%d) and Tracepoints (%d) are out of sync: %w",
+			len(progs), len(Tracepoints), tt.Close())
+	}
+	for i, tpSpec := range Tracepoints {
+		tp, err := link.Tracepoint("syscalls", tpSpec.Name, progs[i], nil)
+		if err != nil && tpSpec.Fallback != "" {
+			tp, err = link.Tracepoint("syscalls", tpSpec.Fallback, progs[i], nil)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("attach %s: %w", a.name, errors.Join(err, tt.Close()))
+			return nil, fmt.Errorf("attach %s: %w", tpSpec.Name, errors.Join(err, tt.Close()))
 		}
 		tt.tracepoints = append(tt.tracepoints, tp)
 	}
