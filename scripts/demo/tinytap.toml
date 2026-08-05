@@ -1,0 +1,6 @@
+output = "tui"
+verbose = true
+
+[filter]
+pid=[]
+comm=[]

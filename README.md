@@ -4,14 +4,15 @@
 
 > A tiny eBPF-based HTTP traffic capture tool for local development.
 
-![tinytap's TUI capturing live HTTP traffic: a scrolling table of requests with a detail panel](docs/tui-demo.gif)
+![Left: an ordinary app makes one HTTPS API call. Right: tinytap shows the exact request it sent — headers, Authorization: Bearer, and the JSON body — in plaintext, with no proxy and no CA certificate installed](docs/tui-demo.gif)
 
-The TUI mode shown above (`output = "tui"` in the config file — see
-[Configuration](#configuration)) shows the live request table (`j`/`k` to
-scroll), the detail panel (`Enter` to open, `b` to toggle the hex body view).
-Regenerate it with `vhs scripts/tinytap.tape` from the Mac host — see
-[`docs/recording-tui-gifs.md`](docs/recording-tui-gifs.md) for the full
-hand-off procedure.
+Left: an ordinary app calling an API over HTTPS. Right: tinytap's TUI
+(`output = "tui"` in the config file — see [Configuration](#configuration))
+showing the exact bytes that app sent — the request line, every header
+including `Authorization: Bearer`, and the decoded JSON body — in plaintext,
+with no proxy and no CA certificate installed. In the request table `j`/`k`
+scroll and `Enter` opens the detail panel (`b` toggles the hex body view). See
+[`scripts/demo/`](scripts/demo/) for how the gif is recorded.
 
 ## What it does today
 
