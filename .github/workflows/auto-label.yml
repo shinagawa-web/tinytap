@@ -1,0 +1,74 @@
+name: "Auto Label PR"
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, labeled, unlabeled, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  auto-label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Auto label based on PR title
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = context.payload.pull_request.title.toLowerCase();
+            const labels = [];
+
+            // Parse `type(scope)!: summary` once, so a `!` before the colon
+            // (e.g. `feat!:`) doesn't stop the type prefix from matching.
+            const match = title.match(/^([a-z]+)(\(([^)]+)\))?(!)?:/);
+            const type = match ? match[1] : null;
+            const scope = match ? match[3] : null;
+            const breaking = match ? Boolean(match[4]) : false;
+            const isDeps = scope === 'deps';
+
+            const TYPE_LABELS = {
+              feat: 'enhancement',
+              fix: isDeps ? 'dependencies' : 'bug',
+              docs: 'documentation',
+              test: 'test',
+              chore: isDeps ? 'dependencies' : 'chore',
+              refactor: 'refactor',
+              ci: 'ci',
+              build: 'build',
+              deps: 'dependencies',
+            };
+
+            if (type && TYPE_LABELS[type]) {
+              labels.push(TYPE_LABELS[type]);
+            }
+            if (breaking) {
+              labels.push('breaking-change');
+            }
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: labels
+              });
+              console.log(`Added labels: ${labels.join(', ')}`);
+            } else {
+              console.log('No matching labels found for PR title');
+            }
+
+  check-labels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: auto-label
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Check for labels
+        uses: docker://agilepathway/pull-request-label-checker@sha256:65e57fd98ba3ab6ca4fcbc5a0aef288dd984ee4ab988f124d83424d19b55b801
+        with:
+          one_of: bug,documentation,enhancement,breaking-change,dependencies,chore,refactor,test,ci,build
+          repo_token: ${{ secrets.GITHUB_TOKEN }}

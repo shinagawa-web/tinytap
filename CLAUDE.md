@@ -92,6 +92,28 @@ sudo ./tinytap
 
 Run `make install` once per worktree after cloning or creating a new worktree — it installs the pre-push hook that runs lint, tests, and coverage checks before every push.
 
+### PR title convention
+
+PR titles must follow [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): summary`, e.g. `feat(cli): add --version flag`, `chore(license): add MIT LICENSE`. `.github/workflows/auto-label.yml` labels PRs from the title and fails a required check if none of the recognized types match, so getting the prefix right is not optional.
+
+Recognized types and their label:
+
+| Type       | Label           |
+|------------|-----------------|
+| `feat`     | `enhancement`   |
+| `fix`      | `bug`           |
+| `docs`     | `documentation` |
+| `test`     | `test`          |
+| `chore`    | `chore`         |
+| `refactor` | `refactor`      |
+| `ci`       | `ci`            |
+| `build`    | `build`         |
+| `deps`, or `fix(deps)`/`chore(deps)` | `dependencies` |
+
+Append `!` before the colon (e.g. `feat(cli)!: ...`) for a breaking change — it adds the `breaking-change` label on top of the type label.
+
+The scope is the component, not the type — `cli:`, `license:`, `config:` read as scopes, so write `feat(cli): ...` / `chore(license): ...` instead. Existing merged history predates this convention and doesn't need retrofitting.
+
 ## Terminology
 
 For socket I/O, prefer **process-relative** vocabulary in code comments, commit messages, PR descriptions, and issues:
