@@ -86,6 +86,10 @@ func Load(ownPid uint32) (*Tinytap, error) {
 		tt.objs.HandleExitReadv,
 		tt.objs.HandleExitSendfile,
 	}
+	if len(progs) != len(Tracepoints) {
+		return nil, fmt.Errorf("progs (%d) and Tracepoints (%d) are out of sync: %w",
+			len(progs), len(Tracepoints), tt.Close())
+	}
 	for i, tpSpec := range Tracepoints {
 		tp, err := link.Tracepoint("syscalls", tpSpec.Name, progs[i], nil)
 		if err != nil && tpSpec.Fallback != "" {
