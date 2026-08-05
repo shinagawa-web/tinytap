@@ -1,0 +1,81 @@
+name: "Auto Label PR"
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, labeled, unlabeled, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  auto-label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Auto label based on PR title
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = context.payload.pull_request.title.toLowerCase();
+            const labels = [];
+            const isDeps = /^[a-z]+\(deps\)/.test(title);
+
+            // Conventional Commits pattern matching
+            if (title.startsWith('feat:') || title.startsWith('feat(')) {
+              labels.push('enhancement');
+            }
+            if (title.startsWith('fix:') || title.startsWith('fix(')) {
+              labels.push(isDeps ? 'dependencies' : 'bug');
+            }
+            if (title.startsWith('docs:') || title.startsWith('docs(')) {
+              labels.push('documentation');
+            }
+            if (title.startsWith('test:') || title.startsWith('test(')) {
+              labels.push('test');
+            }
+            if (title.startsWith('chore:') || title.startsWith('chore(')) {
+              labels.push(isDeps ? 'dependencies' : 'chore');
+            }
+            if (title.startsWith('refactor:') || title.startsWith('refactor(')) {
+              labels.push('refactor');
+            }
+            if (title.startsWith('ci:') || title.startsWith('ci(')) {
+              labels.push('ci');
+            }
+            if (title.startsWith('build:') || title.startsWith('build(')) {
+              labels.push('build');
+            }
+            if (title.startsWith('deps:') || title.startsWith('deps(')) {
+              labels.push('dependencies');
+            }
+            // Breaking change: matches conventional commit format (e.g., feat!:, fix(scope)!:)
+            if (/^[a-z]+(\([^)]+\))?!:/.test(title)) {
+              labels.push('breaking-change');
+            }
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: labels
+              });
+              console.log(`Added labels: ${labels.join(', ')}`);
+            } else {
+              console.log('No matching labels found for PR title');
+            }
+
+  check-labels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: auto-label
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Check for labels
+        uses: docker://agilepathway/pull-request-label-checker@sha256:65e57fd98ba3ab6ca4fcbc5a0aef288dd984ee4ab988f124d83424d19b55b801
+        with:
+          one_of: bug,documentation,duplicate,enhancement,help wanted,good first issue,invalid,question,wontfix,breaking-change,dependencies,chore,refactor,test,ci,build
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
