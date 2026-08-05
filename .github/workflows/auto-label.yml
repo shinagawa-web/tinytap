@@ -20,38 +20,31 @@ jobs:
           script: |
             const title = context.payload.pull_request.title.toLowerCase();
             const labels = [];
-            const isDeps = /^[a-z]+\(deps\)/.test(title);
 
-            // Conventional Commits pattern matching
-            if (title.startsWith('feat:') || title.startsWith('feat(')) {
-              labels.push('enhancement');
+            // Parse `type(scope)!: summary` once, so a `!` before the colon
+            // (e.g. `feat!:`) doesn't stop the type prefix from matching.
+            const match = title.match(/^([a-z]+)(\(([^)]+)\))?(!)?:/);
+            const type = match ? match[1] : null;
+            const scope = match ? match[3] : null;
+            const breaking = match ? Boolean(match[4]) : false;
+            const isDeps = scope === 'deps';
+
+            const TYPE_LABELS = {
+              feat: 'enhancement',
+              fix: isDeps ? 'dependencies' : 'bug',
+              docs: 'documentation',
+              test: 'test',
+              chore: isDeps ? 'dependencies' : 'chore',
+              refactor: 'refactor',
+              ci: 'ci',
+              build: 'build',
+              deps: 'dependencies',
+            };
+
+            if (type && TYPE_LABELS[type]) {
+              labels.push(TYPE_LABELS[type]);
             }
-            if (title.startsWith('fix:') || title.startsWith('fix(')) {
-              labels.push(isDeps ? 'dependencies' : 'bug');
-            }
-            if (title.startsWith('docs:') || title.startsWith('docs(')) {
-              labels.push('documentation');
-            }
-            if (title.startsWith('test:') || title.startsWith('test(')) {
-              labels.push('test');
-            }
-            if (title.startsWith('chore:') || title.startsWith('chore(')) {
-              labels.push(isDeps ? 'dependencies' : 'chore');
-            }
-            if (title.startsWith('refactor:') || title.startsWith('refactor(')) {
-              labels.push('refactor');
-            }
-            if (title.startsWith('ci:') || title.startsWith('ci(')) {
-              labels.push('ci');
-            }
-            if (title.startsWith('build:') || title.startsWith('build(')) {
-              labels.push('build');
-            }
-            if (title.startsWith('deps:') || title.startsWith('deps(')) {
-              labels.push('dependencies');
-            }
-            // Breaking change: matches conventional commit format (e.g., feat!:, fix(scope)!:)
-            if (/^[a-z]+(\([^)]+\))?!:/.test(title)) {
+            if (breaking) {
               labels.push('breaking-change');
             }
 
@@ -77,5 +70,5 @@ jobs:
       - name: Check for labels
         uses: docker://agilepathway/pull-request-label-checker@sha256:65e57fd98ba3ab6ca4fcbc5a0aef288dd984ee4ab988f124d83424d19b55b801
         with:
-          one_of: bug,documentation,duplicate,enhancement,help wanted,good first issue,invalid,question,wontfix,breaking-change,dependencies,chore,refactor,test,ci,build
+          one_of: bug,documentation,enhancement,breaking-change,dependencies,chore,refactor,test,ci,build
           repo_token: ${{ secrets.GITHUB_TOKEN }}
