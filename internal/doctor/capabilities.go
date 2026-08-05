@@ -21,6 +21,11 @@ const (
 
 const defaultStatusPath = "/proc/self/status"
 
+// currentGOARCH is runtime.GOARCH, injected so tests can exercise both the
+// amd64 and non-amd64 branches of the cap_syslog gate below regardless of
+// which architecture actually runs the test.
+var currentGOARCH = runtime.GOARCH
+
 // capability describes one entry in docs/capabilities.md's table.
 type capability struct {
 	name     string
@@ -60,8 +65,8 @@ func checkCapabilities(statusPath string) []Check {
 
 	checks := make([]Check, 0, len(capabilities))
 	for _, c := range capabilities {
-		if c.amd64Only && runtime.GOARCH != "amd64" {
-			checks = append(checks, Check{Name: c.name, Severity: OK, Detail: "not needed on " + runtime.GOARCH})
+		if c.amd64Only && currentGOARCH != "amd64" {
+			checks = append(checks, Check{Name: c.name, Severity: OK, Detail: "not needed on " + currentGOARCH})
 			continue
 		}
 		if effective&(uint64(1)<<c.bit) != 0 {

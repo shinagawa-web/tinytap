@@ -41,22 +41,39 @@ func TestCheckCapabilities_AllMissing(t *testing.T) {
 
 func TestCheckCapabilities_CapSyslogArchGating(t *testing.T) {
 	path := writeStatus(t, "0000000000000000")
-	checks := checkCapabilities(path)
 
-	var syslog *Check
-	for i := range checks {
-		if checks[i].Name == "cap_syslog" {
-			syslog = &checks[i]
+	findSyslog := func(t *testing.T, checks []Check) Check {
+		t.Helper()
+		for _, c := range checks {
+			if c.Name == "cap_syslog" {
+				return c
+			}
 		}
-	}
-	if syslog == nil {
 		t.Fatal("no cap_syslog check found")
+		return Check{}
 	}
-	// This test runs on whatever GOARCH the CI/dev machine is; just assert
-	// the two possible outcomes are mutually exclusive and sensible.
-	if syslog.Severity != OK && syslog.Severity != Degraded {
-		t.Errorf("cap_syslog Severity = %v, want OK (non-amd64) or Degraded (amd64, missing)", syslog.Severity)
-	}
+
+	t.Run("amd64", func(t *testing.T) {
+		orig := currentGOARCH
+		currentGOARCH = "amd64"
+		defer func() { currentGOARCH = orig }()
+
+		syslog := findSyslog(t, checkCapabilities(path))
+		if syslog.Severity != Degraded {
+			t.Errorf("cap_syslog Severity = %v, want Degraded (amd64, missing)", syslog.Severity)
+		}
+	})
+
+	t.Run("arm64", func(t *testing.T) {
+		orig := currentGOARCH
+		currentGOARCH = "arm64"
+		defer func() { currentGOARCH = orig }()
+
+		syslog := findSyslog(t, checkCapabilities(path))
+		if syslog.Severity != OK || syslog.Detail != "not needed on arm64" {
+			t.Errorf("cap_syslog = %+v, want OK / \"not needed on arm64\"", syslog)
+		}
+	})
 }
 
 func TestCheckCapabilities_MissingFile(t *testing.T) {
