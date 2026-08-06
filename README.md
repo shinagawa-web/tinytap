@@ -123,6 +123,28 @@ make run-raw   # build + run with output = "stdout" against whatever's already r
 Run `make install` once per checkout (or worktree) to install the pre-push
 hook that runs lint, tests, and coverage checks before every push.
 
+### Install a released binary
+
+No Go toolchain or clang/libbpf-dev needed — this downloads a prebuilt
+binary for a [tagged release](https://github.com/shinagawa-web/tinytap/releases):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | sh
+```
+
+Detects Linux amd64/arm64 (failing loudly on anything else, e.g. macOS/Windows
+— see [Where tinytap Runs](#where-tinytap-runs)), downloads the matching
+release archive, verifies its SHA-256 checksum against the release's
+`checksums.txt`, and installs `tinytap` to `/usr/local/bin` (falling back to
+`sudo` if that isn't writable). Two env vars change its behavior:
+
+- `TINYTAP_VERSION=v0.6.1` — pin a specific release instead of the latest
+- `INSTALL_DIR=~/bin` — install somewhere other than `/usr/local/bin`
+
+The script only verifies the SHA-256 checksum, not the cosign signature —
+see [Verifying a release download](#verifying-a-release-download) below to
+verify the full chain of trust manually.
+
 ### Verifying a release download
 
 Every [tagged release](https://github.com/shinagawa-web/tinytap/releases)
