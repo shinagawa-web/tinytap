@@ -15,40 +15,41 @@ hand-off procedure.
 
 ## Quick start
 
-Install a released binary — no Go toolchain or clang/libbpf-dev needed:
+Install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | sh
 ```
 
-Detects Linux amd64/arm64 (failing loudly on anything else, e.g. macOS/Windows
-— see [Where tinytap Runs](#where-tinytap-runs)), downloads the matching
-[release](https://github.com/shinagawa-web/tinytap/releases) archive,
-verifies its SHA-256 checksum against the release's `checksums.txt`, and
-installs `tinytap` to `/usr/local/bin` (falling back to `sudo` if that isn't
-writable). Two env vars change its behavior — set them on the `sh` side of
-the pipe, not before `curl`, since a `VAR=val curl ... | sh` prefix only
-applies to `curl`, not the piped-in script:
+Grant it the capabilities it needs, then run it — no full root required:
+
+```bash
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip $(command -v tinytap)
+tinytap
+```
+
+Linux amd64/arm64 only — on macOS/Windows, see [Where tinytap Runs](#where-tinytap-runs).
+Want HTTPS capture too, a specific version, or to build from source instead?
+See [Running without full root](#running-without-full-root),
+[Installing a specific version or location](#installing-a-specific-version-or-location),
+or [Building from source](#building-from-source).
+
+### Installing a specific version or location
+
+Two env vars change the install script's behavior — set them on the `sh`
+side of the pipe, not before `curl`, since a `VAR=val curl ... | sh` prefix
+only reaches `curl`, not the piped-in script:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | TINYTAP_VERSION=v0.6.1 sh   # pin a release instead of the latest
 curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | INSTALL_DIR=~/bin sh       # install somewhere other than /usr/local/bin
 ```
 
-Then run it:
-
-```bash
-sudo tinytap
-```
-
-Root isn't actually required — see [Running without full root](#running-without-full-root)
-for the minimal `setcap` invocation. Building from source instead (e.g. for
-development)? See [Building from source](#building-from-source).
-
 ### Verifying a release download
 
-Every [tagged release](https://github.com/shinagawa-web/tinytap/releases)
-publishes, alongside the `linux_amd64`/`linux_arm64` archives:
+The install script already verifies the downloaded archive's SHA-256
+checksum automatically. Every [tagged release](https://github.com/shinagawa-web/tinytap/releases)
+also publishes, alongside the `linux_amd64`/`linux_arm64` archives:
 
 - `checksums.txt` — SHA-256 of every archive and SBOM in the release
 - `checksums.txt.sigstore.json` — a keyless [cosign](https://docs.sigstore.dev/cosign/overview/)
@@ -57,8 +58,7 @@ publishes, alongside the `linux_amd64`/`linux_arm64` archives:
 - `<archive>.sbom.json` — an SBOM for each archive ([syft](https://github.com/anchore/syft),
   SPDX format)
 
-The install script above only verifies the SHA-256 checksum. To verify the
-full chain of trust manually:
+To verify the full chain of trust manually instead of trusting the script:
 
 ```bash
 sha256sum --check --ignore-missing checksums.txt
