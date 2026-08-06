@@ -13,6 +13,69 @@ Regenerate it with `vhs scripts/tinytap.tape` from the Mac host — see
 [`docs/recording-tui-gifs.md`](docs/recording-tui-gifs.md) for the full
 hand-off procedure.
 
+## Quick start
+
+Install a released binary — no Go toolchain or clang/libbpf-dev needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | sh
+```
+
+Detects Linux amd64/arm64 (failing loudly on anything else, e.g. macOS/Windows
+— see [Where tinytap Runs](#where-tinytap-runs)), downloads the matching
+[release](https://github.com/shinagawa-web/tinytap/releases) archive,
+verifies its SHA-256 checksum against the release's `checksums.txt`, and
+installs `tinytap` to `/usr/local/bin` (falling back to `sudo` if that isn't
+writable). Two env vars change its behavior:
+
+- `TINYTAP_VERSION=v0.6.1` — pin a specific release instead of the latest
+- `INSTALL_DIR=~/bin` — install somewhere other than `/usr/local/bin`
+
+Then run it:
+
+```bash
+sudo tinytap
+```
+
+Root isn't actually required — see [Running without full root](#running-without-full-root)
+for the minimal `setcap` invocation. Building from source instead (e.g. for
+development)? See [Building from source](#building-from-source).
+
+### Verifying a release download
+
+Every [tagged release](https://github.com/shinagawa-web/tinytap/releases)
+publishes, alongside the `linux_amd64`/`linux_arm64` archives:
+
+- `checksums.txt` — SHA-256 of every archive and SBOM in the release
+- `checksums.txt.sigstore.json` — a keyless [cosign](https://docs.sigstore.dev/cosign/overview/)
+  signature over `checksums.txt`, minted from the release workflow's own
+  GitHub Actions OIDC identity (no private key is stored anywhere)
+- `<archive>.sbom.json` — an SBOM for each archive ([syft](https://github.com/anchore/syft),
+  SPDX format)
+
+The install script above only verifies the SHA-256 checksum. To verify the
+full chain of trust manually:
+
+```bash
+sha256sum --check --ignore-missing checksums.txt
+```
+
+Verify `checksums.txt` itself was produced by tinytap's release workflow
+(requires [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) v3+):
+
+```bash
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp "^https://github.com/shinagawa-web/tinytap/\.github/workflows/release\.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+```
+
+Since every archive and SBOM is listed by digest inside `checksums.txt`,
+a passing `cosign verify-blob` on `checksums.txt` plus a passing
+`sha256sum --check` on the archive establishes the whole chain: this exact
+archive came from this exact release workflow run.
+
 ## What it does today
 
 `tinytap` attaches eBPF probes to a process's socket syscalls
@@ -94,90 +157,6 @@ only a raw error, pointing at `tinytap doctor` for the full picture.
 - `sendfile`-based transfers only carry payload bytes on amd64/arm64 — other architectures see the exchange but not the sampled body
 
 See [`docs/server-compat.md`](docs/server-compat.md) for a server-by-server breakdown of what's currently visible.
-
-## Quick start
-
-Build and run inside the Lima VM (see [Toolchain](#toolchain) below for setup):
-
-```bash
-# Regenerate Go bindings from C (only needed after editing bpf/*.c)
-cd ~/tinytap/internal/loader/bpf && go generate
-
-# Build
-cd ~/tinytap && go build ./...
-
-# Run (requires root — eBPF needs CAP_BPF/CAP_PERFMON or root)
-sudo ./tinytap
-```
-
-Root isn't actually required — see [Running without full root](#running-without-full-root)
-for the minimal `setcap` invocation.
-
-Or via `make`:
-
-```bash
-make run       # orchestrated smoke test: starts a demo HTTP server, fires a request, shows the capture
-make run-raw   # build + run with output = "stdout" against whatever's already running
-```
-
-Run `make install` once per checkout (or worktree) to install the pre-push
-hook that runs lint, tests, and coverage checks before every push.
-
-### Install a released binary
-
-No Go toolchain or clang/libbpf-dev needed — this downloads a prebuilt
-binary for a [tagged release](https://github.com/shinagawa-web/tinytap/releases):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | sh
-```
-
-Detects Linux amd64/arm64 (failing loudly on anything else, e.g. macOS/Windows
-— see [Where tinytap Runs](#where-tinytap-runs)), downloads the matching
-release archive, verifies its SHA-256 checksum against the release's
-`checksums.txt`, and installs `tinytap` to `/usr/local/bin` (falling back to
-`sudo` if that isn't writable). Two env vars change its behavior:
-
-- `TINYTAP_VERSION=v0.6.1` — pin a specific release instead of the latest
-- `INSTALL_DIR=~/bin` — install somewhere other than `/usr/local/bin`
-
-The script only verifies the SHA-256 checksum, not the cosign signature —
-see [Verifying a release download](#verifying-a-release-download) below to
-verify the full chain of trust manually.
-
-### Verifying a release download
-
-Every [tagged release](https://github.com/shinagawa-web/tinytap/releases)
-publishes, alongside the `linux_amd64`/`linux_arm64` archives:
-
-- `checksums.txt` — SHA-256 of every archive and SBOM in the release
-- `checksums.txt.sigstore.json` — a keyless [cosign](https://docs.sigstore.dev/cosign/overview/)
-  signature over `checksums.txt`, minted from the release workflow's own
-  GitHub Actions OIDC identity (no private key is stored anywhere)
-- `<archive>.sbom.json` — an SBOM for each archive ([syft](https://github.com/anchore/syft),
-  SPDX format)
-
-Verify the archive you downloaded matches the checksum:
-
-```bash
-sha256sum --check --ignore-missing checksums.txt
-```
-
-Verify `checksums.txt` itself was produced by tinytap's release workflow
-(requires [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) v3+):
-
-```bash
-cosign verify-blob \
-  --bundle checksums.txt.sigstore.json \
-  --certificate-identity-regexp "^https://github.com/shinagawa-web/tinytap/\.github/workflows/release\.yml@refs/tags/v.*" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  checksums.txt
-```
-
-Since every archive and SBOM is listed by digest inside `checksums.txt`,
-a passing `cosign verify-blob` on `checksums.txt` plus a passing
-`sha256sum --check` on the archive establishes the whole chain: this exact
-archive came from this exact release workflow run.
 
 ## Where tinytap Runs
 
@@ -291,6 +270,34 @@ sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-${ARCH}.tar.gz
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 source ~/.bashrc
 ```
+
+## Building from source
+
+Build and run inside the Lima VM (see [Toolchain](#toolchain) above for setup):
+
+```bash
+# Regenerate Go bindings from C (only needed after editing bpf/*.c)
+cd ~/tinytap/internal/loader/bpf && go generate
+
+# Build
+cd ~/tinytap && go build ./...
+
+# Run (requires root — eBPF needs CAP_BPF/CAP_PERFMON or root)
+sudo ./tinytap
+```
+
+Root isn't actually required — see [Running without full root](#running-without-full-root)
+for the minimal `setcap` invocation.
+
+Or via `make`:
+
+```bash
+make run       # orchestrated smoke test: starts a demo HTTP server, fires a request, shows the capture
+make run-raw   # build + run with output = "stdout" against whatever's already running
+```
+
+Run `make install` once per checkout (or worktree) to install the pre-push
+hook that runs lint, tests, and coverage checks before every push.
 
 ## License
 
