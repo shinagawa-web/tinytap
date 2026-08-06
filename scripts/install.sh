@@ -58,7 +58,7 @@ if [ -z "$version" ]; then
     tmp_latest="$(mktemp)"
     trap 'rm -f "$tmp_latest"' EXIT
     fetch "$latest_url" "$tmp_latest" || fail "could not reach $latest_url"
-    version="$(grep -o '"tag_name": *"[^"]*"' "$tmp_latest" | head -n1 | cut -d'"' -f4)"
+    version="$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$tmp_latest" | head -n1)"
     rm -f "$tmp_latest"
     trap - EXIT
     [ -n "$version" ] || fail "could not determine latest release version from $latest_url"
@@ -76,13 +76,19 @@ fetch "${base_url}/${archive}" "${tmp_dir}/${archive}" || fail "download failed:
 fetch "${base_url}/checksums.txt" "${tmp_dir}/checksums.txt" || fail "could not download checksums.txt for ${version}"
 
 log "Verifying checksum..."
+expected_hash="$(awk -v f="$archive" '$2 == f { print $1; found = 1 } END { exit !found }' "${tmp_dir}/checksums.txt")" ||
+    fail "no checksum entry for ${archive} in checksums.txt"
+
 if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$tmp_dir" && sha256sum --check --ignore-missing checksums.txt) || fail "checksum verification failed for ${archive}"
+    actual_hash="$(sha256sum "${tmp_dir}/${archive}" | awk '{print $1}')"
 elif command -v shasum >/dev/null 2>&1; then
-    (cd "$tmp_dir" && shasum -a 256 --check --ignore-missing checksums.txt) || fail "checksum verification failed for ${archive}"
+    actual_hash="$(shasum -a 256 "${tmp_dir}/${archive}" | awk '{print $1}')"
 else
     fail "need sha256sum or shasum to verify the downloaded archive"
 fi
+
+[ "$expected_hash" = "$actual_hash" ] ||
+    fail "checksum mismatch for ${archive}: expected ${expected_hash}, got ${actual_hash}"
 
 log "Extracting..."
 tar -xzf "${tmp_dir}/${archive}" -C "$tmp_dir" tinytap

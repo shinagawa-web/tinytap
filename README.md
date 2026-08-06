@@ -26,10 +26,14 @@ Detects Linux amd64/arm64 (failing loudly on anything else, e.g. macOS/Windows
 [release](https://github.com/shinagawa-web/tinytap/releases) archive,
 verifies its SHA-256 checksum against the release's `checksums.txt`, and
 installs `tinytap` to `/usr/local/bin` (falling back to `sudo` if that isn't
-writable). Two env vars change its behavior:
+writable). Two env vars change its behavior — set them on the `sh` side of
+the pipe, not before `curl`, since a `VAR=val curl ... | sh` prefix only
+applies to `curl`, not the piped-in script:
 
-- `TINYTAP_VERSION=v0.6.1` — pin a specific release instead of the latest
-- `INSTALL_DIR=~/bin` — install somewhere other than `/usr/local/bin`
+```bash
+curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | TINYTAP_VERSION=v0.6.1 sh   # pin a release instead of the latest
+curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | INSTALL_DIR=~/bin sh       # install somewhere other than /usr/local/bin
+```
 
 Then run it:
 
