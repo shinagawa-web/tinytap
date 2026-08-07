@@ -78,11 +78,49 @@ snapshot:
 
 changelog:
   sort: asc
+  # Adds GitHub usernames to entries. The `groups` regexes below match
+  # against each commit's first line, so they only collapse cleanly into
+  # one Conventional Commits-typed entry per PR if PRs are squash-merged
+  # (main's merge-commit history otherwise leaves WIP sub-commits ungrouped
+  # under "Other Changes" — see #231).
+  use: github
+  # List order controls matching precedence (first regexp match wins) —
+  # independent of the `order:` field below, which only controls display
+  # order. Dependencies must precede Bug Fixes/Maintenance so `fix(deps):`
+  # and `chore(deps):` land there instead of the generic type group.
+  groups:
+    - title: "Breaking Changes"
+      regexp: '^.*!:|^BREAKING CHANGE'
+      order: 0
+    - title: "Dependencies"
+      regexp: '^(fix|chore)\(deps\):|^deps:'
+      order: 3
+    - title: "Features"
+      regexp: "^feat"
+      order: 1
+    - title: "Bug Fixes"
+      regexp: "^fix"
+      order: 2
+    - title: "Refactoring"
+      regexp: "^refactor"
+      order: 4
+    - title: "Documentation"
+      regexp: "^docs"
+      order: 5
+    - title: "Maintenance"
+      regexp: "^chore"
+      order: 6
+    - title: "CI"
+      regexp: "^ci"
+      order: 7
+    - title: "Build"
+      regexp: "^build"
+      order: 8
+    - title: "Other Changes"
+      order: 999
   filters:
     exclude:
-      - "^docs:"
       - "^test:"
-      - "^ci:"
 
 release:
   github:
