@@ -76,3 +76,20 @@ func TestSinkOnPaired(t *testing.T) {
 		t.Fatal("Run did not exit after OnPaired+Quit")
 	}
 }
+
+// SendDiag posts a diagMsg to the running program without panicking (#216).
+func TestSinkSendDiag(t *testing.T) {
+	s := testSink(strings.NewReader(""))
+	done := make(chan error, 1)
+	go func() { done <- s.Run() }()
+	s.SendDiag("tls: attach failed for pid 123")
+	s.Quit()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not exit after SendDiag+Quit")
+	}
+}
