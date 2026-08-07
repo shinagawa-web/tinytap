@@ -163,6 +163,7 @@ only a raw error, pointing at `tinytap doctor` for the full picture.
 
 - HTTP/1.1 only — no HTTP/2, gRPC, or other protocols yet
 - TLS capture needs a dynamically linked `libssl.so`, so statically linked TLS stacks are invisible — that includes Go's `crypto/tls` and therefore Go-based proxies like Traefik and Caddy. Clients that hand OpenSSL a custom `BIO` instead of calling `SSL_set_fd` (e.g. curl) are captured and paired, but keyed on the `SSL*` pointer rather than a socket fd, so their exchanges are marked `[ssl-keyed, fd unverified]` — see [`docs/tls-compat.md`](docs/tls-compat.md)
+- Debian/Ubuntu package `libssl.so.3` without the execute bit (mode `0644`), which the TLS uprobe attach requires — until fixed, TLS capture silently finds nothing to hook. One-time fix per host: find the path with `ldconfig -p | grep libssl`, then `sudo chmod +x <path>` (tinytap deliberately never does this itself; making the failure discoverable at runtime instead of only here is tracked in [#216](https://github.com/shinagawa-web/tinytap/issues/216))
 - Single host — no cross-container attribution or cross-service correlation yet
 - Response bodies are sampled up to a fixed per-syscall cap, not captured in full (see [`docs/server-compat.md`](docs/server-compat.md) for exactly how each server's syscall pattern affects this)
 - `sendfile`-based transfers only carry payload bytes on amd64/arm64 — other architectures see the exchange but not the sampled body
@@ -237,16 +238,6 @@ sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip ./tinytap
 See [`docs/capabilities.md`](docs/capabilities.md) for what each capability
 is for, why TLS needs the broader `cap_sys_admin`, how this was verified,
 and known gaps (older kernels, x86_64).
-
-Debian and Ubuntu package `libssl.so.3` without the execute bit (mode
-`0644`), which the uprobe attach call requires — TLS capture then finds
-nothing to hook, with no indication why (#216). tinytap deliberately never
-`chmod`s the library itself, so this is a one-time fix per host:
-
-```bash
-ldconfig -p | grep libssl        # find the path, e.g. /usr/lib/x86_64-linux-gnu/libssl.so.3
-sudo chmod +x /path/to/libssl.so.3
-```
 
 ## Status & Roadmap
 
