@@ -41,7 +41,7 @@ See [Running without full root](#running-without-full-root),
 [Installing a specific version or location](#installing-a-specific-version-or-location),
 or [Building from source](#building-from-source).
 
-### Installing a specific version or location
+## Installing a specific version or location
 
 Two env vars change the install script's behavior — set them on the `sh`
 side of the pipe, not before `curl`, since a `VAR=val curl ... | sh` prefix
@@ -52,11 +52,14 @@ curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/
 curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | INSTALL_DIR=~/bin sh       # install somewhere other than /usr/local/bin
 ```
 
-### Verifying a release download
+## Verifying a release download
 
 The install script already verifies the downloaded archive's SHA-256
-checksum automatically. Every [tagged release](https://github.com/shinagawa-web/tinytap/releases)
-also publishes, alongside the `linux_amd64`/`linux_arm64` archives:
+checksum automatically — this section is for downloading a release archive
+by hand instead (from the [releases page](https://github.com/shinagawa-web/tinytap/releases)
+or in a script that intentionally avoids `curl | sh`) and confirming its full
+chain of trust, including the cosign signature the install script doesn't
+check. Every tagged release publishes, alongside the `linux_amd64`/`linux_arm64` archives:
 
 - `checksums.txt` — SHA-256 of every archive and SBOM in the release
 - `checksums.txt.sigstore.json` — a keyless [cosign](https://docs.sigstore.dev/cosign/overview/)
