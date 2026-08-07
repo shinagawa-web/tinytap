@@ -35,6 +35,28 @@ as long as your terminal is at least 120x24. In a smaller or non-interactive
 terminal it prints guidance and exits instead of silently streaming; see
 [Configuration](#configuration) to switch to the line-oriented `stdout` mode.
 
+### Diagnosing startup problems
+
+If it didn't work, run `tinytap doctor` first — read-only preflight checks
+(kernel version, BTF availability, the capabilities in
+[`docs/capabilities.md`](docs/capabilities.md), syscall tracepoint
+availability, a dry-run BPF load, and the host's libssl execute bit),
+printed as a copy-paste-friendly report, without needing root or
+capabilities itself:
+
+```bash
+tinytap doctor
+```
+
+Each result is classified by what it actually costs: a **blocking** result
+means tinytap can't run at all (e.g. a kernel below the 5.8 floor); a
+**degraded** result means tinytap runs but one specific capability is lost
+(e.g. no TLS capture without `cap_sys_admin`) — it's never printed as if
+something were broken. `doctor` exits non-zero only when a blocking result
+is present, so `tinytap doctor && tinytap` is a reasonable way to run it. A
+normal startup failure also names the specific blocking cause instead of
+only a raw error, pointing at `tinytap doctor` for the full picture.
+
 Linux amd64/arm64 only — on macOS/Windows, see [Where tinytap Runs](#where-tinytap-runs).
 Want HTTPS capture too, a specific version, or to build from source instead?
 See [Running without full root](#running-without-full-root),
@@ -139,28 +161,8 @@ comm = []         # []string — schema only, not yet enforced by the BPF progra
 
 The only CLI surface is one-shot actions, not session settings: `--config
 <path>` (point at an alternate config file), `--version` (build metadata,
-exits before any eBPF load), `config init` (above), and `doctor` (below).
-
-### Diagnosing startup problems
-
-`tinytap doctor` runs read-only preflight checks — kernel version, BTF
-availability, the capabilities in [`docs/capabilities.md`](docs/capabilities.md),
-syscall tracepoint availability, a dry-run BPF load, and the host's libssl
-execute bit — and prints a copy-paste-friendly report, without needing
-root or capabilities itself:
-
-```bash
-tinytap doctor
-```
-
-Each result is classified by what it actually costs: a **blocking** result
-means tinytap can't run at all (e.g. a kernel below the 5.8 floor); a
-**degraded** result means tinytap runs but one specific capability is lost
-(e.g. no TLS capture without `cap_sys_admin`) — it's never printed as if
-something were broken. `doctor` exits non-zero only when a blocking result
-is present, so `tinytap doctor && tinytap` is a reasonable way to run it. A
-normal startup failure also names the specific blocking cause instead of
-only a raw error, pointing at `tinytap doctor` for the full picture.
+exits before any eBPF load), `config init` (above), and `doctor` (see
+[Diagnosing startup problems](#diagnosing-startup-problems)).
 
 ## Current limitations
 
