@@ -23,9 +23,9 @@ The primary motivating scenario from #144: nginx as a TLS-terminating reverse pr
 
 **Key fact this confirms**: eBPF operates at the host kernel level. A container's process is an ordinary host process under a different PID namespace — tinytap (running on the host, outside any container) sees it exactly like any other process, with no container-aware code needed. `internal/tls.Find`'s existing `/proc/<pid>/root/<path>` resolution (already needed for chroot-like cases) handles resolving the container's own libssl path from the host's view for free.
 
-**Gotchas hit while wiring this up** (both are test-harness issues, not tinytap bugs):
-- Debian/Ubuntu ships `libssl.so.3` without the execute bit (`chmod 0644`); `cilium/ebpf`'s `link.OpenExecutable` requires it. `AttachSSLSetFd`/`AttachSSLReadWrite` deliberately never `chmod` their target themselves (see `ErrLibSSLNotExecutable`'s doc comment) — the e2e harness sets it explicitly instead, same as `scripts/test-e2e.sh`'s TLS scenario.
-- `pkill -x` matches against `/proc/<pid>/comm`, which the kernel truncates to 15 characters — a binary named `tinytap-e2e-nginx` (17 chars) never matches, so the harness's own cleanup silently failed to signal tinytap, hanging the script indefinitely. Binary names used by any script that `pkill -x`s them need to stay ≤15 characters.
+**Gotchas hit while wiring this up:**
+- Debian/Ubuntu ships `libssl.so.3` without the execute bit (`chmod 0644`); `cilium/ebpf`'s `link.OpenExecutable` requires it. This isn't just a test-harness detail — it hits every Debian/Ubuntu host tinytap runs on, silently, since `AttachSSLSetFd`/`AttachSSLReadWrite` deliberately never `chmod` their target themselves (see `ErrLibSSLNotExecutable`'s doc comment). The e2e harness sets it explicitly (same as `scripts/test-e2e.sh`'s TLS scenario) — see the README's [Current limitations](../README.md#current-limitations) for the fix on a real host. Making this discoverable from the TUI itself (not just docs) is tracked in #216.
+- `pkill -x` matches against `/proc/<pid>/comm` (test-harness only, unrelated to the point above), which the kernel truncates to 15 characters — a binary named `tinytap-e2e-nginx` (17 chars) never matches, so the harness's own cleanup silently failed to signal tinytap, hanging the script indefinitely. Binary names used by any script that `pkill -x`s them need to stay ≤15 characters.
 
 ## Running it
 
