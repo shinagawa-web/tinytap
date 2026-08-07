@@ -14,6 +14,79 @@ with no proxy and no CA certificate installed. In the request table `j`/`k`
 scroll and `Enter` opens the detail panel (`b` toggles the hex body view). See
 [`scripts/demo/`](scripts/demo/) for how the gif is recorded.
 
+## Quick start
+
+Install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | sh
+```
+
+Grant it the capabilities it needs, then run it — no full root required:
+
+```bash
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip $(command -v tinytap)
+tinytap
+```
+
+With no config file, that opens the TUI shown at the top of this README —
+`j`/`k` to scroll, `Enter` for the detail panel, `q` or `Ctrl-C` to quit —
+as long as your terminal is at least 120x24. In a smaller or non-interactive
+terminal it prints guidance and exits instead of silently streaming; see
+[Configuration](#configuration) to switch to the line-oriented `stdout` mode.
+
+Linux amd64/arm64 only — on macOS/Windows, see [Where tinytap Runs](#where-tinytap-runs).
+Want HTTPS capture too, a specific version, or to build from source instead?
+See [Running without full root](#running-without-full-root),
+[Installing a specific version or location](#installing-a-specific-version-or-location),
+or [Building from source](#building-from-source).
+
+### Installing a specific version or location
+
+Two env vars change the install script's behavior — set them on the `sh`
+side of the pipe, not before `curl`, since a `VAR=val curl ... | sh` prefix
+only reaches `curl`, not the piped-in script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | TINYTAP_VERSION=v0.6.1 sh   # pin a release instead of the latest
+curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | INSTALL_DIR=~/bin sh       # install somewhere other than /usr/local/bin
+```
+
+### Verifying a release download
+
+The install script already verifies the downloaded archive's SHA-256
+checksum automatically. Every [tagged release](https://github.com/shinagawa-web/tinytap/releases)
+also publishes, alongside the `linux_amd64`/`linux_arm64` archives:
+
+- `checksums.txt` — SHA-256 of every archive and SBOM in the release
+- `checksums.txt.sigstore.json` — a keyless [cosign](https://docs.sigstore.dev/cosign/overview/)
+  signature over `checksums.txt`, minted from the release workflow's own
+  GitHub Actions OIDC identity (no private key is stored anywhere)
+- `<archive>.sbom.json` — an SBOM for each archive ([syft](https://github.com/anchore/syft),
+  SPDX format)
+
+To verify the full chain of trust manually instead of trusting the script:
+
+```bash
+sha256sum --check --ignore-missing checksums.txt
+```
+
+Verify `checksums.txt` itself was produced by tinytap's release workflow
+(requires [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) v3+):
+
+```bash
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp "^https://github.com/shinagawa-web/tinytap/\.github/workflows/release\.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+```
+
+Since every archive and SBOM is listed by digest inside `checksums.txt`,
+a passing `cosign verify-blob` on `checksums.txt` plus a passing
+`sha256sum --check` on the archive establishes the whole chain: this exact
+archive came from this exact release workflow run.
+
 ## What it does today
 
 `tinytap` attaches eBPF probes to a process's socket syscalls
@@ -95,68 +168,6 @@ only a raw error, pointing at `tinytap doctor` for the full picture.
 - `sendfile`-based transfers only carry payload bytes on amd64/arm64 — other architectures see the exchange but not the sampled body
 
 See [`docs/server-compat.md`](docs/server-compat.md) for a server-by-server breakdown of what's currently visible.
-
-## Quick start
-
-Build and run inside the Lima VM (see [Toolchain](#toolchain) below for setup):
-
-```bash
-# Regenerate Go bindings from C (only needed after editing bpf/*.c)
-cd ~/tinytap/internal/loader/bpf && go generate
-
-# Build
-cd ~/tinytap && go build ./...
-
-# Run (requires root — eBPF needs CAP_BPF/CAP_PERFMON or root)
-sudo ./tinytap
-```
-
-Root isn't actually required — see [Running without full root](#running-without-full-root)
-for the minimal `setcap` invocation.
-
-Or via `make`:
-
-```bash
-make run       # orchestrated smoke test: starts a demo HTTP server, fires a request, shows the capture
-make run-raw   # build + run with output = "stdout" against whatever's already running
-```
-
-Run `make install` once per checkout (or worktree) to install the pre-push
-hook that runs lint, tests, and coverage checks before every push.
-
-### Verifying a release download
-
-Every [tagged release](https://github.com/shinagawa-web/tinytap/releases)
-publishes, alongside the `linux_amd64`/`linux_arm64` archives:
-
-- `checksums.txt` — SHA-256 of every archive and SBOM in the release
-- `checksums.txt.sigstore.json` — a keyless [cosign](https://docs.sigstore.dev/cosign/overview/)
-  signature over `checksums.txt`, minted from the release workflow's own
-  GitHub Actions OIDC identity (no private key is stored anywhere)
-- `<archive>.sbom.json` — an SBOM for each archive ([syft](https://github.com/anchore/syft),
-  SPDX format)
-
-Verify the archive you downloaded matches the checksum:
-
-```bash
-sha256sum --check --ignore-missing checksums.txt
-```
-
-Verify `checksums.txt` itself was produced by tinytap's release workflow
-(requires [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) v3+):
-
-```bash
-cosign verify-blob \
-  --bundle checksums.txt.sigstore.json \
-  --certificate-identity-regexp "^https://github.com/shinagawa-web/tinytap/\.github/workflows/release\.yml@refs/tags/v.*" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  checksums.txt
-```
-
-Since every archive and SBOM is listed by digest inside `checksums.txt`,
-a passing `cosign verify-blob` on `checksums.txt` plus a passing
-`sha256sum --check` on the archive establishes the whole chain: this exact
-archive came from this exact release workflow run.
 
 ## Where tinytap Runs
 
@@ -270,6 +281,34 @@ sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-${ARCH}.tar.gz
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 source ~/.bashrc
 ```
+
+## Building from source
+
+Build and run inside the Lima VM (see [Toolchain](#toolchain) above for setup):
+
+```bash
+# Regenerate Go bindings from C (only needed after editing bpf/*.c)
+cd ~/tinytap/internal/loader/bpf && go generate
+
+# Build
+cd ~/tinytap && go build ./...
+
+# Run (requires root — eBPF needs CAP_BPF/CAP_PERFMON or root)
+sudo ./tinytap
+```
+
+Root isn't actually required — see [Running without full root](#running-without-full-root)
+for the minimal `setcap` invocation.
+
+Or via `make`:
+
+```bash
+make run       # orchestrated smoke test: starts a demo HTTP server, fires a request, shows the capture
+make run-raw   # build + run with output = "stdout" against whatever's already running
+```
+
+Run `make install` once per checkout (or worktree) to install the pre-push
+hook that runs lint, tests, and coverage checks before every push.
 
 ## License
 
