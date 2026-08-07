@@ -35,13 +35,96 @@ as long as your terminal is at least 120x24. In a smaller or non-interactive
 terminal it prints guidance and exits instead of silently streaming; see
 [Configuration](#configuration) to switch to the line-oriented `stdout` mode.
 
+### Diagnosing startup problems
+
+If it didn't work, run `tinytap doctor` first — read-only preflight checks
+(kernel version, BTF availability, the capabilities in
+[`docs/capabilities.md`](docs/capabilities.md), syscall tracepoint
+availability, a dry-run BPF load, and the host's libssl execute bit),
+printed as a copy-paste-friendly report, without needing root or
+capabilities itself:
+
+```bash
+tinytap doctor
+```
+
+Each result is classified by what it actually costs: a **blocking** result
+means tinytap can't run at all (e.g. a kernel below the 5.8 floor); a
+**degraded** result means tinytap runs but one specific capability is lost
+(e.g. no TLS capture without `cap_sys_admin`) — it's never printed as if
+something were broken. `doctor` exits non-zero only when a blocking result
+is present, so `tinytap doctor && tinytap` is a reasonable way to run it. A
+normal startup failure also names the specific blocking cause instead of
+only a raw error, pointing at `tinytap doctor` for the full picture.
+
 Linux amd64/arm64 only — on macOS/Windows, see [Where tinytap Runs](#where-tinytap-runs).
 Want HTTPS capture too, a specific version, or to build from source instead?
 See [Running without full root](#running-without-full-root),
 [Installing a specific version or location](#installing-a-specific-version-or-location),
 or [Building from source](#building-from-source).
 
-### Installing a specific version or location
+## Where tinytap Runs
+
+**tinytap requires a Linux kernel.** It cannot run natively on macOS or Windows, because eBPF is a Linux kernel technology. But that's less restrictive than it sounds, because Linux kernels are everywhere:
+
+| Where the user works | How tinytap runs there |
+|---|---|
+| Linux desktop / laptop / workstation | Native. Just run the binary. |
+| Linux server (cloud VM, on-prem, dev box) | Native. SSH in, run it. |
+| Mac (Intel or Apple Silicon) | Inside a Linux VM — Lima, Multipass, OrbStack, UTM, Docker Desktop's VM, etc. |
+| Windows | Inside WSL2 (which is a real Linux kernel). |
+
+This pattern — "Mac/Win developers run this through a Linux VM" — is the standard for eBPF tooling in general (bpftrace, Cilium, etc.). tinytap is not unusual here.
+
+### Containers are friends, not enemies
+
+A common question: "if my dev stack runs in Docker on my Mac, can tinytap see inside the containers?"
+
+**Yes.** A Docker container is just a process (or process tree) running on the host's Linux kernel, isolated by namespaces and cgroups. eBPF programs attach to kernel events — syscalls, kprobes, tracepoints — which fire for *all* processes, container or not. So:
+
+```
+Mac
+└── Lima VM (Ubuntu)        ← tinytap runs here
+    ├── tinytap (Go binary, sudo)
+    └── Docker daemon
+        ├── container: api-service
+        ├── container: db
+        └── container: cache
+```
+
+...tinytap, running in the VM as root, observes syscalls from the containerized processes too — the same way it would for a process running directly on the VM. This is the same reason `htop` on the host shows container processes: they're all just kernel processes.
+
+For the user, this means **tinytap doesn't need to be installed inside containers**, doesn't need a sidecar, and doesn't require the application to be rebuilt with anything. One install on the host is enough.
+
+(Container-aware *attribution* — turning a PID into "this is the api-service container" — is a planned feature, not yet built. The kernel sees the PIDs; mapping them back to container names requires reading from Docker/containerd. For now tinytap shows raw PIDs.)
+
+### Requirements
+
+- Linux kernel 5.8+ (tinytap's event transport is `BPF_MAP_TYPE_RINGBUF`, added in 5.8 — see [Toolchain](#toolchain))
+- macOS/Windows users run tinytap inside a Linux VM (Lima, WSL2, etc.) — there is no native macOS/Windows build and none is planned, since eBPF is Linux-only
+
+### Running without full root
+
+`sudo ./tinytap` is the simplest path, but tinytap doesn't need full root.
+Plaintext HTTP capture needs three Linux capabilities:
+
+```bash
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip ./tinytap
+./tinytap
+```
+
+TLS capture (the libssl uprobes) needs one more, `cap_sys_admin`:
+
+```bash
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip ./tinytap
+./tinytap
+```
+
+See [`docs/capabilities.md`](docs/capabilities.md) for what each capability
+is for, why TLS needs the broader `cap_sys_admin`, how this was verified,
+and known gaps (older kernels, x86_64).
+
+## Installing a specific version or location
 
 Two env vars change the install script's behavior — set them on the `sh`
 side of the pipe, not before `curl`, since a `VAR=val curl ... | sh` prefix
@@ -52,11 +135,14 @@ curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/
 curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | INSTALL_DIR=~/bin sh       # install somewhere other than /usr/local/bin
 ```
 
-### Verifying a release download
+## Verifying a release download
 
 The install script already verifies the downloaded archive's SHA-256
-checksum automatically. Every [tagged release](https://github.com/shinagawa-web/tinytap/releases)
-also publishes, alongside the `linux_amd64`/`linux_arm64` archives:
+checksum automatically — this section is for downloading a release archive
+by hand instead (from the [releases page](https://github.com/shinagawa-web/tinytap/releases)
+or in a script that intentionally avoids `curl | sh`) and confirming its full
+chain of trust, including the cosign signature the install script doesn't
+check. Every tagged release publishes, alongside the `linux_amd64`/`linux_arm64` archives:
 
 - `checksums.txt` — SHA-256 of every archive and SBOM in the release
 - `checksums.txt.sigstore.json` — a keyless [cosign](https://docs.sigstore.dev/cosign/overview/)
@@ -136,28 +222,8 @@ comm = []         # []string — schema only, not yet enforced by the BPF progra
 
 The only CLI surface is one-shot actions, not session settings: `--config
 <path>` (point at an alternate config file), `--version` (build metadata,
-exits before any eBPF load), `config init` (above), and `doctor` (below).
-
-### Diagnosing startup problems
-
-`tinytap doctor` runs read-only preflight checks — kernel version, BTF
-availability, the capabilities in [`docs/capabilities.md`](docs/capabilities.md),
-syscall tracepoint availability, a dry-run BPF load, and the host's libssl
-execute bit — and prints a copy-paste-friendly report, without needing
-root or capabilities itself:
-
-```bash
-tinytap doctor
-```
-
-Each result is classified by what it actually costs: a **blocking** result
-means tinytap can't run at all (e.g. a kernel below the 5.8 floor); a
-**degraded** result means tinytap runs but one specific capability is lost
-(e.g. no TLS capture without `cap_sys_admin`) — it's never printed as if
-something were broken. `doctor` exits non-zero only when a blocking result
-is present, so `tinytap doctor && tinytap` is a reasonable way to run it. A
-normal startup failure also names the specific blocking cause instead of
-only a raw error, pointing at `tinytap doctor` for the full picture.
+exits before any eBPF load), `config init` (above), and `doctor` (see
+[Diagnosing startup problems](#diagnosing-startup-problems)).
 
 ## Current limitations
 
@@ -169,75 +235,6 @@ only a raw error, pointing at `tinytap doctor` for the full picture.
 - `sendfile`-based transfers only carry payload bytes on amd64/arm64 — other architectures see the exchange but not the sampled body
 
 See [`docs/server-compat.md`](docs/server-compat.md) for a server-by-server breakdown of what's currently visible.
-
-## Where tinytap Runs
-
-There are two distinct environments to keep in mind, and they answer two different questions.
-
-### Where tinytap is *built and developed*
-
-The development environment is **Mac + Lima + Ubuntu VM**, because eBPF only exists on Linux. See [Toolchain](#toolchain) for setup. This is private to the maintainer's workflow — it does not constrain users.
-
-### Where tinytap is *executed*
-
-**tinytap requires a Linux kernel.** It cannot run natively on macOS or Windows, because eBPF is a Linux kernel technology. But that's less restrictive than it sounds, because Linux kernels are everywhere:
-
-| Where the user works | How tinytap runs there |
-|---|---|
-| Linux desktop / laptop / workstation | Native. Just run the binary. |
-| Linux server (cloud VM, on-prem, dev box) | Native. SSH in, run it. |
-| Mac (Intel or Apple Silicon) | Inside a Linux VM — Lima, Multipass, OrbStack, UTM, Docker Desktop's VM, etc. |
-| Windows | Inside WSL2 (which is a real Linux kernel). |
-
-This pattern — "Mac/Win developers run this through a Linux VM" — is the standard for eBPF tooling in general (bpftrace, Cilium, etc.). tinytap is not unusual here.
-
-### Containers are friends, not enemies
-
-A common question: "if my dev stack runs in Docker on my Mac, can tinytap see inside the containers?"
-
-**Yes.** A Docker container is just a process (or process tree) running on the host's Linux kernel, isolated by namespaces and cgroups. eBPF programs attach to kernel events — syscalls, kprobes, tracepoints — which fire for *all* processes, container or not. So:
-
-```
-Mac
-└── Lima VM (Ubuntu)        ← tinytap runs here
-    ├── tinytap (Go binary, sudo)
-    └── Docker daemon
-        ├── container: api-service
-        ├── container: db
-        └── container: cache
-```
-
-...tinytap, running in the VM as root, observes syscalls from the containerized processes too — the same way it would for a process running directly on the VM. This is the same reason `htop` on the host shows container processes: they're all just kernel processes.
-
-For the user, this means **tinytap doesn't need to be installed inside containers**, doesn't need a sidecar, and doesn't require the application to be rebuilt with anything. One install on the host is enough.
-
-(Container-aware *attribution* — turning a PID into "this is the api-service container" — is a planned feature, not yet built. The kernel sees the PIDs; mapping them back to container names requires reading from Docker/containerd. For now tinytap shows raw PIDs.)
-
-### Requirements
-
-- Linux kernel 5.8+ (tinytap's event transport is `BPF_MAP_TYPE_RINGBUF`, added in 5.8 — see [Toolchain](#toolchain))
-- macOS/Windows users run tinytap inside a Linux VM (Lima, WSL2, etc.) — there is no native macOS/Windows build and none is planned, since eBPF is Linux-only
-
-### Running without full root
-
-`sudo ./tinytap` is the simplest path, but tinytap doesn't need full root.
-Plaintext HTTP capture needs three Linux capabilities:
-
-```bash
-sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip ./tinytap
-./tinytap
-```
-
-TLS capture (the libssl uprobes) needs one more, `cap_sys_admin`:
-
-```bash
-sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip ./tinytap
-./tinytap
-```
-
-See [`docs/capabilities.md`](docs/capabilities.md) for what each capability
-is for, why TLS needs the broader `cap_sys_admin`, how this was verified,
-and known gaps (older kernels, x86_64).
 
 ## Status & Roadmap
 
@@ -259,7 +256,7 @@ Full roadmap (near-term steps and longer-term vision) lives in [#19](https://git
 
 ### Dev environment
 
-Mac (Apple Silicon) + Lima with Ubuntu 24.04. Build and run inside the Lima VM. Edit code on Mac via VS Code's remote SSH or the auto-mounted filesystem.
+Mac (Apple Silicon) + Lima with Ubuntu 24.04. Build and run inside the Lima VM. Edit code on Mac via VS Code's remote SSH or the auto-mounted filesystem. This is private to the maintainer's workflow — it does not constrain users; see [Where tinytap Runs](#where-tinytap-runs) for how tinytap runs on a user's machine.
 
 Setup commands:
 
