@@ -9,9 +9,9 @@
 // to stdout; operational logs (startup, errors) stay on the global logger's
 // stderr, so a consumer can `> log` the data without the diagnostics.
 //
-// It is selected only by an explicit --output stdout: when the terminal
-// can't host the TUI, auto/tui print guidance and exit rather than falling
-// back here (see decideOutput in cmd/tinytap). scripts/demo.sh and
+// It is selected only by an explicit config output="stdout": when the
+// terminal can't host the TUI, auto/tui print guidance and exit rather than
+// falling back here (see decideOutput in cmd/tinytap). scripts/demo.sh and
 // `make run-raw` depend on this output.
 package stdout
 
