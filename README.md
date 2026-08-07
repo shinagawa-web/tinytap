@@ -28,6 +28,12 @@ sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip $(command -v tinytap)
 tinytap
 ```
 
+With no config file, that opens the TUI shown at the top of this README —
+`j`/`k` to scroll, `Enter` for the detail panel, `q` or `Ctrl-C` to quit —
+as long as your terminal is at least 120x24. In a smaller or non-interactive
+terminal it prints guidance and exits instead of silently streaming; see
+[Configuration](#configuration) to switch to the line-oriented `stdout` mode.
+
 Linux amd64/arm64 only — on macOS/Windows, see [Where tinytap Runs](#where-tinytap-runs).
 Want HTTPS capture too, a specific version, or to build from source instead?
 See [Running without full root](#running-without-full-root),
