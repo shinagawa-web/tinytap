@@ -238,6 +238,16 @@ See [`docs/capabilities.md`](docs/capabilities.md) for what each capability
 is for, why TLS needs the broader `cap_sys_admin`, how this was verified,
 and known gaps (older kernels, x86_64).
 
+Debian and Ubuntu package `libssl.so.3` without the execute bit (mode
+`0644`), which the uprobe attach call requires — TLS capture then finds
+nothing to hook, with no indication why (#216). tinytap deliberately never
+`chmod`s the library itself, so this is a one-time fix per host:
+
+```bash
+ldconfig -p | grep libssl        # find the path, e.g. /usr/lib/x86_64-linux-gnu/libssl.so.3
+sudo chmod +x /path/to/libssl.so.3
+```
+
 ## Status & Roadmap
 
 Released so far: `v0.1.0` (HTTP request/response visible), `v0.2.0` (Bubble Tea TUI), `v0.3.0` (filtering + test foundation), `v0.4.0` (server capture & compatibility — see [`docs/server-compat.md`](docs/server-compat.md)), `v0.5.0` (HTTPS support via libssl uprobes — see [`docs/tls-compat.md`](docs/tls-compat.md)), `v0.6.0` (production readiness). `v0.7.0` (real-hardware bring-up) is in progress — see [#198](https://github.com/shinagawa-web/tinytap/issues/198). (`v0.4.0` has no corresponding git tag — `git tag` jumps from `v0.3.0` to `v0.5.0` — left alone rather than backfilled; see #206.)
