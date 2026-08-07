@@ -39,9 +39,15 @@ jobs:
       # bpf_probe_read_user call the verifier refuses to load
       # ("R2 unbounded memory access"), so this installs from the official
       # LLVM apt repo instead of the distro package.
+      # apt.llvm.org/llvm.sh is fetched and executed as root, so its
+      # contents are verified against a known-good hash before running.
+      # If upstream legitimately updates the script, this check will start
+      # failing — recompute the hash with `sha256sum llvm.sh` and update it
+      # here.
       - name: Install clang 17
         run: |
           wget https://apt.llvm.org/llvm.sh
+          echo "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36  llvm.sh" | sha256sum -c -
           chmod +x llvm.sh
           sudo ./llvm.sh 17
 
