@@ -32,8 +32,9 @@ attach to kernel events — syscalls, kprobes, tracepoints — which fire for
 
 ```text
 Mac
-└── Lima VM (Ubuntu)        ← tinytap runs here
-    ├── tinytap (Go binary, sudo)
+└── some Linux VM           ← tinytap runs here (Lima, OrbStack, Docker
+    ├── tinytap (Go binary,    Desktop's own VM, etc. — any of them works,
+    │   sudo)                 this isn't a Lima-specific trick)
     └── Docker daemon
         ├── container: api-service
         ├── container: db
@@ -43,7 +44,10 @@ Mac
 ...tinytap, running in the VM as root, observes syscalls from the
 containerized processes too — the same way it would for a process running
 directly on the VM. This is the same reason `htop` on the host shows
-container processes: they're all just kernel processes.
+container processes: they're all just kernel processes. The VM in the
+diagram isn't special — it's whatever Linux kernel tinytap happens to be
+running on, and Docker Desktop's own bundled VM (see the table above)
+qualifies just as well as a VM you set up yourself.
 
 For the user, this means **tinytap doesn't need to be installed inside
 containers**, doesn't need a sidecar, and doesn't require the application to
@@ -53,6 +57,33 @@ be rebuilt with anything. One install on the host is enough.
 container" — is a planned feature, not yet built. The kernel sees the PIDs;
 mapping them back to container names requires reading from
 Docker/containerd. For now tinytap shows raw PIDs.)
+
+### Can tinytap itself run inside a container?
+
+Also yes — verified directly, not just reasoned about. Running tinytap in a
+plain (non-`--privileged`) container needs two things beyond the base
+[capabilities]({{< relref "running-without-root" >}}):
+
+```bash
+docker run --cap-add=BPF --cap-add=PERFMON --cap-add=DAC_READ_SEARCH \
+  -v /sys/kernel/tracing:/sys/kernel/tracing \
+  -v $(pwd)/tinytap:/tinytap:ro \
+  ubuntu:24.04 /tinytap --config /tinytap.toml
+```
+
+- The three `--cap-add` flags mirror the native `setcap` invocation in [Running Without Full Root]({{< relref "running-without-root" >}}) (add `SYS_ADMIN` for TLS capture, same as native).
+
+- `/sys/kernel/tracing` (tracefs) isn't mounted into containers by default, and tinytap needs it to resolve syscall tracepoint IDs — without this mount, `tinytap doctor` reports a **blocking** result ("syscall tracepoints missing"); with it, that check passes and capture works. No other bind mounts, `--privileged`, or seccomp changes were needed.
+
+Once running, a containerized tinytap sees the **whole host kernel**, not
+just its own container — the same host-wide visibility as running directly
+on the VM. In this exact test, it captured the host's own `dockerd`
+process's HTTP API traffic (`GET /v1.52/containers/.../json`, etc.) even
+though `dockerd` was running outside the container entirely. That's the
+same "unrelated control-plane traffic shows up too" effect noted in
+`scripts/demo/README.md` as the reason the demo GIF was recorded on a plain
+Lima VM instead of through Docker Desktop — containerizing tinytap doesn't
+remove that noise, it just confirms the visibility is real.
 
 ## Requirements
 
