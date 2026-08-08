@@ -30,3 +30,8 @@ internal/loader/bpf/*.o
 internal/loader/bpf/fixture/*_bpfel.go
 internal/loader/bpf/fixture/*_bpfeb.go
 internal/loader/bpf/fixture/*.o
+
+# Hugo docs site build output/cache (exploratory, see the docs-structure issue)
+site/public/
+site/resources/
+site/.hugo_build.lock
