@@ -26,5 +26,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up BPF toolchain and regenerate bindings
+        uses: ./.github/actions/setup-bpf-toolchain
+
       - name: Run e2e tests
         run: bash scripts/test-e2e.sh

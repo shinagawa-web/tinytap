@@ -67,11 +67,12 @@ Lower-level reference material lives under `docs/`:
 Inside the Lima VM:
 
 ```bash
-# Regenerate Go bindings from C (run after editing bpf/*.c)
-cd ~/tinytap/cmd/tinytap && go generate
+# Regenerate Go bindings from C — required before every build/test, not
+# just after editing bpf/*.c (#260): the generated files aren't committed
+cd ~/tinytap && make generate
 
 # Build
-cd ~/tinytap && go build ./...
+go build ./...
 
 # Run (requires root)
 sudo ./tinytap
@@ -81,7 +82,7 @@ sudo ./tinytap
 
 - eBPF only runs on Linux — the Lima VM is mandatory, no native macOS build
 - `go generate` invokes `bpf2go` which calls `clang` — must run inside the VM
-- Generated files (`tinytap_bpfel.go`, `tinytap_bpfeb.go`, `*.o`) are committed to the repo
+- Generated files (`tinytap_bpfel.go`, `tinytap_bpfeb.go`, `*.o`) are **not** committed (#260) — run `make generate` (needs clang-17 + libbpf 1.6.2, already installed on the primary dev VM) before any build or test; CI regenerates them itself via `.github/actions/setup-bpf-toolchain`
 - Remote URL inside the VM: `git@github.com:shinagawa-web/tinytap.git`
 
 ## Workflow

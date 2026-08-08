@@ -1,0 +1,83 @@
+name: Set up BPF toolchain and regenerate bindings
+description: >-
+  Installs the pinned clang-17 + libbpf 1.6.2 toolchain and regenerates the
+  bpf2go bindings under internal/loader/bpf/ and internal/loader/bpf/fixture/.
+  The .o files and their paired _bpfel.go/_bpfeb.go bindings are no longer
+  committed (#260) — every workflow that builds, tests, lints, or vets code
+  depending on internal/loader/bpf needs this step before any of that, or
+  the //go:embed directives those bindings satisfy fail to compile. Assumes
+  the caller has already checked out the repo and run actions/setup-go.
+
+inputs:
+  use-cache:
+    description: >-
+      Whether to cache the regenerated bindings via actions/cache. Set to
+      "false" for release.yml, which already disables Go module caching
+      for the same reason: a poisoned build cache is a supply-chain risk
+      for a workflow that publishes release artifacts, in a way it isn't
+      for a plain CI run.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # Keyed on everything that affects bpf2go's output: the C sources
+    # themselves, the go:generate directives that invoke it (gen.go, whose
+    # flags bpf2go's output also depends on), go.sum (pins bpf2go's own
+    # version via the cilium/ebpf module), and the toolchain versions below
+    # (hardcoded into the key so bumping either pin busts the cache instead
+    # of serving stale output built by a different compiler).
+    - name: Cache bpf2go bindings
+      id: cache-bpf
+      if: inputs.use-cache == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          internal/loader/bpf/*.o
+          internal/loader/bpf/*_bpfel.go
+          internal/loader/bpf/*_bpfeb.go
+          internal/loader/bpf/fixture/*.o
+          internal/loader/bpf/fixture/*_bpfel.go
+          internal/loader/bpf/fixture/*_bpfeb.go
+        key: >-
+          bpf2go-clang17-libbpf1.6.2-${{ runner.os }}-${{
+          hashFiles('bpf/**', 'internal/loader/bpf/gen.go', 'internal/loader/bpf/fixture/gen.go', 'internal/loader/bpf/fixture/fixture.bpf.c', 'go.sum') }}
+
+    # Pinned so bpf2go's output doesn't drift with whatever clang the
+    # runner image happens to ship — see #207. ubuntu-22.04's default
+    # apt-get clang-14 was tried first and rejected: it emits a
+    # bpf_probe_read_user call the verifier refuses to load
+    # ("R2 unbounded memory access"), so this installs from the official
+    # LLVM apt repo instead of the distro package.
+    # apt.llvm.org/llvm.sh is fetched and executed as root, so its
+    # contents are verified against a known-good hash before running.
+    # If upstream legitimately updates the script, this check will start
+    # failing — recompute the hash with `sha256sum llvm.sh` and update it
+    # here.
+    - name: Install clang 17
+      if: inputs.use-cache != 'true' || steps.cache-bpf.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        wget https://apt.llvm.org/llvm.sh
+        echo "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36  llvm.sh" | sha256sum -c -
+        chmod +x llvm.sh
+        sudo ./llvm.sh 17
+
+    # ubuntu-22.04's apt libbpf-dev is 0.5.0, which predates the
+    # BPF_UPROBE macro bpf/tinytap_uprobe.bpf.c uses (added in a later
+    # libbpf release) — build a pinned, known-good libbpf from source and
+    # install its headers over /usr/include/bpf instead.
+    - name: Install libbpf 1.6.2 headers
+      if: inputs.use-cache != 'true' || steps.cache-bpf.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        git clone --depth 1 --branch v1.6.2 https://github.com/libbpf/libbpf.git /tmp/libbpf
+        sudo make -C /tmp/libbpf/src install_headers PREFIX=/usr
+
+    - name: Regenerate bpf2go bindings
+      if: inputs.use-cache != 'true' || steps.cache-bpf.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        BPF2GO_CC: clang-17
+      run: make generate

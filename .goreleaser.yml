@@ -2,11 +2,11 @@ version: 2
 
 project_name: tinytap
 
-# The BPF object files bpf2go emits are already committed under
-# internal/loader/bpf/ (see #207, which verifies in CI that they stay in
-# sync with bpf/*.c) and embedded into the Go binary via //go:embed. So
-# there's no separate clang/libbpf build step at release time — just a
-# normal cross-compiled `go build`.
+# The BPF object files bpf2go emits are regenerated from bpf/*.c by
+# release.yml's setup-bpf-toolchain step before this runs (#260) and
+# embedded into the Go binary via //go:embed. GoReleaser itself doesn't
+# need clang/libbpf — CGO_ENABLED=0 below means the actual `go build` per
+# target is a normal cross-compile against the already-embedded bytes.
 before:
   hooks:
     # Verify, don't mutate: `go mod tidy` followed by a diff check fails the
