@@ -58,7 +58,7 @@ root, a specific version, or to verify a release download? See the
 |---|---|
 | Linux desktop / laptop / workstation | Native. Just run the binary. |
 | Linux server (cloud VM, on-prem, dev box) | Native. SSH in, run it. |
-| Mac (Intel or Apple Silicon) | Inside a Linux VM — Lima, Multipass, OrbStack, UTM, Docker Desktop's VM, etc. |
+| Mac (Intel or Apple Silicon) | Inside a Linux VM — Docker Desktop's VM, OrbStack, Lima, UTM, Multipass, etc. |
 | Windows | Inside WSL2 (which is a real Linux kernel). |
 
 This pattern — "Mac/Win developers run this through a Linux VM" — is the
