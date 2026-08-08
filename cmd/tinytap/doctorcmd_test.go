@@ -42,6 +42,79 @@ func TestRunDoctorCmd_Blocking(t *testing.T) {
 	}
 }
 
+func TestRunDoctorCmd_PlainWhenStdoutIsNotATerminal(t *testing.T) {
+	oldIsTerminal := isTerminalFn
+	isTerminalFn = func(int) bool { return false }
+	defer func() { isTerminalFn = oldIsTerminal }()
+
+	oldRun := doctorRun
+	doctorRun = func() []doctor.Check {
+		return []doctor.Check{
+			{Name: "libssl execute bit", Severity: doctor.Degraded, Detail: "not set"},
+			{Name: "cap_bpf", Severity: doctor.Blocking, Detail: "missing"},
+		}
+	}
+	defer func() { doctorRun = oldRun }()
+
+	stdout := captureStdout(t, func() {
+		if err := runDoctorCmd(); !errors.Is(err, errSilentExit) {
+			t.Fatalf("want errSilentExit, got %v", err)
+		}
+	})
+	if strings.Contains(stdout, "\x1b[") {
+		t.Errorf("stdout = %q, want no ANSI escape codes when stdout isn't a terminal", stdout)
+	}
+	if !strings.Contains(stdout, "[DEGRADED]") || !strings.Contains(stdout, "[BLOCKING]") {
+		t.Errorf("stdout = %q, want the plain severity labels still present", stdout)
+	}
+}
+
+func TestRunDoctorCmd_ColorsSeverityWhenStdoutIsATerminal(t *testing.T) {
+	oldIsTerminal := isTerminalFn
+	isTerminalFn = func(int) bool { return true }
+	defer func() { isTerminalFn = oldIsTerminal }()
+
+	oldRun := doctorRun
+	doctorRun = func() []doctor.Check {
+		return []doctor.Check{
+			{Name: "libssl execute bit", Severity: doctor.Degraded, Detail: "not set"},
+			{Name: "cap_bpf", Severity: doctor.Blocking, Detail: "missing"},
+			{Name: "kernel version", Severity: doctor.OK, Detail: "6.17"},
+		}
+	}
+	defer func() { doctorRun = oldRun }()
+
+	stdout := captureStdout(t, func() {
+		if err := runDoctorCmd(); !errors.Is(err, errSilentExit) {
+			t.Fatalf("want errSilentExit, got %v", err)
+		}
+	})
+	// Assert the actual ANSI escape byte is present, not just that stdout
+	// contains whatever degradedLabelStyle.Render produced — if the style's
+	// renderer ever silently fell back to plain text (e.g. its color
+	// profile detection disagreeing with isTerminalFn), comparing against
+	// its own output would pass vacuously without ever exercising color.
+	if !strings.Contains(stdout, "\x1b[") {
+		t.Fatalf("stdout = %q, want ANSI escape codes present", stdout)
+	}
+	if !strings.Contains(stdout, degradedLabelStyle.Render("[DEGRADED]")) {
+		t.Errorf("stdout = %q, want the DEGRADED label colored", stdout)
+	}
+	if !strings.Contains(stdout, blockingLabelStyle.Render("[BLOCKING]")) {
+		t.Errorf("stdout = %q, want the BLOCKING label colored", stdout)
+	}
+	if !strings.Contains(stdout, "[OK") {
+		t.Errorf("stdout = %q, want the OK label untouched", stdout)
+	}
+}
+
+func TestColorizeDoctorReport_NoMatchingLabelsUnchanged(t *testing.T) {
+	report := "tinytap doctor — dev\n\n[OK      ] kernel version               6.17\n\n1 ok, 0 degraded, 0 blocking, 0 info\n"
+	if got := colorizeDoctorReport(report); got != report {
+		t.Errorf("colorizeDoctorReport(%q) = %q, want it unchanged when there's nothing to color", report, got)
+	}
+}
+
 func TestRunDoctorCmd_UsesRealRenderAndVersionLine(t *testing.T) {
 	oldVersion := version
 	version = "v9.9.9"

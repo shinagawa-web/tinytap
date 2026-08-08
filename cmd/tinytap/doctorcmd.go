@@ -2,6 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/shinagawa-web/tinytap/internal/doctor"
 )
@@ -12,6 +18,31 @@ var (
 	doctorRender = doctor.Render
 )
 
+// doctorColorRenderer forces an ANSI color profile rather than deferring to
+// lipgloss's own terminal auto-detection, which inspects the real process
+// stdout independently of isTerminalFn and can disagree with it — e.g.
+// under `go test`, where stdout is a pipe, so the default renderer would
+// silently render plain text even when isTerminalFn says to color.
+// runDoctorCmd already makes that call; once it has, these styles must
+// always emit real ANSI codes rather than a second, possibly-conflicting
+// auto-detection layer silently overriding it.
+var doctorColorRenderer = newDoctorColorRenderer()
+
+func newDoctorColorRenderer() *lipgloss.Renderer {
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.ANSI)
+	return r
+}
+
+// degradedLabelStyle/blockingLabelStyle color runDoctorCmd's terminal-only
+// output (see colorizeDoctorReport). Yellow for Degraded matches the TUI's
+// existing warning convention (slowLatencyStyle / the diag footer
+// indicator, #248); Blocking gets red as the more severe case.
+var (
+	degradedLabelStyle = doctorColorRenderer.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+	blockingLabelStyle = doctorColorRenderer.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+)
+
 // runDoctorCmd runs every preflight check (#209) and prints a copy-paste
 // friendly report. Read-only and safe to run without privileges — that's
 // exactly the case it exists for. Exits non-zero only when a Blocking
@@ -20,11 +51,32 @@ var (
 // rather than a second error message.
 func runDoctorCmd() error {
 	checks := doctorRun()
-	fmt.Print(doctorRender(checks, versionLine()))
+	report := doctorRender(checks, versionLine())
+	if isTerminalFn(int(os.Stdout.Fd())) {
+		report = colorizeDoctorReport(report)
+	}
+	fmt.Print(report)
 	if doctor.AnyBlocking(checks) {
 		return errSilentExit
 	}
 	return nil
+}
+
+// colorizeDoctorReport highlights the DEGRADED/BLOCKING severity labels in
+// an already-rendered report — called only when stdout is a terminal.
+// doctor.Render's own output must stay plain text (its doc comment calls it
+// out as copy-paste-friendly for bug reports), so color is layered on here
+// rather than inside the doctor package, and only for the terminal path; a
+// piped or redirected `tinytap doctor` never sees escape codes. Matching on
+// the literal bracketed tokens "[DEGRADED]"/"[BLOCKING]" works because
+// Render's "%-8s" pads the severity *string* inside the brackets, and both
+// "DEGRADED" and "BLOCKING" are already exactly 8 characters — so the
+// padding never inserts spaces before the closing bracket, and the token
+// this matches on is always exactly these 10 characters (8 + 2 brackets).
+func colorizeDoctorReport(report string) string {
+	report = strings.ReplaceAll(report, "[DEGRADED]", degradedLabelStyle.Render("[DEGRADED]"))
+	report = strings.ReplaceAll(report, "[BLOCKING]", blockingLabelStyle.Render("[BLOCKING]"))
+	return report
 }
 
 // classifyLoadError wraps a raw loadBPF failure with the first Blocking
