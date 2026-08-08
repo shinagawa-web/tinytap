@@ -166,8 +166,11 @@ type model struct {
 	// diagLines holds captured log lines that would otherwise be discarded
 	// during the TUI session (#216) — e.g. why the TLS attach path skipped a
 	// process. diagOpen shows them full-screen; diagOffset is the scroll
-	// position (0 = oldest), and stays pinned to the newest line while
-	// closed or while new lines keep arriving, like tailing a log.
+	// position (0 = oldest). While the panel is open, it re-pins to the
+	// newest line as new lines arrive, like tailing a log; opening the panel
+	// always re-pins too, so a session's worth of lines that arrived while
+	// it was closed never leaves the scroll position stranded on stale
+	// content.
 	diagLines  []string
 	diagOpen   bool
 	diagOffset int
@@ -587,10 +590,11 @@ func (m model) View() string {
 	return strings.Join(lines, "\n")
 }
 
-// diagView renders the diagnostics panel full-screen (#216): every log line
+// diagView renders the diagnostics panel full-screen (#216): the log lines
 // captured instead of discarded during this session (chiefly the TLS attach
 // path explaining why HTTPS traffic for some process never appeared),
-// oldest first, scrollable when they overflow the terminal height.
+// oldest first, scrollable when they overflow the terminal height. Bounded
+// by maxDiagLines — the oldest lines drop once that many have arrived.
 func (m model) diagView() string {
 	label := "───── Diagnostics "
 	if n := len(m.diagLines); n > 0 {

@@ -9,8 +9,12 @@ import (
 
 // diagBufferCap bounds how many diagnostic lines diagBuffer retains during a
 // TUI session — generous for realistic TLS-attach chatter (a handful of
-// lines per process), small enough to never matter for memory.
-const diagBufferCap = 500
+// lines per process), small enough to never matter for memory. Kept equal to
+// internal/output/tui's maxDiagLines: diagBuffer is what Flush writes to
+// stderr on exit, so a smaller cap here would silently drop lines the panel
+// had shown during the session (they can't share a literal constant across
+// packages — keep both in sync by hand if either changes).
+const diagBufferCap = 1000
 
 // diagBuffer is an io.Writer that captures log lines instead of discarding
 // them (#216): log.SetOutput points here during the TUI session so a stray
