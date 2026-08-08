@@ -3,4 +3,8 @@ coverage:
     - "**/*_bpfel.go"
     - "**/*_bpfeb.go"
     - "internal/loader/load.go"
+    - "internal/loader/load_kprobe.go"
+    - "internal/loader/load_kprobe_other.go"
+    - "internal/loader/load_uprobe.go"
+    - "internal/loader/load_uprobe_other.go"
     - "internal/doctor/dryrun_real.go"
