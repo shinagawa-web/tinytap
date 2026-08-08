@@ -1818,4 +1818,42 @@ func TestHeaderBlockExceedingSampleCapSplicesNextRequest(t *testing.T) {
 			t.Errorf("GET /x must not be emitted at all (its headers are unrecoverable), got it as: %+v", m)
 		}
 	}
+	if p.HeaderLossCount != 1 {
+		t.Errorf("HeaderLossCount = %d, want 1 (the one truncated /x)", p.HeaderLossCount)
+	}
+}
+
+// TestHeaderTruncationResynchronisesResponseStream covers #224's "Case A/B"
+// on the response side: a response's header block truncated by a syscall
+// sample cap (mirroring writev's per-iovec budget) must not cause the next
+// response on the same connection to vanish or splice a fabricated
+// terminator/Content-Length from the truncated bytes. Both failure modes
+// share the same root cause the fix addresses — this test exercises the
+// response path and a different truncation point than the request-side
+// TestHeaderBlockExceedingSampleCapSplicesNextRequest above.
+func TestHeaderTruncationResynchronisesResponseStream(t *testing.T) {
+	const pid, fd = uint32(9), int32(3)
+	headers := []byte("HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nX-Long: " +
+		strings.Repeat("x", 1200) + "\r\nContent-Length: 0\r\n\r\n")
+	truncated := headers[:1024] // simulates a 1024-byte per-iovec sample budget
+
+	p := NewParser()
+	got1 := p.Feed(makeEvent(events.SyscallWritev, pid, fd, uint32(len(headers)), truncated))
+	if len(got1) != 0 {
+		t.Fatalf("event 1 (truncated response headers): want 0 messages, got %+v", got1)
+	}
+
+	// A second, unrelated response on the same (pid, fd) — must be
+	// recovered on its own, not spliced onto the truncated prefix.
+	next := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+	got2 := p.Feed(makeEvent(events.SyscallWritev, pid, fd, uint32(len(next)), next))
+	if len(got2) != 1 || got2[0].Res.status != 204 {
+		t.Fatalf("event 2: want the 204 response recovered cleanly, got %+v", got2)
+	}
+	if len(got2[0].Headers) != 1 || got2[0].Headers[0].Name != "Content-Length" {
+		t.Errorf("204 response: want only its own Content-Length header, got %+v", got2[0].Headers)
+	}
+	if p.HeaderLossCount != 1 {
+		t.Errorf("HeaderLossCount = %d, want 1", p.HeaderLossCount)
+	}
 }
