@@ -274,8 +274,19 @@ limactl shell tinytap
 
 # Inside the VM
 sudo apt update
-sudo apt install -y clang llvm libbpf-dev linux-headers-$(uname -r) \
-  build-essential git pkg-config
+sudo apt install -y llvm linux-headers-$(uname -r) build-essential git pkg-config
+
+# clang 17 from the official LLVM repo — Ubuntu's own `clang` package isn't
+# guaranteed to be 17, and clang-14 is known to fail the eBPF verifier (#207)
+wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+echo "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36  /tmp/llvm.sh" | sha256sum -c -
+chmod +x /tmp/llvm.sh
+sudo /tmp/llvm.sh 17
+
+# libbpf 1.6.2 headers — Ubuntu's libbpf-dev predates the BPF_UPROBE macro
+# bpf/tinytap_uprobe.bpf.c uses
+git clone --depth 1 --branch v1.6.2 https://github.com/libbpf/libbpf.git /tmp/libbpf
+sudo make -C /tmp/libbpf/src install_headers PREFIX=/usr
 
 # Go (apt version is old)
 GO_VERSION=1.24.0
@@ -291,11 +302,15 @@ source ~/.bashrc
 Build and run inside the Lima VM (see [Toolchain](#toolchain) above for setup):
 
 ```bash
-# Regenerate Go bindings from C (only needed after editing bpf/*.c)
-cd ~/tinytap/internal/loader/bpf && go generate
+# Regenerate Go bindings from C — required before every build/test, not just
+# after editing bpf/*.c: the generated files aren't committed (needs clang-17
+# + libbpf 1.6.2, see Toolchain above)
+cd ~/tinytap && make generate
 
-# Build
-cd ~/tinytap && go build ./...
+# Build (go build ./... alone won't write a ./tinytap binary — it builds
+# every package in the module to check they compile, without picking one
+# to write out; -o plus a single package path produces the binary)
+go build -o tinytap ./cmd/tinytap
 
 # Run (requires root — eBPF needs CAP_BPF/CAP_PERFMON or root)
 sudo ./tinytap
