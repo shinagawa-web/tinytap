@@ -58,14 +58,19 @@ runs:
     # If upstream legitimately updates the script, this check will start
     # failing — recompute the hash with `sha256sum llvm.sh` and update it
     # here.
+    # Downloaded to $RUNNER_TEMP, not the repo working directory: a leftover
+    # untracked llvm.sh in the checkout fails goreleaser's built-in
+    # git-cleanliness check in release.yml ("git is in a dirty state"),
+    # discovered the hard way when v0.6.5's first tag attempt failed for
+    # exactly this reason (#260 follow-up).
     - name: Install clang 17
       if: inputs.use-cache != 'true' || steps.cache-bpf.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        wget https://apt.llvm.org/llvm.sh
-        echo "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36  llvm.sh" | sha256sum -c -
-        chmod +x llvm.sh
-        sudo ./llvm.sh 17
+        wget -O "${RUNNER_TEMP}/llvm.sh" https://apt.llvm.org/llvm.sh
+        echo "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36  ${RUNNER_TEMP}/llvm.sh" | sha256sum -c -
+        chmod +x "${RUNNER_TEMP}/llvm.sh"
+        sudo "${RUNNER_TEMP}/llvm.sh" 17
 
     # ubuntu-22.04's apt libbpf-dev is 0.5.0, which predates the
     # BPF_UPROBE macro bpf/tinytap_uprobe.bpf.c uses (added in a later
