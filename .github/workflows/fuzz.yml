@@ -1,4 +1,4 @@
-name: test
+name: fuzz
 
 permissions:
   contents: read
@@ -10,9 +10,9 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  fuzz:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
       - name: Checkout code
@@ -26,16 +26,5 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build
-        run: go build ./...
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test -coverprofile=coverage.out -covermode=atomic ./...
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
-        with:
-          files: coverage.out
+      - name: Fuzz smoke test
+        run: go test -run '^$' -fuzz '^FuzzParse$' -fuzztime=15s ./internal/protocols/http/
