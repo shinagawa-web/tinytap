@@ -258,7 +258,7 @@ Full roadmap (near-term steps and longer-term vision) lives in [#19](https://git
 | Go | 1.24+ | |
 | Kernel | Linux 5.8+ | Required for `BPF_MAP_TYPE_RINGBUF`, tinytap's event transport |
 | Architecture | amd64 + arm64 | Need arm64 for Apple Silicon Lima VM |
-| Release builds | [GoReleaser](https://goreleaser.com/) v2 | Cross-compiles linux/amd64 + linux/arm64 on tag push (`.goreleaser.yml`) — a plain `go build`, since the bpf2go artifacts are already committed and embedded (#207), no clang/libbpf step needed at release time |
+| Release builds | [GoReleaser](https://goreleaser.com/) v2 | Cross-compiles linux/amd64 + linux/arm64 on tag push (`.goreleaser.yml`) — the release workflow regenerates the bpf2go artifacts from source first (#260), then it's a plain `go build`; GoReleaser itself needs no clang/libbpf step |
 
 ### Dev environment
 

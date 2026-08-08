@@ -41,6 +41,11 @@ jobs:
           # supply-chain risk here in a way it isn't for a plain CI run.
           cache: false
 
+      - name: Set up BPF toolchain and regenerate bindings
+        uses: ./.github/actions/setup-bpf-toolchain
+        with:
+          use-cache: "false"
+
       # GoReleaser shells out to both of these (sboms: / signs: in
       # .goreleaser.yml) rather than linking them in, so they need to be on
       # PATH before the release step runs.
