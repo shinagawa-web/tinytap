@@ -1,5 +1,10 @@
 # tinytap
 
+[![Test](https://github.com/shinagawa-web/tinytap/actions/workflows/test.yml/badge.svg)](https://github.com/shinagawa-web/tinytap/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/shinagawa-web/tinytap/graph/badge.svg)](https://codecov.io/gh/shinagawa-web/tinytap)
+[![Go Report Card](https://goreportcard.com/badge/github.com/shinagawa-web/tinytap)](https://goreportcard.com/report/github.com/shinagawa-web/tinytap)
+[![Go Reference](https://pkg.go.dev/badge/github.com/shinagawa-web/tinytap.svg)](https://pkg.go.dev/github.com/shinagawa-web/tinytap)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/shinagawa-web/tinytap/badge)](https://securityscorecards.dev/viewer/?uri=github.com/shinagawa-web/tinytap)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13990/badge)](https://www.bestpractices.dev/projects/13990)
 
