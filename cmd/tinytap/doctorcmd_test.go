@@ -89,6 +89,14 @@ func TestRunDoctorCmd_ColorsSeverityWhenStdoutIsATerminal(t *testing.T) {
 			t.Fatalf("want errSilentExit, got %v", err)
 		}
 	})
+	// Assert the actual ANSI escape byte is present, not just that stdout
+	// contains whatever degradedLabelStyle.Render produced — if the style's
+	// renderer ever silently fell back to plain text (e.g. its color
+	// profile detection disagreeing with isTerminalFn), comparing against
+	// its own output would pass vacuously without ever exercising color.
+	if !strings.Contains(stdout, "\x1b[") {
+		t.Fatalf("stdout = %q, want ANSI escape codes present", stdout)
+	}
 	if !strings.Contains(stdout, degradedLabelStyle.Render("[DEGRADED]")) {
 		t.Errorf("stdout = %q, want the DEGRADED label colored", stdout)
 	}
