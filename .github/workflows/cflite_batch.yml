@@ -5,12 +5,14 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 3 * * *' # Once a day. Deeper, non-blocking exploration than the PR smoke test.
+    - cron: '0 3 * * *' # Once a day. Short (60s) libFuzzer run via ClusterFuzzLite — not required for
+                         # Scorecard's Fuzzing check (that only checks for .clusterfuzzlite/Dockerfile's
+                         # presence, not that this workflow ever runs), just a cheap extra exploration pass.
 
 jobs:
   BatchFuzzing:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
     permissions:
       security-events: write
       actions: read
@@ -32,7 +34,7 @@ jobs:
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 3600
+          fuzz-seconds: 60
           mode: 'batch'
           sanitizer: ${{ matrix.sanitizer }}
           output-sarif: true

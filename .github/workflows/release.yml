@@ -12,6 +12,8 @@ jobs:
   goreleaser:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
     permissions:
       contents: write
       # id-token is what lets cosign mint a keyless signature from this
@@ -67,3 +69,39 @@ jobs:
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: "dist/*.tar.gz"
+
+      # Feeds the provenance job below (in-toto/SLSA3, via slsa-github-generator).
+      # This is a second, distinct provenance mechanism from actions/attest-build-provenance
+      # above: that one publishes to GitHub's own attestation store (verifiable via `gh
+      # attestation verify`, not a release asset); this one attaches a downloadable
+      # `.intoto.jsonl` file directly to the GitHub Release, which is the format
+      # OpenSSF Scorecard's Signed-Releases check looks for on release assets.
+      - name: Generate artifact hashes
+        id: hash
+        run: |
+          files=(dist/*checksums.txt)
+          if [[ ${#files[@]} -ne 1 ]]; then
+            echo "Expected exactly one checksums file, found: ${files[*]}" >&2
+            exit 1
+          fi
+          hashes=$(base64 -w0 < "${files[0]}")
+          echo "hashes=$hashes" >> "$GITHUB_OUTPUT"
+
+  # Generates SLSA Build L3 provenance for the checksummed release artifacts and
+  # attaches it to the GitHub Release as a `.intoto.jsonl` asset. Pinned by commit SHA
+  # (not tag) to match this repo's dependency-pinning convention — which requires
+  # compile-generator: true below, because slsa-github-generator's default
+  # download-a-prebuilt-binary path only accepts a `refs/tags/vX.Y.Z`-shaped BUILDER_REF
+  # and errors on a bare commit SHA; compiling from source instead sidesteps that
+  # restriction. (Diagnosed upstream: slsa-framework/slsa-github-generator#4503.)
+  provenance:
+    needs: goreleaser
+    permissions:
+      actions: read # to read the calling workflow's path
+      id-token: write # to sign the provenance
+      contents: write # to add the provenance asset to the release
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a # v2.1.0
+    with:
+      base64-subjects: "${{ needs.goreleaser.outputs.hashes }}"
+      upload-assets: true
+      compile-generator: true
