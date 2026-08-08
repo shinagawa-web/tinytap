@@ -1636,3 +1636,230 @@ func TestEscClosesDetailBeforeClearingFilter(t *testing.T) {
 		t.Errorf("second Esc should clear the filter, got %q", m.filterTerm)
 	}
 }
+
+// --- diagnostics panel (#216) ---
+
+// d opens the diagnostics panel; d again closes it.
+func TestDiagKeyOpensAndClosesPanel(t *testing.T) {
+	m := withRows(3)
+	if m.diagOpen {
+		t.Fatal("diag panel should start closed")
+	}
+	m = key(m, "d")
+	if !m.diagOpen {
+		t.Error("d should open the diagnostics panel")
+	}
+	m = key(m, "d")
+	if m.diagOpen {
+		t.Error("d again should close the diagnostics panel")
+	}
+}
+
+// Esc and Enter both close an open diagnostics panel, mirroring the detail
+// panel's own close keys.
+func TestDiagPanelClosesWithEscOrEnter(t *testing.T) {
+	opened := key(withRows(1), "d")
+	m := press(opened, tea.KeyEsc)
+	if m.diagOpen {
+		t.Error("Esc should close the diagnostics panel")
+	}
+	m = press(opened, tea.KeyEnter)
+	if m.diagOpen {
+		t.Error("Enter should close the diagnostics panel")
+	}
+}
+
+// The diagnostics panel and the detail panel are mutually exclusive: opening
+// one closes the other, so they never fight over the same screen space.
+func TestDiagAndDetailPanelsAreMutuallyExclusive(t *testing.T) {
+	m := press(withRows(1), tea.KeyEnter)
+	if !m.detailOpen {
+		t.Fatal("precondition: detail panel should be open")
+	}
+	m = key(m, "d")
+	if m.detailOpen {
+		t.Error("opening the diagnostics panel should close the detail panel")
+	}
+	if !m.diagOpen {
+		t.Error("d should open the diagnostics panel")
+	}
+}
+
+// A diagMsg appends to diagLines and the footer's indicator picks it up.
+func TestDiagMsgAddsLineAndShowsIndicator(t *testing.T) {
+	m := newModel(80, 24)
+	next, _ := m.Update(diagMsg("tls: something happened"))
+	m = next.(model)
+	if len(m.diagLines) != 1 || m.diagLines[0] != "tls: something happened" {
+		t.Fatalf("diagLines = %v", m.diagLines)
+	}
+	if !strings.Contains(m.footer(), "⚠ 1 diag") {
+		t.Errorf("footer = %q, want the diag indicator", m.footer())
+	}
+}
+
+// With no diagnostic lines buffered, the footer carries no indicator at all
+// — a first-time user with no TLS problems should never see it.
+func TestDiagIndicatorAbsentWithNoDiagLines(t *testing.T) {
+	m := withRows(1)
+	if strings.Contains(m.footer(), "diag") {
+		t.Errorf("footer = %q, want no diag indicator with an empty buffer", m.footer())
+	}
+}
+
+// The diagnostics panel's View shows the captured line and a count in its header.
+func TestDiagPanelRendersLines(t *testing.T) {
+	m := newModel(80, 24)
+	next, _ := m.Update(diagMsg("tls: attach failed for pid 123"))
+	m = next.(model)
+	m = key(m, "d")
+	out := m.View()
+	if !strings.Contains(out, "tls: attach failed for pid 123") {
+		t.Errorf("diag view missing the captured line:\n%s", out)
+	}
+	if !strings.Contains(out, "Diagnostics (1)") {
+		t.Errorf("diag view missing the header count:\n%s", out)
+	}
+}
+
+// diagLines is a bounded ring buffer, like rows: past maxDiagLines the
+// oldest line is dropped. g/G jump to the top/bottom of the panel.
+func TestDiagPanelScrollAndRingBuffer(t *testing.T) {
+	m := newModel(80, 10)
+	for i := 0; i < maxDiagLines+10; i++ {
+		next, _ := m.Update(diagMsg(fmt.Sprintf("line %d", i)))
+		m = next.(model)
+	}
+	if len(m.diagLines) != maxDiagLines {
+		t.Fatalf("diagLines len = %d, want bound at %d", len(m.diagLines), maxDiagLines)
+	}
+	if m.diagLines[0] != "line 10" {
+		t.Errorf("oldest retained line = %q, want the FIFO drop to have kept line 10", m.diagLines[0])
+	}
+	m = key(m, "d")
+	if m.diagOffset != m.maxDiagOffset() {
+		t.Error("opening the panel should pin the scroll to the newest lines")
+	}
+	m = key(m, "g")
+	if m.diagOffset != 0 {
+		t.Errorf("g should jump to the top, got offset %d", m.diagOffset)
+	}
+	m = key(m, "G")
+	if m.diagOffset != m.maxDiagOffset() {
+		t.Error("G should jump back to the bottom")
+	}
+}
+
+// New diagMsg arrivals keep the panel pinned to the newest line while it's
+// open, like tailing a log — but leave the scroll position alone while closed.
+func TestDiagPanelFollowsNewLinesWhileOpen(t *testing.T) {
+	m := newModel(80, 10)
+	for i := 0; i < 30; i++ {
+		next, _ := m.Update(diagMsg(fmt.Sprintf("line %d", i)))
+		m = next.(model)
+	}
+	m = key(m, "d")
+	m = key(m, "g") // scroll away from the tail
+	if m.diagOffset == m.maxDiagOffset() {
+		t.Fatal("precondition: should have scrolled away from the tail")
+	}
+	next, _ := m.Update(diagMsg("line 30"))
+	m = next.(model)
+	if m.diagOffset != m.maxDiagOffset() {
+		t.Error("a new line should re-pin the scroll to the tail while the panel is open")
+	}
+}
+
+// q/ctrl+c quit even while the diagnostics panel is open.
+func TestDiagPanelQuitKey(t *testing.T) {
+	m := key(withRows(1), "d")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd == nil {
+		t.Error("q should return a non-nil quit cmd while the diagnostics panel is open")
+	}
+}
+
+// up/k and down/j move the diagnostics panel's scroll offset.
+func TestDiagPanelUpDownScroll(t *testing.T) {
+	m := newModel(80, 10)
+	for i := 0; i < 30; i++ {
+		next, _ := m.Update(diagMsg(fmt.Sprintf("line %d", i)))
+		m = next.(model)
+	}
+	m = key(m, "d")
+	m = key(m, "g") // start at the top so there's room to scroll down
+	start := m.diagOffset
+	m = key(m, "j")
+	if m.diagOffset != start+1 {
+		t.Errorf("j should move the offset down by one, got %d, want %d", m.diagOffset, start+1)
+	}
+	m = key(m, "k")
+	if m.diagOffset != start {
+		t.Errorf("k should move the offset back up by one, got %d, want %d", m.diagOffset, start)
+	}
+}
+
+// Scrolling past either end of the diagnostics panel clamps back into range.
+func TestDiagPanelOffsetClampsOutOfRange(t *testing.T) {
+	m := newModel(80, 10)
+	for i := 0; i < 30; i++ {
+		next, _ := m.Update(diagMsg(fmt.Sprintf("line %d", i)))
+		m = next.(model)
+	}
+	m = key(m, "d")
+
+	m = key(m, "g") // offset 0
+	m = key(m, "k") // one step below the floor
+	if m.diagOffset != 0 {
+		t.Errorf("scrolling up past the top should clamp to 0, got %d", m.diagOffset)
+	}
+
+	m = key(m, "G") // offset at maxDiagOffset
+	max := m.maxDiagOffset()
+	m = key(m, "j") // one step past the ceiling
+	if m.diagOffset != max {
+		t.Errorf("scrolling down past the bottom should clamp to %d, got %d", max, m.diagOffset)
+	}
+}
+
+// A label wider than the terminal is truncated to the width instead of
+// overflowing (mirrors detailDivider's own overflow handling).
+func TestDiagViewNarrowWidthTruncatesLabel(t *testing.T) {
+	m := model{width: 5, height: 10, diagOpen: true, diagLines: []string{"x"}}
+	out := m.View()
+	label := strings.SplitN(out, "\n", 2)[0]
+	if n := utf8.RuneCountInString(label); n != 5 {
+		t.Errorf("label line = %q (%d runes), want exactly width 5", label, n)
+	}
+}
+
+// diagContentLines floors at 0 when the terminal is too short to fit the
+// panel's own chrome (header divider + footer), mirroring visibleRows' own
+// floor for the main table.
+func TestDiagContentLinesFloorsAtZero(t *testing.T) {
+	m := model{height: 1}
+	if got := m.diagContentLines(); got != 0 {
+		t.Errorf("diagContentLines = %d, want 0 when height is below diagChromeLines", got)
+	}
+}
+
+// diagView re-clamps an out-of-range offset defensively, independent of
+// Update's own clampDiagOffset call.
+func TestDiagViewClampsOffsetDefensively(t *testing.T) {
+	lines := make([]string, 20)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i)
+	}
+
+	tooHigh := model{width: 80, height: 10, diagOpen: true, diagLines: lines, diagOffset: 1000}
+	out := tooHigh.View()
+	if !strings.Contains(out, "line 19") {
+		t.Errorf("an offset past the end should clamp to show the newest lines:\n%s", out)
+	}
+
+	negative := model{width: 80, height: 10, diagOpen: true, diagLines: lines, diagOffset: -5}
+	out = negative.View()
+	if !strings.Contains(out, "line 0") {
+		t.Errorf("a negative offset should clamp to show the oldest lines:\n%s", out)
+	}
+}

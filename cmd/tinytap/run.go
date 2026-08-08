@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"golang.org/x/term"
@@ -48,6 +49,7 @@ type tuiSink interface {
 	output.Sink
 	Run() error
 	Quit()
+	SendDiag(line string)
 }
 
 // tuiRunner abstracts the Run/Quit lifecycle for runCapturePipeline.
@@ -166,19 +168,40 @@ func runCapturePipeline(rd ringbufCloser, sink output.Sink, ui tuiRunner) error 
 }
 
 func runTUI(rd ringbufCloser, width, height int) {
-	sink := newSSLWatcher(newTUISink(width, height))
+	tuiS := newTUISink(width, height)
+	sink := newSSLWatcher(tuiS)
 	defer closeSink(sink)
 
-	// Mute logging for the TUI session so stray lines can't corrupt the alt-screen.
+	// Route log output into a bounded buffer instead of discarding it (#216):
+	// the alt-screen still can't be corrupted by a stray log.Printf, but its
+	// content survives — surfaced live via the TUI's diagnostics panel
+	// (tuiS.SendDiag) and flushed to stderr once the session ends, so a user
+	// who never opens the panel still learns why, say, HTTPS traffic never
+	// appeared for some process.
+	diag := newDiagBuffer(tuiS.SendDiag, isRoutineTLSAttach)
 	prev := log.Writer()
-	log.SetOutput(io.Discard)
+	log.SetOutput(diag)
 
 	runErr := runCapturePipeline(rd, sink, sink)
 
 	log.SetOutput(prev)
+	diag.Flush(os.Stderr)
 	if runErr != nil {
 		log.Printf("tui: %v", runErr)
 	}
+}
+
+// isRoutineTLSAttach reports whether line is one of sslWatcher's successful
+// uprobe-attach confirmations (tlswatch.go's "SSL_set_fd uprobe attached"/
+// "SSL_write/SSL_read/SSL_free uprobes attached"). Expected on any host
+// handling steady TLS traffic — one pair per process — and not what #216's
+// diagnostics panel exists to answer ("why is HTTPS missing", not "here's
+// everything that worked"), so newDiagBuffer filters them out here rather
+// than at the log.Printf call site: the non-TUI stdout path's raw text is
+// still load-bearing for the e2e harness's wait_for_tls_attach.
+func isRoutineTLSAttach(line string) bool {
+	return strings.Contains(line, "uprobe attached for pid") ||
+		strings.Contains(line, "uprobes attached for pid")
 }
 
 func closeSink(sink output.Sink) {

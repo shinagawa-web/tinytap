@@ -53,6 +53,14 @@ const (
 // chromeLines holds whether the panel is open or not.
 const chromeLines = 5
 
+// maxDiagLines bounds the diagnostics panel's ring buffer, mirroring maxRows —
+// a long session shouldn't grow this without limit either.
+const maxDiagLines = 1000
+
+// diagChromeLines is the non-content height of the diagnostics panel: its
+// header divider and the footer help line.
+const diagChromeLines = 2
+
 // detailMaxFraction caps the detail panel's share of the row area when open.
 // The panel grows to fit its content (#34) rather than claiming a fixed slice,
 // but never past this cap — so the table always keeps at least the remaining
@@ -134,6 +142,11 @@ func (r row) bodyBytes() int { return len(r.reqBody) + len(r.resBody) }
 // via Program.Send.
 type rowMsg row
 
+// diagMsg delivers one captured diagnostic log line — e.g. why the TLS
+// attach path skipped a process — from the process-wide log buffer into the
+// model via Program.Send (#216). See Sink.SendDiag.
+type diagMsg string
+
 type model struct {
 	rows         []row
 	width        int
@@ -149,6 +162,18 @@ type model struct {
 	filterMode   bool   // when true, keystrokes feed the filter input instead of navigating
 	filterTerm   string // live filter text; empty means all rows are visible
 	filtered     []int  // indices into rows for matching rows; nil when filterTerm is empty
+
+	// diagLines holds captured log lines that would otherwise be discarded
+	// during the TUI session (#216) — e.g. why the TLS attach path skipped a
+	// process. diagOpen shows them full-screen; diagOffset is the scroll
+	// position (0 = oldest). While the panel is open, it re-pins to the
+	// newest line as new lines arrive, like tailing a log; opening the panel
+	// always re-pins too, so a session's worth of lines that arrived while
+	// it was closed never leaves the scroll position stranded on stale
+	// content.
+	diagLines  []string
+	diagOpen   bool
+	diagOffset int
 }
 
 func newModel(width, height int) model {
@@ -184,10 +209,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.filterTerm += string(msg.Runes)
 				m.rebuildFilter()
 			}
+		} else if m.diagOpen {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "esc", "d", "enter":
+				m.diagOpen = false
+				m.diagOffset = 0
+			case "up", "k":
+				m.diagOffset--
+			case "down", "j":
+				m.diagOffset++
+			case "g":
+				m.diagOffset = 0
+			case "G":
+				m.diagOffset = m.maxDiagOffset()
+			}
 		} else {
 			switch msg.String() {
 			case "q", "ctrl+c":
 				return m, tea.Quit
+			case "d":
+				// Open the diagnostics panel (#216) — mutually exclusive with the
+				// detail panel to keep the two full-height views from fighting
+				// over the same screen space.
+				if m.detailOpen {
+					m.detailOpen = false
+					m.panelFocus = false
+					m.detailOffset = 0
+				}
+				m.diagOpen = true
+				m.diagOffset = m.maxDiagOffset()
 			case "tab":
 				// Toggle focus between the table and the open detail panel. A no-op
 				// when the panel is closed (there is nothing to drill into).
@@ -307,11 +359,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.detailOffset = 0
 		}
+	case diagMsg:
+		line := string(msg)
+		if len(m.diagLines) < maxDiagLines {
+			m.diagLines = append(m.diagLines, line)
+		} else {
+			copy(m.diagLines, m.diagLines[1:])
+			m.diagLines[maxDiagLines-1] = line
+		}
+		// Stay pinned to the newest line, like tailing a log — but only while
+		// the panel is open; a closed panel has no scroll position to preserve.
+		if m.diagOpen {
+			m.diagOffset = m.maxDiagOffset()
+		}
 	}
 	// Reconcile the scroll anchor after any selection / row-count / size
 	// change so the selected row stays inside the visible window.
 	m.clampScroll()
 	m.clampDetailOffset()
+	m.clampDiagOffset()
 	return m, nil
 }
 
@@ -354,6 +420,38 @@ func (m *model) clampDetailOffset() {
 	if m.detailOffset < 0 {
 		m.detailOffset = 0
 	}
+}
+
+// maxDiagOffset is the furthest the diagnostics panel can scroll: enough that
+// the last diagContentLines() lines are visible at the bottom. 0 when the
+// content fits without scrolling.
+func (m model) maxDiagOffset() int {
+	n := m.diagContentLines()
+	if len(m.diagLines) <= n {
+		return 0
+	}
+	return len(m.diagLines) - n
+}
+
+// clampDiagOffset keeps the diagnostics panel's scroll offset within
+// [0, maxDiagOffset] after any key / resize / new-line change.
+func (m *model) clampDiagOffset() {
+	if max := m.maxDiagOffset(); m.diagOffset > max {
+		m.diagOffset = max
+	}
+	if m.diagOffset < 0 {
+		m.diagOffset = 0
+	}
+}
+
+// diagContentLines is how many diagnostic lines fit at the current height,
+// after the panel's chrome (header divider, footer).
+func (m model) diagContentLines() int {
+	n := m.height - diagChromeLines
+	if n < 0 {
+		n = 0
+	}
+	return n
 }
 
 // visibleRows is how many table rows fit at the current height, after the
@@ -432,6 +530,9 @@ func (m model) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
+	if m.diagOpen {
+		return m.diagView()
+	}
 
 	// PATH absorbs the slack left after the marker gutter, the fixed columns,
 	// and their separators.
@@ -489,6 +590,44 @@ func (m model) View() string {
 	return strings.Join(lines, "\n")
 }
 
+// diagView renders the diagnostics panel full-screen (#216): the log lines
+// captured instead of discarded during this session (chiefly the TLS attach
+// path explaining why HTTPS traffic for some process never appeared),
+// oldest first, scrollable when they overflow the terminal height. Bounded
+// by maxDiagLines — the oldest lines drop once that many have arrived.
+func (m model) diagView() string {
+	label := "───── Diagnostics "
+	if n := len(m.diagLines); n > 0 {
+		label += fmt.Sprintf("(%d) ", n)
+	}
+	if w := utf8.RuneCountInString(label); w < m.width {
+		label += strings.Repeat("─", m.width-w)
+	} else if w > m.width {
+		label = string([]rune(label)[:m.width])
+	}
+
+	n := m.diagContentLines()
+	offset := m.diagOffset
+	if max := m.maxDiagOffset(); offset > max {
+		offset = max
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	lines := make([]string, 0, m.height)
+	lines = append(lines, label)
+	shown := 0
+	for ; shown < n && offset+shown < len(m.diagLines); shown++ {
+		lines = append(lines, fitLeft(" "+m.diagLines[offset+shown], m.width))
+	}
+	for ; shown < n; shown++ {
+		lines = append(lines, fitLeft("", m.width))
+	}
+	lines = append(lines, " ↑↓/jk: scroll │ g/G: top/bottom │ Esc/d/Enter: close │ q: quit")
+	return strings.Join(lines, "\n")
+}
+
 // footer is the help line. It has three states: panel closed, panel open with
 // table focus, and panel open with panel focus — each advertising the keys that
 // do something in that state.
@@ -500,19 +639,31 @@ func (m model) footer() string {
 	if m.hexMode {
 		mode = "text"
 	}
+	diag := m.diagIndicator()
 	switch {
 	case m.detailOpen && m.panelFocus:
 		// Esc steps back to table focus here (it doesn't close until the next
 		// Esc from the table), so it reads "back", and quit stays advertised.
-		return fmt.Sprintf(" ↑↓/jk: scroll │ g/G: top/bottom │ Tab: table │ b: %s body │ Esc: back │ q: quit", mode)
+		return fmt.Sprintf(" ↑↓/jk: scroll │ g/G: top/bottom │ Tab: table │ b: %s body │ Esc: back │ q: quit%s", mode, diag)
 	case m.detailOpen:
-		return fmt.Sprintf(" ↑↓/jk: navigate │ Tab: inspect │ b: %s body │ Enter/Esc: close │ q: quit", mode)
+		return fmt.Sprintf(" ↑↓/jk: navigate │ Tab: inspect │ b: %s body │ Enter/Esc: close │ q: quit%s", mode, diag)
 	default:
 		if m.filterTerm != "" {
-			return fmt.Sprintf(" [/%s] ↑↓/jk: navigate │ Enter: detail │ /: edit │ Esc: clear │ q: quit", m.filterTerm)
+			return fmt.Sprintf(" [/%s] ↑↓/jk: navigate │ Enter: detail │ /: edit │ Esc: clear │ q: quit%s", m.filterTerm, diag)
 		}
-		return " ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ /: filter │ q: quit"
+		return fmt.Sprintf(" ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ /: filter │ q: quit%s", diag)
 	}
+}
+
+// diagIndicator flags that diagnostic lines are waiting — e.g. why the TLS
+// attach path skipped a process (#216) — so "why is HTTPS missing?" is
+// answerable without knowing to open the panel. Stays visible for as long as
+// any lines are buffered, not just until first opened.
+func (m model) diagIndicator() string {
+	if n := len(m.diagLines); n > 0 {
+		return " │ " + slowLatencyStyle.Render(fmt.Sprintf("⚠ %d diag (d)", n))
+	}
+	return ""
 }
 
 // detailDivider renders the detail panel's header line for the selected row:

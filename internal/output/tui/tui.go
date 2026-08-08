@@ -9,7 +9,10 @@
 // (#40, Enter to open / Enter or Esc to close) that renders the selected
 // exchange's request/response start lines and structured headers (#34); the
 // decoded/hex body view is still to come (#35). OnEvent and OnMessage stay
-// no-ops — the TUI cares only about completed exchanges (OnPaired).
+// no-ops — the TUI cares only about completed exchanges (OnPaired). A
+// toggleable diagnostics panel (#216, `d` to open/close) surfaces log lines
+// captured instead of discarded during the session — chiefly the TLS attach
+// path explaining why HTTPS traffic for some process never appeared.
 package tui
 
 import (
@@ -59,6 +62,13 @@ func (s *Sink) Run() error {
 // Quit asks the UI to exit. Safe to call after the program has already
 // stopped (the capture-died path), where it is a no-op.
 func (s *Sink) Quit() { s.prog.Quit() }
+
+// SendDiag posts a captured diagnostic log line to the UI (#216) — used when
+// the caller has redirected log output into a buffer instead of muting it
+// outright during the TUI session, so a stray log.Printf (e.g. from the TLS
+// attach path explaining why HTTPS traffic never appeared) is surfaced via
+// the footer indicator and diagnostics panel instead of silently discarded.
+func (s *Sink) SendDiag(line string) { s.prog.Send(diagMsg(line)) }
 
 // Close releases sink resources; the program is torn down by Run returning,
 // so there is nothing extra to do here.

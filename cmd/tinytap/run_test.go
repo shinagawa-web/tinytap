@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -59,6 +61,7 @@ func (f *fakeRingbufCloser) Close() error {
 type fakeTUISink struct {
 	runErr error
 	quit   bool
+	diags  []string
 }
 
 func (f *fakeTUISink) OnEvent(*events.Event)          {}
@@ -67,6 +70,7 @@ func (f *fakeTUISink) OnPaired(httpproto.PairedEvent) {}
 func (f *fakeTUISink) Close() error                   { return nil }
 func (f *fakeTUISink) Run() error                     { return f.runErr }
 func (f *fakeTUISink) Quit()                          { f.quit = true }
+func (f *fakeTUISink) SendDiag(line string)           { f.diags = append(f.diags, line) }
 
 var _ output.Sink = (*fakeTUISink)(nil)
 var _ tuiSink = (*fakeTUISink)(nil)
@@ -523,6 +527,70 @@ func TestRunTUI_LogsUIError(t *testing.T) {
 	defer func() { newTUISink = oldNew }()
 
 	runTUI(rd, 120, 24)
+}
+
+// A stray log line during the TUI session (#216) — here, runCapturePipeline's
+// "close reader" log when rd.Close() errors — is routed to the TUI sink's
+// diagnostics panel instead of the alt-screen, and flushed to stderr once the
+// session ends so it isn't lost if the user never opened the panel.
+func TestRunTUI_RoutesLogIntoDiagBufferAndFlushesOnExit(t *testing.T) {
+	rd := newFakeRCWithErr(errors.New("boom"))
+	fakeTUI := &fakeTUISink{}
+
+	oldNew := newTUISink
+	newTUISink = func(int, int) tuiSink { return fakeTUI }
+	defer func() { newTUISink = oldNew }()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = oldStderr }()
+
+	runTUI(rd, 120, 24)
+
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatalf("close pipe writer: %v", closeErr)
+	}
+	out, readErr := io.ReadAll(r)
+	if readErr != nil {
+		t.Fatalf("read pipe: %v", readErr)
+	}
+
+	if len(fakeTUI.diags) == 0 {
+		t.Fatal("want at least one diag line routed to the TUI sink")
+	}
+	if !strings.Contains(fakeTUI.diags[0], "close reader") {
+		t.Errorf("diag line = %q, want it to mention the close-reader error", fakeTUI.diags[0])
+	}
+	if !strings.Contains(string(out), "close reader") {
+		t.Errorf("stderr after the TUI exits = %q, want the diagnostic flushed there", out)
+	}
+}
+
+// --- isRoutineTLSAttach ---
+
+func TestIsRoutineTLSAttach(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"fd probe attached", "tls: SSL_set_fd uprobe attached for pid 123 (/lib/libssl.so.3)", true},
+		{"payload probes attached", "tls: SSL_write/SSL_read/SSL_free uprobes attached for pid 123 (/lib/libssl.so.3)", true},
+		{"discover failure", "tls: discover libssl for pid 123: scan /proc/123/maps: no such process", false},
+		{"attach failure", "tls: attach SSL_set_fd for pid 123 (/lib/libssl.so.3): permission denied", false},
+		{"unrelated line", "close reader: boom", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isRoutineTLSAttach(c.line); got != c.want {
+				t.Errorf("isRoutineTLSAttach(%q) = %v, want %v", c.line, got, c.want)
+			}
+		})
+	}
 }
 
 // --- closeSink ---
