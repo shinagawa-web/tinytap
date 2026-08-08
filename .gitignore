@@ -31,7 +31,11 @@ internal/loader/bpf/fixture/*_bpfel.go
 internal/loader/bpf/fixture/*_bpfeb.go
 internal/loader/bpf/fixture/*.o
 
-# Hugo docs site build output/cache (exploratory, see the docs-structure issue)
+# Hugo docs site (see #264). Theme is not vendored or a submodule (matching
+# gomarklint's docs/ setup) — clone it yourself for local preview:
+#   git clone --branch v13 --depth 1 https://github.com/alex-shpak/hugo-book site/themes/hugo-book
+# .github/workflows/pages.yml clones it fresh again at deploy time.
+site/themes/
 site/public/
 site/resources/
 site/.hugo_build.lock

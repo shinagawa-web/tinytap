@@ -1,7 +1,9 @@
 ---
 title: Terminology
-weight: 1
+weight: 10
 ---
+
+# Terminology
 
 These terms appear throughout the docs, the code, and the issue tracker. They are deliberately **process-relative** — "from whose point of view?" matters.
 
