@@ -291,11 +291,13 @@ source ~/.bashrc
 Build and run inside the Lima VM (see [Toolchain](#toolchain) above for setup):
 
 ```bash
-# Regenerate Go bindings from C (only needed after editing bpf/*.c)
-cd ~/tinytap/internal/loader/bpf && go generate
+# Regenerate Go bindings from C — required before every build/test, not just
+# after editing bpf/*.c: the generated files aren't committed (needs clang-17
+# + libbpf 1.6.2, see Toolchain above)
+cd ~/tinytap && make generate
 
 # Build
-cd ~/tinytap && go build ./...
+go build ./...
 
 # Run (requires root — eBPF needs CAP_BPF/CAP_PERFMON or root)
 sudo ./tinytap
