@@ -207,6 +207,15 @@ type Parser struct {
 	// the full cmdline (e.g. "python3 manage.py runserver") in place of
 	// the kernel's 15-char truncated task name.
 	resolve func(pid uint32) string
+	// HeaderLossCount counts messages discarded because their start-line
+	// or header block exceeded the BPF sample cap mid-message (#224) —
+	// see feed()'s truncation-gap check. Each occurrence means one
+	// message's headers were unrecoverable and the stream was
+	// resynchronised at the next start line rather than emitting a
+	// message with a spliced/fabricated header set. Exported so callers
+	// can surface it; full UI/TUI plumbing is deferred to #210's drop
+	// accounting.
+	HeaderLossCount int
 }
 
 func NewParser() *Parser {
@@ -421,6 +430,41 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 	s.wireBytesSinceMessageStart += wireBytes
 
 	out = append(out, p.advance(s, pid, comm, tsNs)...)
+
+	// A start-line or header block that's still incomplete after advance()
+	// may be stalled for two entirely different reasons: legitimately
+	// waiting for more bytes on a future syscall (normal — every sampled
+	// byte so far is real and contiguous), or permanently unrecoverable
+	// because some syscall's sample didn't cover its full wire length
+	// (#224 — the BPF payload cap was hit mid-header). The two look
+	// identical from advance()'s state alone, but wire-byte accounting
+	// tells them apart: if no bytes were ever dropped, the wire bytes
+	// seen since the last completed framing boundary
+	// (wireBytesSinceMessageStart - wireBytesConsumed) always equals
+	// len(s.buf) exactly, since every sampled byte maps 1:1 to a wire
+	// position. A strict excess means some of those wire bytes never
+	// made it into buf — a gap exists somewhere in the currently-buffered
+	// prefix, and it can never be filled by anything that arrives later
+	// (those bytes are gone, not delayed). Continuing to wait (or worse,
+	// appending a later event's payload straight onto this prefix, as if
+	// it were contiguous) would either stall forever or splice two
+	// non-adjacent wire positions into one fabricated header set.
+	//
+	// The fix is the same either way: the in-flight message's headers are
+	// unrecoverable, so discard the prefix and resynchronise at the next
+	// message boundary — treating whatever arrives next as a fresh
+	// start-line search — rather than emitting a message built from
+	// spliced bytes or leaving the connection stalled indefinitely.
+	if s.state == stateNeedStartLine || s.state == stateNeedHeaders {
+		if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
+			p.HeaderLossCount++
+			s.buf = nil
+			s.state = stateNeedStartLine
+			s.wireBytesSinceMessageStart = 0
+			s.wireBytesConsumed = 0
+			s.messageStartTs = 0
+		}
+	}
 
 	// If the stream is accumulating without finding HTTP structure, abandon
 	// it so it cannot grow unbounded. Body draining above never touches buf,

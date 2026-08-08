@@ -1742,3 +1742,118 @@ func TestSendfileAdvancesBodyAccounting(t *testing.T) {
 		t.Errorf("BodySample must be empty for sendfile body, got %d bytes", len(got[0].BodySample))
 	}
 }
+
+// TestHeaderBlockExceedingSampleCapSplicesNextRequest is #224's "Case C" as
+// a TDD spec: it asserts the CORRECT behavior, not what the parser does
+// today, so it currently FAILS. When a single syscall's header block
+// exceeds events.MaxPayload, the sample is truncated mid-header — but the
+// wire byte count (Event.Bytes) still reports the true length, so the
+// parser has what it needs to know a gap exists. feed() doesn't check:
+// it unconditionally appends the next event's payload onto the truncated
+// prefix (s.buf = append(s.buf, payload...) in parser.go), splicing two
+// non-adjacent wire positions into what looks like one contiguous header
+// block. Concretely this drops the request in between entirely and emits
+// its neighbor with a fabricated header set — see the issue for the full
+// mechanism and a second failure mode (a Content-Length invented from
+// spliced bytes).
+//
+// Setup: three pipelined requests on one connection. The first (GET /x) has
+// a 4500-byte Cookie header pushing its total header block past
+// events.MaxPayload (4096) — makeEvent silently truncates the sample to the
+// cap, exactly like the real BPF sampling path. GET /y and GET /z follow as
+// ordinary, unambiguously well-formed requests, each arriving in its own
+// syscall/event so resynchronization has an unambiguous boundary to find.
+func TestHeaderBlockExceedingSampleCapSplicesNextRequest(t *testing.T) {
+	const pid, fd = uint32(1), int32(5)
+	bigCookie := strings.Repeat("c", 4500)
+	req1 := []byte(fmt.Sprintf("GET /x HTTP/1.1\r\nHost: x\r\nCookie: %s\r\nContent-Length: 0\r\n\r\n", bigCookie))
+	req2 := []byte("GET /y HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+	req3 := []byte("GET /z HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+
+	if len(req1) <= events.MaxPayload {
+		t.Fatalf("test setup: req1 (%d bytes) must exceed events.MaxPayload (%d) to trigger sample truncation", len(req1), events.MaxPayload)
+	}
+
+	p := NewParser()
+
+	// Event 1: req1's true wire length exceeds events.MaxPayload; makeEvent
+	// clamps the sample to the cap, leaving req1's header block truncated
+	// mid-Cookie-value with no "\r\n\r\n" terminator in the sample. GET /x's
+	// headers are now permanently unrecoverable — nothing later can fill in
+	// the missing ~3400 bytes.
+	ev1 := makeEvent(events.SyscallRead, pid, fd, uint32(len(req1)), req1)
+	if got := p.Feed(ev1); len(got) != 0 {
+		t.Fatalf("event 1 (truncated headers): want 0 messages while the terminator is still missing, got %+v", got)
+	}
+
+	// Event 2: req2 must NOT be spliced onto /x's truncated prefix. Once the
+	// parser knows the gap exists, /x's in-progress message can only be
+	// discarded (its true header set is gone), and req2 — a complete,
+	// well-formed request all on its own — must be recognised as GET /y in
+	// its own right, not swallowed as fake continuation of /x's headers.
+	got2 := p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(req2)), req2))
+	if len(got2) != 1 {
+		t.Fatalf("event 2: want exactly 1 message (GET /y, correctly resynchronised), got %d: %+v", len(got2), got2)
+	}
+	if got2[0].Req.method != "GET" || got2[0].Req.path != "/y" {
+		t.Fatalf("event 2: want GET /y recovered on its own, got method=%q path=%q (headers=%+v) — likely still misattributed to /x", got2[0].Req.method, got2[0].Req.path, got2[0].Headers)
+	}
+	// No fabricated duplicate headers: GET /y's own two headers only.
+	if len(got2[0].Headers) != 2 {
+		t.Errorf("GET /y: want exactly its own 2 headers (Host, Content-Length), got %d: %+v", len(got2[0].Headers), got2[0].Headers)
+	}
+
+	// Event 3: GET /z, unaffected either way — sanity check that recovery
+	// doesn't itself desynchronise anything downstream.
+	got3 := p.Feed(makeEvent(events.SyscallRead, pid, fd, uint32(len(req3)), req3))
+	if len(got3) != 1 || got3[0].Req.method != "GET" || got3[0].Req.path != "/z" {
+		t.Fatalf("event 3: want exactly 1 correctly-framed GET /z message, got %+v", got3)
+	}
+
+	// GET /x itself is never emitted — its header set is unrecoverable, and
+	// emitting it with a fabricated/partial header set would be the same
+	// silent-corruption failure this test exists to rule out.
+	for _, m := range append(got2, got3...) {
+		if m.Req.path == "/x" {
+			t.Errorf("GET /x must not be emitted at all (its headers are unrecoverable), got it as: %+v", m)
+		}
+	}
+	if p.HeaderLossCount != 1 {
+		t.Errorf("HeaderLossCount = %d, want 1 (the one truncated /x)", p.HeaderLossCount)
+	}
+}
+
+// TestHeaderTruncationResynchronisesResponseStream covers #224's "Case A/B"
+// on the response side: a response's header block truncated by a syscall
+// sample cap (mirroring writev's per-iovec budget) must not cause the next
+// response on the same connection to vanish or splice a fabricated
+// terminator/Content-Length from the truncated bytes. Both failure modes
+// share the same root cause the fix addresses — this test exercises the
+// response path and a different truncation point than the request-side
+// TestHeaderBlockExceedingSampleCapSplicesNextRequest above.
+func TestHeaderTruncationResynchronisesResponseStream(t *testing.T) {
+	const pid, fd = uint32(9), int32(3)
+	headers := []byte("HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nX-Long: " +
+		strings.Repeat("x", 1200) + "\r\nContent-Length: 0\r\n\r\n")
+	truncated := headers[:1024] // simulates a 1024-byte per-iovec sample budget
+
+	p := NewParser()
+	got1 := p.Feed(makeEvent(events.SyscallWritev, pid, fd, uint32(len(headers)), truncated))
+	if len(got1) != 0 {
+		t.Fatalf("event 1 (truncated response headers): want 0 messages, got %+v", got1)
+	}
+
+	// A second, unrelated response on the same (pid, fd) — must be
+	// recovered on its own, not spliced onto the truncated prefix.
+	next := []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+	got2 := p.Feed(makeEvent(events.SyscallWritev, pid, fd, uint32(len(next)), next))
+	if len(got2) != 1 || got2[0].Res.status != 204 {
+		t.Fatalf("event 2: want the 204 response recovered cleanly, got %+v", got2)
+	}
+	if len(got2[0].Headers) != 1 || got2[0].Headers[0].Name != "Content-Length" {
+		t.Errorf("204 response: want only its own Content-Length header, got %+v", got2[0].Headers)
+	}
+	if p.HeaderLossCount != 1 {
+		t.Errorf("HeaderLossCount = %d, want 1", p.HeaderLossCount)
+	}
+}
