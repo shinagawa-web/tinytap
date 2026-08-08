@@ -1,6 +1,7 @@
 # tinytap
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/shinagawa-web/tinytap/badge)](https://securityscorecards.dev/viewer/?uri=github.com/shinagawa-web/tinytap)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13990/badge)](https://www.bestpractices.dev/projects/13990)
 
 > A tiny eBPF-based HTTP traffic capture tool for local development.
 
