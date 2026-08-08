@@ -105,6 +105,33 @@ func mapsLine(path string) string {
 	return fmt.Sprintf("7f0000000000-7f0000200000 r-xp 00000000 08:01 131099   %s", path)
 }
 
+// fixtureExe adds a /proc/<pid>/exe symlink (pointing at exePath, as the
+// process would see its own executable) to a /proc tree already built by
+// fixture, and, if exeFile is non-empty, places that file's bytes under
+// <root>/<pid>/root/<exePath> — mirroring how fixture already resolves
+// mapped libraries through the process's own mount namespace.
+func fixtureExe(t *testing.T, root string, pid uint32, exePath, exeFile string) {
+	t.Helper()
+	procDir := filepath.Join(root, fmt.Sprint(pid))
+	if err := os.Symlink(exePath, filepath.Join(procDir, "exe")); err != nil {
+		t.Fatal(err)
+	}
+	if exeFile == "" {
+		return
+	}
+	rootedPath := filepath.Join(procDir, "root", exePath)
+	if err := os.MkdirAll(filepath.Dir(rootedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(exeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rootedPath, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFind_Success(t *testing.T) {
 	buildDir := t.TempDir()
 	lib := buildSharedLib(t, buildDir, "libssl", tlsdiscover.RequiredSymbols)
@@ -133,6 +160,106 @@ func TestFind_NoLibSSLMapped(t *testing.T) {
 	_, err := tlsdiscover.Find(root, 42)
 	if !errors.Is(err, tlsdiscover.ErrLibSSLNotFound) {
 		t.Errorf("Find() error = %v, want ErrLibSSLNotFound", err)
+	}
+}
+
+func TestFind_FallsBackToOwnExecutable(t *testing.T) {
+	// No libssl.so mapped, but the process's own executable statically
+	// bundles OpenSSL without stripping it — e.g. Node.js's official and
+	// NodeSource builds (#268/#269).
+	buildDir := t.TempDir()
+	exe := buildSharedLib(t, buildDir, "staticnode", tlsdiscover.RequiredSymbols)
+
+	const exePath = "/usr/bin/node"
+	root := fixture(t, 4242, []string{mapsLine("/lib/x86_64-linux-gnu/libc.so.6")}, "", "")
+	fixtureExe(t, root, 4242, exePath, exe)
+
+	got, err := tlsdiscover.Find(root, 4242)
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	want := filepath.Join(root, "4242", "root", exePath)
+	if got.Path != want {
+		t.Errorf("Find().Path = %q, want %q", got.Path, want)
+	}
+	if got.Pid != 4242 {
+		t.Errorf("Find().Pid = %d, want 4242", got.Pid)
+	}
+}
+
+func TestFind_OwnExecutableMissingSymbols(t *testing.T) {
+	// No libssl.so mapped, and the executable itself doesn't export the
+	// required symbols either (e.g. a Go binary using crypto/tls) — still
+	// reported as ErrLibSSLNotFound, not a *SymbolError: there's no
+	// name-based signal (unlike a mapped "libssl.so*") that this executable
+	// was ever meant to be a TLS library, so treating every ordinary
+	// non-TLS process as "found libssl but it's broken" would be
+	// misleading (see findInOwnExecutable's doc comment).
+	buildDir := t.TempDir()
+	exe := buildSharedLib(t, buildDir, "gobinary", nil)
+
+	const exePath = "/usr/bin/mygoapp"
+	root := fixture(t, 4343, []string{mapsLine("/lib/x86_64-linux-gnu/libc.so.6")}, "", "")
+	fixtureExe(t, root, 4343, exePath, exe)
+
+	_, err := tlsdiscover.Find(root, 4343)
+	if !errors.Is(err, tlsdiscover.ErrLibSSLNotFound) {
+		t.Errorf("Find() error = %v, want ErrLibSSLNotFound", err)
+	}
+}
+
+func TestFind_NoLibSSLAndNoExecutable(t *testing.T) {
+	// Neither libssl.so mapped nor an exe symlink at all (e.g. the process
+	// exited between listing pids and reading /proc/<pid>/exe) — same
+	// ErrLibSSLNotFound as before this fallback existed.
+	root := fixture(t, 4444, []string{mapsLine("/lib/x86_64-linux-gnu/libc.so.6")}, "", "")
+
+	_, err := tlsdiscover.Find(root, 4444)
+	if !errors.Is(err, tlsdiscover.ErrLibSSLNotFound) {
+		t.Errorf("Find() error = %v, want ErrLibSSLNotFound", err)
+	}
+}
+
+func TestFind_ExecutableReadlinkFails(t *testing.T) {
+	// /proc/<pid>/exe exists but isn't a symlink (e.g. a race or a
+	// non-standard /proc implementation) — os.Readlink fails with EINVAL,
+	// not ENOENT, so this is a real failure and must not be swallowed as
+	// ErrLibSSLNotFound, mirroring TestFind_MapsFilePermissionDenied for
+	// the maps-file case.
+	root := fixture(t, 4545, []string{mapsLine("/lib/x86_64-linux-gnu/libc.so.6")}, "", "")
+	procDir := filepath.Join(root, "4545")
+	if err := os.WriteFile(filepath.Join(procDir, "exe"), []byte("not a symlink"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := tlsdiscover.Find(root, 4545)
+	if errors.Is(err, tlsdiscover.ErrLibSSLNotFound) {
+		t.Errorf("Find() error = %v, want a readlink error, not ErrLibSSLNotFound", err)
+	}
+	if err == nil {
+		t.Error("Find() error = nil, want a readlink error")
+	}
+}
+
+func TestFind_OwnExecutableUnreadable(t *testing.T) {
+	// The exe symlink resolves, but no backing file exists under
+	// <root>/<pid>/root — checkSymbols fails with a plain open error, not a
+	// *SymbolError, and that must propagate rather than collapse to
+	// ErrLibSSLNotFound (unlike the "symbols missing" case).
+	const exePath = "/usr/bin/node"
+	root := fixture(t, 4646, []string{mapsLine("/lib/x86_64-linux-gnu/libc.so.6")}, "", "")
+	fixtureExe(t, root, 4646, exePath, "")
+
+	_, err := tlsdiscover.Find(root, 4646)
+	if errors.Is(err, tlsdiscover.ErrLibSSLNotFound) {
+		t.Errorf("Find() error = %v, want an open error, not ErrLibSSLNotFound", err)
+	}
+	var symErr *tlsdiscover.SymbolError
+	if errors.As(err, &symErr) {
+		t.Errorf("Find() error = %v (*SymbolError), want a plain open error", err)
+	}
+	if err == nil {
+		t.Error("Find() error = nil, want an open error for the missing executable file")
 	}
 }
 

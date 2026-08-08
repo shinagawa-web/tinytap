@@ -14,6 +14,7 @@
 | nginx, Debian-based (`nginx:latest`) | `scripts/test-e2e-tls-nginx.sh` (docker-compose, #178) | ✅ calls `SSL_set_fd` directly (`ngx_ssl_create_connection()`) | ✅ paired, decrypted correctly |
 | nginx, Alpine-based (`nginx:alpine`) | `scripts/test-e2e-tls-nginx.sh` (docker-compose, #178) | ✅ same as above | ✅ paired, decrypted correctly |
 | curl | `internal/protocols/http/parser_ssl_fdless_test.go`, `cmd/tinytap/tlscapture_test.go` | ❌ never calls `SSL_set_fd` (custom `BIO_METHOD` + `SSL_set_bio`) | ✅ paired via `Parser.FeedSSL`'s SSL*-keyed stream (#179) |
+| Node.js (NodeSource build) | `scripts/test-e2e-tls-node.sh` (no Docker, #268/#269) | ✅ calls `SSL_set_fd` (Node's own OpenSSL binding) | ✅ paired, decrypted correctly — via `internal/tls.Find`'s executable fallback, not a mapped `libssl.so` |
 
 ## nginx docker-compose validation (#178)
 
@@ -27,6 +28,14 @@ The primary motivating scenario from #144: nginx as a TLS-terminating reverse pr
 - Debian/Ubuntu ships `libssl.so.3` without the execute bit (`chmod 0644`); `cilium/ebpf`'s `link.OpenExecutable` requires it. This isn't just a test-harness detail — it hits every Debian/Ubuntu host tinytap runs on, silently, since `AttachSSLSetFd`/`AttachSSLReadWrite` deliberately never `chmod` their target themselves (see `ErrLibSSLNotExecutable`'s doc comment). The e2e harness sets it explicitly (same as `scripts/test-e2e.sh`'s TLS scenario) — see the README's [Current limitations](../README.md#current-limitations) for the fix on a real host. Making this discoverable from the TUI itself (not just docs) is tracked in #216.
 - `pkill -x` matches against `/proc/<pid>/comm` (test-harness only, unrelated to the point above), which the kernel truncates to 15 characters — a binary named `tinytap-e2e-nginx` (17 chars) never matches, so the harness's own cleanup silently failed to signal tinytap, hanging the script indefinitely. Binary names used by any script that `pkill -x`s them need to stay ≤15 characters.
 
+## Node.js: the executable-fallback path (#268/#269)
+
+Every scenario above has the traced process load OpenSSL as a separate `libssl.so*` mapping, which `internal/tls.Find` locates by scanning `/proc/<pid>/maps`. Node.js doesn't fit that shape: its official and NodeSource builds statically bundle OpenSSL, so a Node.js process never has a `libssl.so*` mapping at all. #268's investigation found those same builds ship **unstripped**, exporting `SSL_read`/`SSL_write`/`SSL_set_fd`/`SSL_free` from the `node` binary's own dynamic symbol table (confirmed on arm64 and amd64) — so `Find` falls back to checking the process's own executable (`/proc/<pid>/exe`) once the maps scan comes up empty, and attaches there instead.
+
+Distro-packaged Node.js (Debian/Ubuntu/Alpine's own `nodejs`/`node` packages via `apt`/`apk`) dynamically links the system `libssl.so` instead — the same #268 matrix found this across every distro tested — so those installs already worked before this fallback existed and don't exercise this code path at all.
+
+`scripts/test-e2e-tls-node.sh` validates the fallback against a real NodeSource `node` binary serving HTTPS with a self-signed cert, asserting both that the attach log line references `node`'s own executable path (not a mapped library) and that the request pairs and decrypts correctly.
+
 ## Running it
 
 ```bash
@@ -35,4 +44,7 @@ bash scripts/test-e2e.sh
 
 # Needs Docker + the docker compose v2 plugin — validates against real nginx images
 bash scripts/test-e2e-tls-nginx.sh
+
+# No Docker needed — validates the executable-fallback path against a real Node.js server
+bash scripts/test-e2e-tls-node.sh
 ```
