@@ -56,8 +56,8 @@ runs:
     # apt.llvm.org/llvm.sh is fetched and executed as root, so its
     # contents are verified against a known-good hash before running.
     # If upstream legitimately updates the script, this check will start
-    # failing — recompute the hash with `sha256sum llvm.sh` and update it
-    # here.
+    # failing — recompute the hash with `curl -fsSL https://apt.llvm.org/llvm.sh | sha256sum`
+    # and update it here.
     # Downloaded to $RUNNER_TEMP, not the repo working directory: a leftover
     # untracked llvm.sh in the checkout fails goreleaser's built-in
     # git-cleanliness check in release.yml ("git is in a dirty state"),
