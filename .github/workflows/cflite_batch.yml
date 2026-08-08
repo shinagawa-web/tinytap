@@ -1,20 +1,16 @@
-name: ClusterFuzzLite PR fuzzing
+name: ClusterFuzzLite batch fuzzing
 
 permissions:
   contents: read
 
 on:
-  pull_request:
-    paths:
-      - '**'
+  schedule:
+    - cron: '0 3 * * *' # Once a day. Deeper, non-blocking exploration than the PR smoke test.
 
 jobs:
-  PR:
+  BatchFuzzing:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    concurrency:
-      group: ${{ github.workflow }}-${{ matrix.sanitizer }}-${{ github.ref }}
-      cancel-in-progress: true
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -26,14 +22,13 @@ jobs:
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: go
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           sanitizer: ${{ matrix.sanitizer }}
       - name: Run Fuzzers (${{ matrix.sanitizer }})
         id: run
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 30
-          mode: 'code-change'
+          fuzz-seconds: 3600
+          mode: 'batch'
           sanitizer: ${{ matrix.sanitizer }}
           output-sarif: true
