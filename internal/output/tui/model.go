@@ -657,7 +657,7 @@ func (m model) footer() string {
 // any lines are buffered, not just until first opened.
 func (m model) diagIndicator() string {
 	if n := len(m.diagLines); n > 0 {
-		return fmt.Sprintf(" │ ⚠ %d diag (d)", n)
+		return " │ " + slowLatencyStyle.Render(fmt.Sprintf("⚠ %d diag (d)", n))
 	}
 	return ""
 }
