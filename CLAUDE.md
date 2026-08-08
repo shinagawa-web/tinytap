@@ -82,7 +82,7 @@ sudo ./tinytap
 
 - eBPF only runs on Linux — the Lima VM is mandatory, no native macOS build
 - `go generate` invokes `bpf2go` which calls `clang` — must run inside the VM
-- Generated files (`tinytap_bpfel.go`, `tinytap_bpfeb.go`, `*.o`) are **not** committed (#260) — run `make generate` (needs clang-17 + libbpf 1.6.2, already installed on the primary dev VM) before any build or test; CI regenerates them itself via `.github/actions/setup-bpf-toolchain`
+- Generated files under `internal/loader/bpf/` and `internal/loader/bpf/fixture/` (every `*_bpfel.go`, `*_bpfeb.go`, `*.o` — the tinytap/kprobe/uprobe bindings and the test fixture, not just `tinytap_bpfel.go`/`tinytap_bpfeb.go`) are **not** committed (#260) — run `make generate` (needs clang-17 + libbpf 1.6.2, already installed on the primary dev VM) before any build or test; CI regenerates them itself via `.github/actions/setup-bpf-toolchain`
 - Remote URL inside the VM: `git@github.com:shinagawa-web/tinytap.git`
 
 ## Workflow

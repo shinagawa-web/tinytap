@@ -24,10 +24,13 @@ runs:
   steps:
     # Keyed on everything that affects bpf2go's output: the C sources
     # themselves, the go:generate directives that invoke it (gen.go, whose
-    # flags bpf2go's output also depends on), go.sum (pins bpf2go's own
-    # version via the cilium/ebpf module), and the toolchain versions below
-    # (hardcoded into the key so bumping either pin busts the cache instead
-    # of serving stale output built by a different compiler).
+    # flags bpf2go's output also depends on), go.mod/go.sum (pin bpf2go's
+    # own version via the cilium/ebpf module — both, not just go.sum: a
+    # go.mod version bump doesn't always change go.sum, e.g. if the new
+    # version's checksums are already present from elsewhere in the module
+    # graph), and the toolchain versions below (hardcoded into the key so
+    # bumping either pin busts the cache instead of serving stale output
+    # built by a different compiler).
     - name: Cache bpf2go bindings
       id: cache-bpf
       if: inputs.use-cache == 'true'
@@ -42,7 +45,7 @@ runs:
           internal/loader/bpf/fixture/*_bpfeb.go
         key: >-
           bpf2go-clang17-libbpf1.6.2-${{ runner.os }}-${{
-          hashFiles('bpf/**', 'internal/loader/bpf/gen.go', 'internal/loader/bpf/fixture/gen.go', 'internal/loader/bpf/fixture/fixture.bpf.c', 'go.sum') }}
+          hashFiles('bpf/**', 'internal/loader/bpf/gen.go', 'internal/loader/bpf/fixture/gen.go', 'internal/loader/bpf/fixture/fixture.bpf.c', 'go.mod', 'go.sum') }}
 
     # Pinned so bpf2go's output doesn't drift with whatever clang the
     # runner image happens to ship — see #207. ubuntu-22.04's default
