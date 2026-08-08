@@ -11,6 +11,10 @@ jobs:
   BatchFuzzing:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
