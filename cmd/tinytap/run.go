@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"golang.org/x/term"
@@ -177,7 +178,7 @@ func runTUI(rd ringbufCloser, width, height int) {
 	// (tuiS.SendDiag) and flushed to stderr once the session ends, so a user
 	// who never opens the panel still learns why, say, HTTPS traffic never
 	// appeared for some process.
-	diag := newDiagBuffer(tuiS.SendDiag)
+	diag := newDiagBuffer(tuiS.SendDiag, isRoutineTLSAttach)
 	prev := log.Writer()
 	log.SetOutput(diag)
 
@@ -188,6 +189,19 @@ func runTUI(rd ringbufCloser, width, height int) {
 	if runErr != nil {
 		log.Printf("tui: %v", runErr)
 	}
+}
+
+// isRoutineTLSAttach reports whether line is one of sslWatcher's successful
+// uprobe-attach confirmations (tlswatch.go's "SSL_set_fd uprobe attached"/
+// "SSL_write/SSL_read/SSL_free uprobes attached"). Expected on any host
+// handling steady TLS traffic — one pair per process — and not what #216's
+// diagnostics panel exists to answer ("why is HTTPS missing", not "here's
+// everything that worked"), so newDiagBuffer filters them out here rather
+// than at the log.Printf call site: the non-TUI stdout path's raw text is
+// still load-bearing for the e2e harness's wait_for_tls_attach.
+func isRoutineTLSAttach(line string) bool {
+	return strings.Contains(line, "uprobe attached for pid") ||
+		strings.Contains(line, "uprobes attached for pid")
 }
 
 func closeSink(sink output.Sink) {

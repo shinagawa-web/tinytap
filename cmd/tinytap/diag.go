@@ -21,10 +21,20 @@ type diagBuffer struct {
 	mu     sync.Mutex
 	lines  []string
 	notify func(string)
+	skip   func(string) bool
 }
 
-func newDiagBuffer(notify func(string)) *diagBuffer {
-	return &diagBuffer{notify: notify}
+// newDiagBuffer's skip, when non-nil, is consulted on every Write and drops
+// any line it reports true for — before storage, before notify, so it never
+// reaches the panel, the footer count, or Flush. Use it for lines that are
+// load-bearing for some other consumer of the raw log.Printf text (so the
+// call site can't just stop logging them) but are routine confirmations
+// rather than the "why is something broken" explanations this buffer exists
+// to surface — e.g. tlswatch.go's successful-attach lines, which the e2e
+// harness's wait_for_tls_attach greps for in tinytap's non-TUI stdout output
+// (unaffected by this filter, since it never goes through a diagBuffer).
+func newDiagBuffer(notify func(string), skip func(string) bool) *diagBuffer {
+	return &diagBuffer{notify: notify, skip: skip}
 }
 
 // Write implements io.Writer. The log package calls Output once per
@@ -32,6 +42,9 @@ func newDiagBuffer(notify func(string)) *diagBuffer {
 // is needed — just trim the trailing newline log always appends.
 func (d *diagBuffer) Write(p []byte) (int, error) {
 	line := string(bytes.TrimRight(p, "\n"))
+	if d.skip != nil && d.skip(line) {
+		return len(p), nil
+	}
 	d.mu.Lock()
 	if len(d.lines) < diagBufferCap {
 		d.lines = append(d.lines, line)

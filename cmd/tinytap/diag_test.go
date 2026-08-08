@@ -9,7 +9,7 @@ import (
 
 func TestDiagBuffer_WriteTrimsNewlineAndNotifies(t *testing.T) {
 	var notified []string
-	d := newDiagBuffer(func(line string) { notified = append(notified, line) })
+	d := newDiagBuffer(func(line string) { notified = append(notified, line) }, nil)
 
 	n, err := d.Write([]byte("tls: attach failed for pid 123\n"))
 	if err != nil {
@@ -26,15 +26,42 @@ func TestDiagBuffer_WriteTrimsNewlineAndNotifies(t *testing.T) {
 	}
 }
 
+func TestDiagBuffer_WriteWithSkip(t *testing.T) {
+	var notified []string
+	skip := func(line string) bool { return strings.HasPrefix(line, "noisy:") }
+	d := newDiagBuffer(func(line string) { notified = append(notified, line) }, skip)
+
+	n, err := d.Write([]byte("noisy: routine confirmation\n"))
+	if err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if n != len("noisy: routine confirmation\n") {
+		t.Errorf("Write returned n = %d, want the full input length even when skipped", n)
+	}
+	if len(d.lines) != 0 {
+		t.Errorf("lines = %v, want the skipped line to never be stored", d.lines)
+	}
+	if len(notified) != 0 {
+		t.Errorf("notify callback got %v, want no calls for a skipped line", notified)
+	}
+
+	if _, err := d.Write([]byte("tls: attach failed for pid 123\n")); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if len(d.lines) != 1 || d.lines[0] != "tls: attach failed for pid 123" {
+		t.Fatalf("lines = %v, want the non-skipped line stored", d.lines)
+	}
+}
+
 func TestDiagBuffer_WriteWithNilNotify(t *testing.T) {
-	d := newDiagBuffer(nil)
+	d := newDiagBuffer(nil, nil)
 	if _, err := d.Write([]byte("hello\n")); err != nil {
 		t.Fatalf("Write with nil notify returned error: %v", err)
 	}
 }
 
 func TestDiagBuffer_BoundedAtCap(t *testing.T) {
-	d := newDiagBuffer(nil)
+	d := newDiagBuffer(nil, nil)
 	for i := 0; i < diagBufferCap+10; i++ {
 		_, _ = fmt.Fprintf(d, "line %d\n", i)
 	}
@@ -50,7 +77,7 @@ func TestDiagBuffer_BoundedAtCap(t *testing.T) {
 }
 
 func TestDiagBuffer_Flush(t *testing.T) {
-	d := newDiagBuffer(nil)
+	d := newDiagBuffer(nil, nil)
 	_, _ = fmt.Fprintln(d, "first")
 	_, _ = fmt.Fprintln(d, "second")
 
@@ -64,7 +91,7 @@ func TestDiagBuffer_Flush(t *testing.T) {
 }
 
 func TestDiagBuffer_FlushEmpty(t *testing.T) {
-	d := newDiagBuffer(nil)
+	d := newDiagBuffer(nil, nil)
 	var buf bytes.Buffer
 	d.Flush(&buf)
 	if buf.Len() != 0 {
@@ -73,7 +100,7 @@ func TestDiagBuffer_FlushEmpty(t *testing.T) {
 }
 
 func TestDiagBuffer_FlushIsIndependentOfLaterWrites(t *testing.T) {
-	d := newDiagBuffer(nil)
+	d := newDiagBuffer(nil, nil)
 	_, _ = fmt.Fprintln(d, "first")
 
 	var buf bytes.Buffer

@@ -570,6 +570,29 @@ func TestRunTUI_RoutesLogIntoDiagBufferAndFlushesOnExit(t *testing.T) {
 	}
 }
 
+// --- isRoutineTLSAttach ---
+
+func TestIsRoutineTLSAttach(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"fd probe attached", "tls: SSL_set_fd uprobe attached for pid 123 (/lib/libssl.so.3)", true},
+		{"payload probes attached", "tls: SSL_write/SSL_read/SSL_free uprobes attached for pid 123 (/lib/libssl.so.3)", true},
+		{"discover failure", "tls: discover libssl for pid 123: scan /proc/123/maps: no such process", false},
+		{"attach failure", "tls: attach SSL_set_fd for pid 123 (/lib/libssl.so.3): permission denied", false},
+		{"unrelated line", "close reader: boom", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isRoutineTLSAttach(c.line); got != c.want {
+				t.Errorf("isRoutineTLSAttach(%q) = %v, want %v", c.line, got, c.want)
+			}
+		})
+	}
+}
+
 // --- closeSink ---
 
 func TestCloseSink_NoError(t *testing.T) {
