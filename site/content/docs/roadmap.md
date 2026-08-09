@@ -3,6 +3,8 @@ title: Roadmap
 weight: 12
 ---
 
+# Roadmap
+
 Released so far: `v0.1.0` (HTTP request/response visible), `v0.2.0`
 (Bubble Tea TUI), `v0.3.0` (filtering + test foundation), `v0.4.0` (server
 capture & compatibility — see [Server Compatibility]({{< relref "compatibility/server" >}})),

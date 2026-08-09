@@ -3,6 +3,8 @@ title: Current Limitations
 weight: 11
 ---
 
+# Current Limitations
+
 - HTTP/1.1 only — no HTTP/2, gRPC, or other protocols yet
 
 - TLS capture needs a dynamically linked `libssl.so`, so statically linked TLS stacks are invisible — that includes Go's `crypto/tls` and therefore Go-based proxies like Traefik and Caddy. Clients that hand OpenSSL a custom `BIO` instead of calling `SSL_set_fd` (e.g. curl) are captured and paired, but keyed on the `SSL*` pointer rather than a socket fd, so their exchanges are marked `[ssl-keyed, fd unverified]` — see [TLS Compatibility]({{< relref "compatibility/tls" >}})

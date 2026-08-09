@@ -3,6 +3,8 @@ title: Quick Start
 weight: 1
 ---
 
+# Quick Start
+
 Install:
 
 ```bash
