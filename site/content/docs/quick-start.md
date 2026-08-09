@@ -5,11 +5,13 @@ weight: 1
 
 # Quick Start
 
-Install:
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | sh
 ```
+
+## Run
 
 Grant it the capabilities it needs, then run it — no full root required:
 
@@ -23,6 +25,8 @@ detail panel, `q` or `Ctrl-C` to quit — as long as your terminal is at least
 120x24. In a smaller or non-interactive terminal it prints guidance and exits
 instead of silently streaming; see [Configuration]({{< relref "configuration" >}})
 to switch to the line-oriented `stdout` mode.
+
+## Next steps
 
 Linux amd64/arm64 only — on macOS/Windows, see
 [Where tinytap Runs]({{< relref "where-it-runs" >}}). Want HTTPS capture too, a
