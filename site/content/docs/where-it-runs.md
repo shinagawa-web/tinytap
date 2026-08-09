@@ -15,10 +15,6 @@ restrictive than it sounds, because Linux kernels are everywhere:
 | Mac (Intel or Apple Silicon) | Inside a Linux VM — Docker Desktop's VM, OrbStack, Lima, UTM, Multipass, etc. |
 | Windows | Inside WSL2 (which is a real Linux kernel). |
 
-This pattern — "Mac/Win developers run this through a Linux VM" — is the
-standard for eBPF tooling in general (bpftrace, Cilium, etc.). tinytap is not
-unusual here.
-
 ## Containers are friends, not enemies
 
 A common question: "if my dev stack runs in Docker on my Mac, can tinytap see
@@ -78,14 +74,11 @@ Once running, a containerized tinytap sees the **whole host kernel**, not
 just its own container — the same host-wide visibility as running directly
 on the VM. In this exact test, it captured the host's own `dockerd`
 process's HTTP API traffic (`GET /v1.52/containers/.../json`, etc.) even
-though `dockerd` was running outside the container entirely. That's the
-same "unrelated control-plane traffic shows up too" effect noted in
-`scripts/demo/README.md` as the reason the demo GIF was recorded on a plain
-Lima VM instead of through Docker Desktop — containerizing tinytap doesn't
-remove that noise, it just confirms the visibility is real.
+though `dockerd` was running outside the container entirely — confirming
+the host-wide visibility is real, not just reasoned about.
 
 ## Requirements
 
-- Linux kernel 5.8+ (tinytap's event transport is `BPF_MAP_TYPE_RINGBUF`, added in 5.8)
+- Linux kernel 5.8+ (tinytap's event transport is `BPF_MAP_TYPE_RINGBUF`, added in 5.8) — this applies to the VM's kernel too when running under a VM, not just to native Linux hosts
 
-- macOS/Windows users run tinytap inside a Linux VM (Lima, WSL2, etc.) — there is no native macOS/Windows build and none is planned, since eBPF is Linux-only
+- No native macOS/Windows build is planned, since eBPF is Linux-only
