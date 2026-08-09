@@ -1,8 +1,10 @@
-// Package tls locates the OpenSSL/BoringSSL shared library loaded by a
-// traced process and confirms it exports the symbols tinytap needs to hook
-// (SSL_read, SSL_write, SSL_set_fd) in order to capture TLS plaintext
-// without reading OpenSSL's internal struct layout. See issue #144 for the
-// full design rationale.
+// Package tls locates the OpenSSL/BoringSSL library used by a traced
+// process — either a mapped shared library, or the process's own executable
+// for TLS stacks that statically bundle OpenSSL (#268) — and confirms it
+// exports the symbols tinytap needs to hook (SSL_read, SSL_write,
+// SSL_set_fd, SSL_free) in order to capture TLS plaintext without reading
+// OpenSSL's internal struct layout. See issue #144 for the full design
+// rationale.
 //
 // This package is pure Go: it reads /proc and parses ELF files, with no
 // eBPF or ringbuf dependencies, so it can be unit-tested without a kernel.
@@ -30,13 +32,15 @@ const defaultRoot = "/proc"
 // tinytap never reads the internal SSL struct layout.
 var RequiredSymbols = []string{"SSL_read", "SSL_write", "SSL_set_fd", "SSL_free"}
 
-// ErrLibSSLNotFound means the process has no OpenSSL/BoringSSL shared
-// library mapped. This covers both "not using TLS at all" and "using a
-// statically linked TLS stack that never calls into a separate libssl"
-// (e.g. Go's crypto/tls) — tinytap can't distinguish the two from the
-// memory map alone, and doesn't need to: neither case is traceable via
-// uprobe on libssl.
-var ErrLibSSLNotFound = errors.New("libssl not found in process memory map")
+// ErrLibSSLNotFound means neither a mapped OpenSSL/BoringSSL shared library
+// nor the process's own executable exports the symbols tinytap needs. This
+// covers "not using TLS at all" and "using a statically linked TLS stack
+// with no C ABI to hook" (e.g. Go's crypto/tls) — tinytap can't distinguish
+// those, and doesn't need to: neither is traceable via uprobe. It does not
+// cover a statically-linked-but-unstripped TLS stack such as Node.js's
+// bundled OpenSSL (#268/#269): Find resolves that case via the process's
+// own executable instead.
+var ErrLibSSLNotFound = errors.New("libssl not found for process")
 
 var libsslPattern = regexp.MustCompile(`/libssl\.so(\.[0-9]+)*$`)
 
@@ -65,12 +69,16 @@ type Discovery struct {
 }
 
 // Find locates the libssl library used by pid and confirms it exports
-// RequiredSymbols.
+// RequiredSymbols. If no libssl.so* is mapped, it falls back to checking
+// whether pid's own executable exports RequiredSymbols directly — true for
+// TLS stacks that statically bundle OpenSSL without stripping it, such as
+// Node.js's official and NodeSource builds (#268/#269).
 //
 // root is the /proc mount point; pass "" to use the live "/proc".
 //
-// Find returns ErrLibSSLNotFound if the process has no libssl mapped, or a
-// *SymbolError if the library is mapped but missing required symbols.
+// Find returns ErrLibSSLNotFound if neither path yields a usable candidate,
+// or a *SymbolError if a mapped libssl-named library was found but is
+// missing required symbols.
 func Find(root string, pid uint32) (Discovery, error) {
 	if root == "" {
 		root = defaultRoot
@@ -78,15 +86,50 @@ func Find(root string, pid uint32) (Discovery, error) {
 	pidDir := filepath.Join(root, strconv.FormatUint(uint64(pid), 10))
 
 	mappedPath, err := findLibSSLMapping(filepath.Join(pidDir, "maps"))
+	if err == nil {
+		hostPath := filepath.Join(pidDir, "root", mappedPath)
+		if err := checkSymbols(hostPath); err != nil {
+			return Discovery{}, err
+		}
+		return Discovery{Pid: pid, Path: hostPath}, nil
+	}
+	if !errors.Is(err, ErrLibSSLNotFound) {
+		return Discovery{}, err
+	}
+
+	return findInOwnExecutable(pidDir, pid)
+}
+
+// findInOwnExecutable checks whether pid's own executable exports
+// RequiredSymbols, for processes that statically bundle a TLS library
+// instead of loading a separate libssl.so (#268). Unlike a mapped
+// libssl-named library, there's no name-based signal that this executable
+// is even meant to be a TLS library, so a failed check here — for any
+// reason — is reported as the same ErrLibSSLNotFound as never finding a
+// candidate at all, not a *SymbolError: otherwise every ordinary non-TLS
+// process (a plain Go binary, a shell, ...) would get logged as "has libssl
+// ... missing required symbols" by callers like cmd/tinytap's tlswatch.go.
+func findInOwnExecutable(pidDir string, pid uint32) (Discovery, error) {
+	exeLink := filepath.Join(pidDir, "exe")
+	exePath, err := os.Readlink(exeLink)
 	if err != nil {
-		return Discovery{}, err
+		if os.IsNotExist(err) {
+			return Discovery{}, ErrLibSSLNotFound
+		}
+		// A real failure (e.g. permission denied) is not the same as "no
+		// exe to fall back to" and shouldn't be reported as such.
+		return Discovery{}, fmt.Errorf("readlink %s: %w", exeLink, err)
 	}
+	exePath = strings.TrimSuffix(exePath, " (deleted)")
 
-	hostPath := filepath.Join(pidDir, "root", mappedPath)
+	hostPath := filepath.Join(pidDir, "root", exePath)
 	if err := checkSymbols(hostPath); err != nil {
+		var symErr *SymbolError
+		if errors.As(err, &symErr) {
+			return Discovery{}, ErrLibSSLNotFound
+		}
 		return Discovery{}, err
 	}
-
 	return Discovery{Pid: pid, Path: hostPath}, nil
 }
 
@@ -127,12 +170,13 @@ func findLibSSLMapping(mapsPath string) (string, error) {
 	return "", ErrLibSSLNotFound
 }
 
-// checkSymbols opens the ELF file at path and confirms it exports every
-// symbol in RequiredSymbols via its dynamic symbol table.
+// checkSymbols opens the ELF file at path — a libssl-named library or a
+// process's own executable — and confirms it exports every symbol in
+// RequiredSymbols via its dynamic symbol table.
 func checkSymbols(path string) error {
 	f, err := elf.Open(path)
 	if err != nil {
-		return fmt.Errorf("open libssl ELF at %s: %w", path, err)
+		return fmt.Errorf("open ELF at %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
