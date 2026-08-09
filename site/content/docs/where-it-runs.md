@@ -15,7 +15,7 @@ restrictive than it sounds, because Linux kernels are everywhere:
 | Mac (Intel or Apple Silicon) | Inside a Linux VM — Docker Desktop's VM, OrbStack, Lima, UTM, Multipass, etc. |
 | Windows | Inside WSL2 (which is a real Linux kernel). |
 
-## Can tinytap see inside containers?
+## Does tinytap see inside containers?
 
 A common question: "if my dev stack runs in Docker on my Mac, can tinytap see
 inside the containers?"
