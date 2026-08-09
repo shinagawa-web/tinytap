@@ -2,8 +2,9 @@
 // process — either a mapped shared library, or the process's own executable
 // for TLS stacks that statically bundle OpenSSL (#268) — and confirms it
 // exports the symbols tinytap needs to hook (SSL_read, SSL_write,
-// SSL_set_fd) in order to capture TLS plaintext without reading OpenSSL's
-// internal struct layout. See issue #144 for the full design rationale.
+// SSL_set_fd, SSL_free) in order to capture TLS plaintext without reading
+// OpenSSL's internal struct layout. See issue #144 for the full design
+// rationale.
 //
 // This package is pure Go: it reads /proc and parses ELF files, with no
 // eBPF or ringbuf dependencies, so it can be unit-tested without a kernel.
@@ -39,7 +40,7 @@ var RequiredSymbols = []string{"SSL_read", "SSL_write", "SSL_set_fd", "SSL_free"
 // cover a statically-linked-but-unstripped TLS stack such as Node.js's
 // bundled OpenSSL (#268/#269): Find resolves that case via the process's
 // own executable instead.
-var ErrLibSSLNotFound = errors.New("libssl not found in process memory map")
+var ErrLibSSLNotFound = errors.New("libssl not found for process")
 
 var libsslPattern = regexp.MustCompile(`/libssl\.so(\.[0-9]+)*$`)
 
