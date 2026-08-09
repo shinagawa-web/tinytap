@@ -11,8 +11,7 @@ restrictive than it sounds, because Linux kernels are everywhere:
 
 | Where the user works | How tinytap runs there |
 |---|---|
-| Linux desktop / laptop / workstation | Native. Just run the binary. |
-| Linux server (cloud VM, on-prem, dev box) | Native. SSH in, run it. |
+| Linux (desktop, laptop, workstation, or server) | Native. Just run the binary. |
 | Mac (Intel or Apple Silicon) | Inside a Linux VM — Docker Desktop's VM, OrbStack, Lima, UTM, Multipass, etc. |
 | Windows | Inside WSL2 (which is a real Linux kernel). |
 
