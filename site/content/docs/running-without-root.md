@@ -10,7 +10,11 @@ weight: 3
 ## The minimal set
 
 Plaintext HTTP capture (syscall tracepoints, ringbuf) needs three
-capabilities on every architecture:
+capabilities on every architecture, on a 5.11+ kernel. On an older kernel
+(5.8–5.10, still within tinytap's documented floor) a fourth capability,
+`cap_sys_resource`, is additionally needed — see
+[Why `cap_sys_resource` turned out not to matter](#why-cap_sys_resource-turned-out-not-to-matter)
+below for why:
 
 ```bash
 sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip ./tinytap

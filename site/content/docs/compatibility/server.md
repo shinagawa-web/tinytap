@@ -27,7 +27,7 @@ dropped can.
 | Symbol | Meaning |
 |--------|---------|
 | ✅ | Full body visible |
-| ⚠️ | Visible but truncated at the 4096 B BPF sample cap — exchange still pairs successfully |
+| ⚠️ | Visible but truncated at the 4096 B sample cap — exchange still pairs successfully |
 | ❌ | Not captured (sendfile / splice path — body bypasses the BPF probe; a kprobe covers this on amd64 and arm64) |
 | 🚫 | Exchange reported `ABANDONED` instead of pairing |
 | — | Not yet tested |
