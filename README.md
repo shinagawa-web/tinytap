@@ -31,9 +31,14 @@ curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/
 Grant it the capabilities it needs, then run it — no full root required:
 
 ```bash
-sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip $(command -v tinytap)
+sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog=eip $(command -v tinytap)
 tinytap
 ```
+
+That's the full set — plaintext HTTP and HTTPS (via the libssl uprobes,
+`cap_sys_admin`) both work out of the box. See
+[Running Without Full Root](https://shinagawa-web.github.io/tinytap/docs/running-without-root/)
+on the docs site if you want the smaller plaintext-only set instead.
 
 With no config file, that opens the TUI shown at the top of this README —
 `j`/`k` to scroll, `Enter` for the detail panel, `q` or `Ctrl-C` to quit —
@@ -46,8 +51,8 @@ Didn't work? Run `tinytap doctor` first for a read-only preflight report
 [Troubleshooting](https://shinagawa-web.github.io/tinytap/docs/troubleshooting/).
 
 Linux amd64/arm64 only — on macOS/Windows, see
-[Where tinytap Runs](#where-tinytap-runs). Want HTTPS capture without full
-root, a specific version, or to verify a release download? See the
+[Where tinytap Runs](#where-tinytap-runs). Want a specific version, or to
+verify a release download? See the
 [docs site](https://shinagawa-web.github.io/tinytap/) below.
 
 ## Where tinytap Runs
@@ -56,15 +61,12 @@ root, a specific version, or to verify a release download? See the
 
 | Where the user works | How tinytap runs there |
 |---|---|
-| Linux desktop / laptop / workstation | Native. Just run the binary. |
-| Linux server (cloud VM, on-prem, dev box) | Native. SSH in, run it. |
+| Linux (desktop, laptop, workstation, or server) | Native. Just run the binary. |
 | Mac (Intel or Apple Silicon) | Inside a Linux VM — Docker Desktop's VM, OrbStack, Lima, UTM, Multipass, etc. |
 | Windows | Inside WSL2 (which is a real Linux kernel). |
 
-This pattern — "Mac/Win developers run this through a Linux VM" — is the
-standard for eBPF tooling in general (bpftrace, Cilium, etc.). Containers
-need no special handling either — eBPF sees every process on the host
-kernel, containerized or not, so tinytap doesn't need to run inside a
+Containers need no special handling either — eBPF sees every process on the
+host kernel, containerized or not, so tinytap doesn't need to run inside a
 container or as a sidecar. See
 [Where tinytap Runs](https://shinagawa-web.github.io/tinytap/docs/where-it-runs/)
 on the docs site for the full container story and kernel requirements.
