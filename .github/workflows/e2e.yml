@@ -11,7 +11,7 @@ on:
 
 jobs:
   e2e:
-    name: e2e (${{ matrix.name }})
+    name: ${{ matrix.checkName }}
     runs-on: ubuntu-22.04
     timeout-minutes: 15
 
@@ -19,11 +19,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: plain
+          - checkName: e2e
             script: scripts/test-e2e.sh
-          - name: nginx
+          - checkName: e2e-tls-nginx
             script: scripts/test-e2e-tls-nginx.sh
-          - name: node
+          - checkName: e2e-tls-node
             script: scripts/test-e2e-tls-node.sh
             needs_node: true
 
