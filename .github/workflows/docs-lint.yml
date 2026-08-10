@@ -1,0 +1,34 @@
+name: docs-lint
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "site/content/**"
+      - ".gomarklint.json"
+  pull_request:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "site/content/**"
+      - ".gomarklint.json"
+
+jobs:
+  gomarklint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Lint Markdown files
+        uses: shinagawa-web/gomarklint@85c977a4640d0377d5e2bd4e77a90d77f5b83acc # v3.3.0
+        with:
+          args: --config .gomarklint.json

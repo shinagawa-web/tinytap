@@ -22,7 +22,7 @@ tinytap/
 │   ├── events/               # Event struct, ringbuf reader
 │   ├── proc/                 # PID → process name lookup via /proc
 │   └── parser/               # HTTP parser
-├── docs/                     # reference material (see Reference docs below)
+├── docs/                     # maintainer-only notes, not published (see Reference docs below)
 ├── scripts/
 │   ├── demo.sh               # `make run` orchestrated HTTP smoke test
 │   └── demo/                 # 0A demo recording (app + tmux split + vhs tape) — see scripts/demo/README.md
@@ -49,11 +49,12 @@ Because it makes it easy to test the HTTP parser without eBPF, and the proc look
 
 ### Reference docs
 
-Lower-level reference material lives under `docs/`:
+User-facing reference material (event schema, terminology, eBPF background,
+capability requirements, server/TLS compatibility, etc.) lives on the docs
+site at [shinagawa-web.github.io/tinytap](https://shinagawa-web.github.io/tinytap/),
+sourced from `site/content/docs/` — that's the single source of truth, not
+`docs/`. `docs/` itself holds only material that isn't meant to be published:
 
-- [`docs/event-schema.md`](docs/event-schema.md) — the kernel↔userspace event struct (C / Go layouts, field semantics, byte offsets)
-- [`docs/terminology.md`](docs/terminology.md) — outgoing/incoming vocabulary and the HTTP protocol mapping
-- [`docs/ebpf-basics.md`](docs/ebpf-basics.md) — eBPF primer
 - [`docs/waveterm-claude-code.md`](docs/waveterm-claude-code.md) — making Wave Terminal's Claude Code badges work inside the Lima VM
 
 ## Development Environment
@@ -126,4 +127,4 @@ Avoid bare **send-side** / **receive-side** as the first mention — they sound 
 
 When HTTP direction matters, write it out: "the HTTP response (server's outgoing payload)" rather than "the send-side payload" — the same outgoing syscall is the *response* on a server and the *request* on a client.
 
-See [docs/terminology.md](docs/terminology.md) for the full glossary and the protocol mapping table.
+See the [Terminology](https://shinagawa-web.github.io/tinytap/docs/terminology/) page on the docs site for the full glossary and the protocol mapping table.

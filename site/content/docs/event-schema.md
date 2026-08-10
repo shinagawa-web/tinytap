@@ -1,6 +1,15 @@
+---
+title: Event Schema
+weight: 10
+---
+
 # Event Schema
 
-The kernel-to-userspace event format used by `tinytap`. The C struct lives in [`bpf/tinytap.bpf.c`](../bpf/tinytap.bpf.c) and the Go struct in [`cmd/tinytap/main.go`](../cmd/tinytap/main.go) — they must stay in sync, byte-for-byte. The ringbuf carries one of these per captured syscall.
+The kernel-to-userspace event format used by `tinytap`. The C struct lives
+in [`bpf/tinytap.bpf.c`](https://github.com/shinagawa-web/tinytap/blob/main/bpf/tinytap.bpf.c)
+and the Go struct in [`cmd/tinytap/main.go`](https://github.com/shinagawa-web/tinytap/blob/main/cmd/tinytap/main.go) —
+they must stay in sync, byte-for-byte. The ringbuf carries one of these per
+captured syscall.
 
 ## C side (kernel)
 
@@ -32,7 +41,8 @@ struct event {
 };
 ```
 
-Total: 4144 bytes. No implicit padding — fields are ordered so the natural layout aligns to 8 bytes.
+That's 4144 bytes total, with no implicit padding — fields are ordered so
+the natural layout aligns to 8 bytes.
 
 ## Go side (userspace)
 
@@ -52,18 +62,26 @@ type Event struct {
 }
 ```
 
-Decoded from raw ringbuf bytes via `encoding/binary` with little-endian byte order (arm64 / x86_64 native).
+Decoded from raw ringbuf bytes via `encoding/binary` with little-endian
+byte order (arm64 / x86_64 native).
 
 ## Field notes
 
 - **`ts_ns`** — kernel-side monotonic clock in nanoseconds. Not wall-clock. Use for relative ordering and latency calculation, not for absolute timestamps.
+
 - **`pid` / `tid`** — `bpf_get_current_pid_tgid()` returns `(tgid << 32) | tid`. `pid` here is the tgid (= user-visible PID); `tid` is the thread id within that group. For single-threaded processes the two are equal.
+
 - **`fd`** — first syscall argument. For `accept4` this is the *listening* socket fd, not the new connection fd (the new fd is the syscall return value, only available at `sys_exit`).
-- **`bytes`** — captured at `sys_enter`, so this is the *requested* byte count (e.g. `read(fd, buf, 8192)` records 8192 even if only 80 bytes actually arrive). Capturing the actual transferred count requires `sys_exit` and is tracked in #13.
+
+- **`bytes`** — captured at `sys_enter`, so this is the *requested* byte count (e.g. `read(fd, buf, 8192)` records 8192 even if only 80 bytes actually arrive).
+
 - **`syscall`** — enum value from above. The Go side has a parallel `syscallNames` map.
+
 - **`payload_len`** — set to 0 for hooks that don't capture payload (accept4 / close / incoming syscalls at sys_enter). Otherwise `min(MAX_PAYLOAD, bytes)`.
+
 - **`comm`** — kernel's `task_struct.comm`, max 15 chars + NUL. **Not guaranteed NUL-terminated** when exactly 16 chars long; trim trailing NULs before printing.
-- **`payload`** — up to `MAX_PAYLOAD` (4096) bytes of the user buffer at `sys_enter`. Only populated for outgoing syscalls (`write` / `sendto` / `sendmsg`); see [#12](https://github.com/shinagawa-web/tinytap/issues/12). Incoming payload capture (via `sys_exit`) is tracked in [#13](https://github.com/shinagawa-web/tinytap/issues/13). Raised from 256 to 4096 in #36 — see that issue for the trade-off rationale (4 KiB matches Go's `net/http` default response buffer and the page size).
+
+- **`payload`** — up to `MAX_PAYLOAD` (4096) bytes of the user buffer at `sys_enter`. Only populated for outgoing syscalls (`write` / `sendto` / `sendmsg`).
 
 ## Layout (offsets)
 
@@ -78,11 +96,14 @@ Decoded from raw ringbuf bytes via `encoding/binary` with little-endian byte ord
 | 28  | 4   | `payload_len` |
 | 32  | 16  | `comm[16]` |
 | 48  | 4096 | `payload[4096]` |
-| **Total** | **4144** | |
+| Total | 4144 | |
 
 ## SSL plaintext event (uprobe)
 
-A second, separate event format emitted by the SSL_write/SSL_read uprobe program (`bpf/tinytap_uprobe.bpf.c`, #146) over its own ringbuf (`ssl_events`). Decoded on the Go side by `events.DecodeSSL` into `events.SSLEvent` ([`internal/events/ssl_event.go`](../internal/events/ssl_event.go)). This program is a standalone capability (see `loader.AttachSSLReadWrite`) — not wired into `Load()` or the main `event` ringbuf above, and it carries no `fd` (SSL-to-fd correlation is `loader.SSLFdProbe`'s job, #147).
+A second, separate event format emitted by the SSL_write/SSL_read uprobe
+program over its own ringbuf (`ssl_events`). This program is a standalone
+capability — not wired into the main event ringbuf above, and it carries
+no `fd` (SSL-to-fd correlation is a separate probe's job).
 
 ```c
 enum ssl_op {
@@ -104,14 +125,17 @@ struct ssl_event {
 };
 ```
 
-Total: 4152 bytes.
+That's 4152 bytes total.
 
-- **`op`** — `SSL_OP_WRITE` is captured at `SSL_write`/`SSL_write_ex` entry, where `(ssl, buf, num)` are already valid arguments. `SSL_OP_READ` is captured at `SSL_read`/`SSL_read_ex` *return* instead, since the plaintext buffer is only filled by the time the call returns — the uprobe stashes `(ssl, buf)` at entry and a uretprobe reads the actual byte count (return value for the plain form, the `size_t *readbytes` out-param for `_ex`) once the call completes.
-- **`len`** — for writes, the *requested* byte count (same "captured at entry" caveat as the main event's `bytes`). For reads, the *actual* byte count, since it's only known at return.
-- **`_pad`** — no data; keeps `comm`/`payload` at offsets that are multiples of 8, explicit rather than left to compiler-inserted struct padding (mirrors this repo's "no implicit padding" convention above).
+- **`op`** — `SSL_OP_WRITE` is captured at `SSL_write`/`SSL_write_ex` entry, where `(ssl, buf, num)` are already valid arguments. `SSL_OP_READ` is captured at `SSL_read`/`SSL_read_ex` *return* instead, since the plaintext buffer is only filled by the time the call returns.
+
+- **`len`** — for writes, the *requested* byte count. For reads, the *actual* byte count, since it's only known at return.
+
+- **`_pad`** — no data; keeps `comm`/`payload` at offsets that are multiples of 8, explicit rather than left to compiler-inserted struct padding.
+
 - **`payload`** — up to 4096 bytes of plaintext, same cap and truncation behavior as the main event's `payload`.
 
-### Layout (offsets)
+### SSL event layout (offsets)
 
 | Offset | Size | Field |
 |---|---|---|
@@ -125,4 +149,4 @@ Total: 4152 bytes.
 | 36  | 4   | `_pad` |
 | 40  | 16  | `comm[16]` |
 | 56  | 4096 | `payload[4096]` |
-| **Total** | **4152** | |
+| Total | 4152 | |

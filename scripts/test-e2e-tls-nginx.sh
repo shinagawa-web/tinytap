@@ -17,8 +17,8 @@
 #
 # Requires: docker, docker compose (v2 plugin), openssl. tinytap itself runs
 # unprivileged via setcap, including cap_sys_admin since every scenario here
-# is a TLS uprobe attach (see docs/capabilities.md); sudo is still needed for
-# docker compose and the libssl chmod below.
+# is a TLS uprobe attach (see the docs site's Running Without Full Root
+# page); sudo is still needed for docker compose and the libssl chmod below.
 # Usage: bash scripts/test-e2e-tls-nginx.sh
 
 set -euo pipefail
@@ -99,7 +99,7 @@ assert_contains() {
 echo "==> building tinytap"
 go build -o "${TT_BIN}" ./cmd/tinytap/
 
-echo "==> setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin on tinytap-ngx-e2e (see docs/capabilities.md)"
+echo "==> setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin on tinytap-ngx-e2e (see the docs site's Running Without Full Root page)"
 sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin=eip "${TT_BIN}"
 
 echo "==> generating self-signed cert"
