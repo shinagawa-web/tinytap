@@ -19,9 +19,6 @@ const (
 	pendingTimeout = 30 * time.Second
 )
 
-// resolveComm looks up pid's full cmdline for use as http.NewParserWithResolve's
-// resolve func, in place of the kernel's 15-char truncated task name. Shared by
-// capture's plaintext Parser and every captureTLS Parser (tlswatch.go).
 func resolveComm(pid uint32) string {
 	return proc.LookupCmdline("", pid)
 }
@@ -35,13 +32,6 @@ type ringbufCloser interface {
 	io.Closer
 }
 
-// capture drains the ringbuf, decodes each event, feeds the HTTP parser and
-// pairer, and drives the sink in wire order: OnEvent for the raw event, then
-// OnMessage / OnPaired for whatever that event completed. It returns when the
-// reader is closed (Ctrl-C path) or hits an unrecoverable read error.
-//
-// A background sweeper ticks every sweepInterval and evicts pending requests
-// older than pendingTimeout, emitting abandoned PairedEvents for each.
 func capture(rd ringbufReader, sink output.Sink) {
 	captureWithOptions(rd, sink, sweepInterval, pendingTimeout)
 }
@@ -55,10 +45,6 @@ func captureWithOptions(rd ringbufReader, sink output.Sink, interval, timeout ti
 	done := make(chan struct{})
 	var sweepDone sync.WaitGroup
 	sweepDone.Add(1)
-	// close(done) only signals the sweeper to stop on its next select
-	// iteration — without waiting for it to actually exit, the sweeper could
-	// still be mid-OnPaired when this function returns, racing whatever the
-	// caller does next with sink or pairer state.
 	defer func() {
 		close(done)
 		sweepDone.Wait()

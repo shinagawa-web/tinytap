@@ -9,11 +9,8 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/config"
 )
 
-// configInit is injected so tests can avoid touching the real filesystem.
 var configInit = config.Init
 
-// runConfigCmd dispatches `tinytap config <subcommand>`. init is the only
-// subcommand today (#220).
 func runConfigCmd(args []string) error {
 	if len(args) == 0 || args[0] != "init" {
 		return errors.New("usage: tinytap config init [path]")
@@ -21,9 +18,6 @@ func runConfigCmd(args []string) error {
 	return runConfigInit(args[1:])
 }
 
-// runConfigInit writes a fully-populated default tinytap.toml. The target
-// path is, in priority order: the positional argument, --config, or
-// ./tinytap.toml.
 func runConfigInit(args []string) error {
 	fs := flag.NewFlagSet("tinytap config init", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)

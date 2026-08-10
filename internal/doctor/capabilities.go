@@ -10,7 +10,6 @@ import (
 )
 
 // Linux capability bit numbers (stable ABI, from <linux/capability.h>).
-// golang.org/x/sys/unix doesn't export these as named constants.
 const (
 	capDACReadSearch = 2
 	capSysAdmin      = 21
@@ -21,19 +20,13 @@ const (
 
 const defaultStatusPath = "/proc/self/status"
 
-// currentGOARCH is runtime.GOARCH, injected so tests can exercise both the
-// amd64 and non-amd64 branches of the cap_syslog gate below regardless of
-// which architecture actually runs the test.
 var currentGOARCH = runtime.GOARCH
 
-// capability describes one entry in docs/capabilities.md's table.
 type capability struct {
-	name     string
-	bit      uint
-	severity Severity // Blocking if missing entirely blocks startup, else Degraded
-	affects  string
-	// amd64Only, if true, means this capability only matters on that one
-	// architecture (cap_syslog: the x86_64 sendfile kprobe's kallsyms read).
+	name      string
+	bit       uint
+	severity  Severity
+	affects   string
 	amd64Only bool
 }
 
@@ -50,9 +43,6 @@ var capabilities = []capability{
 		affects: "x86_64 sendfile payload capture only (reads /proc/kallsyms). sendfile transfers still pair correctly, just without body content."},
 }
 
-// checkCapabilities reports one Check per capability in docs/capabilities.md,
-// read from the running process's effective capability set. statusPath, if
-// non-empty, overrides /proc/self/status — tests use this.
 func checkCapabilities(statusPath string) []Check {
 	if statusPath == "" {
 		statusPath = defaultStatusPath
@@ -84,14 +74,10 @@ func checkCapabilities(statusPath string) []Check {
 	return checks
 }
 
-// setcapFix returns the exact setcap invocation to grant name alongside the
-// full documented set, matching docs/capabilities.md.
 func setcapFix(name string) string {
 	return fmt.Sprintf("sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog=eip <path-to-tinytap>   # adds %s", name)
 }
 
-// readCapEff parses the CapEff line out of a /proc/<pid>/status-formatted
-// file and returns it as a capability bitmask.
 func readCapEff(statusPath string) (uint64, error) {
 	f, err := os.Open(statusPath)
 	if err != nil {

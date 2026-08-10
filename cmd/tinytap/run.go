@@ -18,15 +18,11 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/output/tui"
 )
 
-// appConfig holds the parsed CLI flags. Session settings (output mode,
-// verbose, filters) live in the TOML config file (#217) instead — this is
-// only the one-shot actions and the config file's own location.
 type appConfig struct {
 	configPath  string
 	showVersion bool
 }
 
-// parseFlags parses args using a fresh FlagSet so it is safe to call from tests.
 func parseFlags(args []string) (appConfig, error) {
 	fs := flag.NewFlagSet("tinytap", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -38,13 +34,11 @@ func parseFlags(args []string) (appConfig, error) {
 	return appConfig{configPath: *configPath, showVersion: *showVersion}, nil
 }
 
-// bpfSession abstracts *loader.Tinytap so run() can be tested without eBPF.
 type bpfSession interface {
 	Close() error
 	reader() ringbufCloser
 }
 
-// tuiSink is implemented by *tui.Sink.
 type tuiSink interface {
 	output.Sink
 	Run() error
@@ -52,25 +46,23 @@ type tuiSink interface {
 	SendDiag(line string)
 }
 
-// tuiRunner abstracts the Run/Quit lifecycle for runCapturePipeline.
 type tuiRunner interface {
 	Run() error
 	Quit()
 }
 
-// Injected callables — replaced in tests to avoid eBPF and real terminals.
 var (
-	loadBPF      func(pid uint32) (bpfSession, error) // set by bpf.go init()
-	isTerminalFn = term.IsTerminal
-	getSizeFn    = term.GetSize
-	newTUISink   func(w, h int) tuiSink      = defaultNewTUISink
-	newStdoutSink func(verbose bool) output.Sink = defaultNewStdoutSink
-	doRunStdout  func(ringbufCloser, bool)    = runStdout
-	doRunTUI     func(ringbufCloser, int, int) = runTUI
-	loadConfig   func(path string) (config.Config, error) = config.Load
+	loadBPF       func(pid uint32) (bpfSession, error)
+	isTerminalFn                                           = term.IsTerminal
+	getSizeFn                                              = term.GetSize
+	newTUISink    func(w, h int) tuiSink                   = defaultNewTUISink
+	newStdoutSink func(verbose bool) output.Sink           = defaultNewStdoutSink
+	doRunStdout   func(ringbufCloser, bool)                = runStdout
+	doRunTUI      func(ringbufCloser, int, int)            = runTUI
+	loadConfig    func(path string) (config.Config, error) = config.Load
 )
 
-func defaultNewTUISink(w, h int) tuiSink          { return tui.New(w, h) }
+func defaultNewTUISink(w, h int) tuiSink            { return tui.New(w, h) }
 func defaultNewStdoutSink(verbose bool) output.Sink { return stdout.New(verbose) }
 
 func run() error {
@@ -118,7 +110,6 @@ func run() error {
 	return nil
 }
 
-// closeOnInterrupt closes rd when a signal arrives on stop.
 func closeOnInterrupt(rd io.Closer, stop <-chan os.Signal) {
 	go func() {
 		<-stop
@@ -133,25 +124,12 @@ func runStdout(rd ringbufCloser, verbose bool) {
 	defer closeSink(sink)
 	log.Printf("tinytap running (version %s) — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.", version)
 	stop := make(chan os.Signal, 1)
-	// SIGTERM alongside SIGINT (#154): without it, a supervisor's or test
-	// harness's graceful-shutdown signal (conventionally SIGTERM, e.g.
-	// systemd, docker stop, `kill` with no -SIGNAL) hits the OS's default
-	// disposition and kills the process immediately — skipping run()'s
-	// deferred tt.Close() and leaving the BPF probes attached.
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	// Without Stop, the OS-level relay for this stop channel stays registered
-	// for the rest of the process's life once runStdout returns — harmless in
-	// production (the process exits shortly after), but in tests (where the
-	// process keeps running across many test functions) it silently swallows
-	// a later real Ctrl-C/SIGTERM meant for something else, since Go delivers
-	// a registered signal to every channel still listening for it.
 	defer signal.Stop(stop)
 	closeOnInterrupt(rd, stop)
 	capture(rd, sink)
 }
 
-// runCapturePipeline feeds capture into sink while the TUI runs. It closes rd
-// after the TUI exits, then waits for capture to finish.
 func runCapturePipeline(rd ringbufCloser, sink output.Sink, ui tuiRunner) error {
 	done := make(chan struct{})
 	go func() {
@@ -172,12 +150,6 @@ func runTUI(rd ringbufCloser, width, height int) {
 	sink := newSSLWatcher(tuiS)
 	defer closeSink(sink)
 
-	// Route log output into a bounded buffer instead of discarding it (#216):
-	// the alt-screen still can't be corrupted by a stray log.Printf, but its
-	// content survives — surfaced live via the TUI's diagnostics panel
-	// (tuiS.SendDiag) and flushed to stderr once the session ends, so a user
-	// who never opens the panel still learns why, say, HTTPS traffic never
-	// appeared for some process.
 	diag := newDiagBuffer(tuiS.SendDiag, isRoutineTLSAttach)
 	prev := log.Writer()
 	log.SetOutput(diag)
@@ -191,14 +163,6 @@ func runTUI(rd ringbufCloser, width, height int) {
 	}
 }
 
-// isRoutineTLSAttach reports whether line is one of sslWatcher's successful
-// uprobe-attach confirmations (tlswatch.go's "SSL_set_fd uprobe attached"/
-// "SSL_write/SSL_read/SSL_free uprobes attached"). Expected on any host
-// handling steady TLS traffic — one pair per process — and not what #216's
-// diagnostics panel exists to answer ("why is HTTPS missing", not "here's
-// everything that worked"), so newDiagBuffer filters them out here rather
-// than at the log.Printf call site: the non-TUI stdout path's raw text is
-// still load-bearing for the e2e harness's wait_for_tls_attach.
 func isRoutineTLSAttach(line string) bool {
 	return strings.Contains(line, "uprobe attached for pid") ||
 		strings.Contains(line, "uprobes attached for pid")

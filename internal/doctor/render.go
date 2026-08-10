@@ -5,12 +5,6 @@ import (
 	"strings"
 )
 
-// Render formats checks as the copy-paste-friendly report `tinytap doctor`
-// prints: one line per check plus, for anything Degraded or Blocking, an
-// indented Affects/Fix pair, followed by a one-line summary. versionLine is
-// prepended as a header (e.g. "tinytap v0.6.1 (commit ..., built ...)") so
-// a pasted bug report carries the build identity without a separate
-// `tinytap --version` (#205).
 func Render(checks []Check, versionLine string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "tinytap doctor — %s\n\n", versionLine)

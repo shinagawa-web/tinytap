@@ -32,7 +32,7 @@ func newCollectSink(pid uint32) *collectSink {
 	return &collectSink{pid: pid, ch: make(chan httpproto.PairedEvent, 128)}
 }
 
-func (s *collectSink) OnEvent(*events.Event)     {}
+func (s *collectSink) OnEvent(*events.Event)       {}
 func (s *collectSink) OnMessage(httpproto.Message) {}
 func (s *collectSink) OnPaired(pe httpproto.PairedEvent) {
 	if pe.Pid != s.pid {
