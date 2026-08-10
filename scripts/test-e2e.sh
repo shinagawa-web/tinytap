@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # End-to-end test: starts tinytap and python http.server, fires known HTTP
 # requests, and asserts the captured output matches expected patterns.
-# Runs tinytap itself unprivileged, granted capabilities via setcap (see
-# docs/capabilities.md — the TLS scenario below needs cap_sys_admin in
-# addition to cap_dac_read_search/cap_perfmon/cap_bpf) rather than under
-# sudo — sudo is still used for the one-off setcap call and the libssl
-# chmod below, both of which mutate files outside this script's own process.
+# Runs tinytap itself unprivileged, granted capabilities via setcap (see the
+# docs site's Running Without Full Root page — the TLS scenario below needs
+# cap_sys_admin in addition to cap_dac_read_search/cap_perfmon/cap_bpf)
+# rather than under sudo — sudo is still used for the one-off setcap call
+# and the libssl chmod below, both of which mutate files outside this
+# script's own process.
 #
 # Scenarios:
 #   1. Normal: GET / HEAD / POST against python http.server → paired lines.
@@ -40,11 +41,11 @@ URL="http://localhost:${PORT}/"
 # it's built into the repo root instead (gitignored, like the plain `tinytap`
 # build artifact).
 TT_BIN="${PWD}/tinytap-e2e"
-# The capability set granted to TT_BIN via setcap. Overridable so the
-# drop-one-at-a-time verification in docs/capabilities.md can re-run this
-# suite under a reduced set (e.g. TT_CAPS=cap_dac_read_search,cap_perfmon,cap_bpf)
-# instead of hand-rolling an equivalent harness. Scenarios that need a
-# dropped capability are expected to fail — that's the point of the exercise.
+# The capability set granted to TT_BIN via setcap. Overridable so a
+# drop-one-at-a-time verification pass can re-run this suite under a
+# reduced set (e.g. TT_CAPS=cap_dac_read_search,cap_perfmon,cap_bpf) instead
+# of hand-rolling an equivalent harness. Scenarios that need a dropped
+# capability are expected to fail — that's the point of the exercise.
 TT_CAPS="${TT_CAPS:-cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog}"
 TT_CFG=/tmp/tinytap-e2e-config.toml
 TT_OUT=/tmp/tinytap-e2e.log
@@ -196,7 +197,7 @@ check_no_leftover_processes() {
 echo "==> building tinytap"
 go build -o "${TT_BIN}" ./cmd/tinytap/
 
-echo "==> setcap ${TT_CAPS} on tinytap-e2e (see docs/capabilities.md — cap_sys_admin is for the TLS uprobe scenario, cap_syslog is for x86_64's live kallsyms lookup in the sendfile payload-capture kprobe)"
+echo "==> setcap ${TT_CAPS} on tinytap-e2e (see the docs site's Running Without Full Root page — cap_sys_admin is for the TLS uprobe scenario, cap_syslog is for x86_64's live kallsyms lookup in the sendfile payload-capture kprobe)"
 sudo setcap "${TT_CAPS}=eip" "${TT_BIN}"
 
 # ── Scenario 2 setup: slow server (never responds) ───────────────────────────
@@ -228,7 +229,8 @@ kill -0 "${PY_PID}" 2>/dev/null || { echo "FAIL: http.server exited immediately 
 
 # ── Scenario 3 setup: static file server (exercises the sendfile path) ───────
 # http.ServeFile hands response bodies to the kernel via sendfile(2) once
-# they're big enough (see docs/server-compat.md, Go net/http row). This
+# they're big enough (see the docs site's Server Compatibility page, Go
+# net/http row). This
 # exists to exercise the sendfile payload-capture kprobe in
 # internal/loader/load.go: the fentry/tcp_sendmsg_locked kprobe that samples
 # sendfile body bytes attaches on arm64 and amd64 (#112); on any other GOARCH
@@ -271,7 +273,8 @@ wait_for_port localhost "${FILE_PORT}" || { echo "FAIL: file server did not list
 # ── Scenario 4 setup: writev server (exercises the multi-iovec path) ─────────
 # Calls writev(2) directly with two iovecs — iovec[0] the response headers,
 # iovec[1] the body — mirroring the cleanest real-world shape observed in
-# docs/server-compat.md (Axum/hyper, #104). This exists to exercise #111's
+# the docs site's Server Compatibility page (Axum/hyper, #104). This exists
+# to exercise #111's
 # read_iov fix: without it, any body living outside iovec[0] is never
 # sampled, regardless of size.
 echo "==> Go writev server on ${WRITEV_PORT}"

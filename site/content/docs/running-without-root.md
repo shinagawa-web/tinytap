@@ -149,13 +149,8 @@ in-process drop conditioned on that flag would become viable.
 
 ## Known gaps
 
-- **Kernel version**: verified on Linux 6.17 (arm64) and 7.0.0 (amd64) — both well above the 5.8 floor. `CAP_PERFMON` as a distinct capability (split from `CAP_SYS_ADMIN`) only exists from 5.8 onward — the same floor tinytap already requires for `BPF_MAP_TYPE_RINGBUF`. Kernels between 5.8 and whatever version relaxed `BPF_PROG_TYPE_TRACING` attach checks may still need `cap_sys_admin` for the fentry step specifically; if so, that step degrades gracefully without blocking startup.
+- **Kernel version**: verified on recent kernels well above the 5.8 floor. The exact boundary between 5.8 and today hasn't been exhaustively tested — run `tinytap doctor` to check your own kernel directly rather than cross-referencing version numbers here.
 
-- **x86_64**: confirmed — the documented set holds. A full drop-one-at-a-time bisect on an amd64 host reproduced arm64's result step for step; the one arch-specific difference is the `sendfile` payload-capture kprobe's extra `cap_syslog` requirement.
+- **x86_64**: confirmed — the documented capability set holds; the only arch-specific difference from arm64 is the `sendfile` kprobe's extra `cap_syslog` requirement.
 
 - **Whether `cap_sys_admin` can be narrowed further for TLS** wasn't investigated beyond confirming it's sufficient.
-
-The full drop-one-capability-at-a-time verification log (exact commands,
-kernel versions, and error messages for both architectures) lives in
-[`docs/capabilities.md`](https://github.com/shinagawa-web/tinytap/blob/main/docs/capabilities.md)
-in the repo.

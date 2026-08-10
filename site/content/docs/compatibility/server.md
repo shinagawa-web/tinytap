@@ -78,8 +78,3 @@ A few points that generalize across rows:
 - **`sendfile` is the one true visibility gap in this table.** Every other truncation (the flat cap, the per-iovec budget) is a matter of tinytap sampling less than the full body; `sendfile`'s body bytes never reach a BPF-visible syscall at all except through the sendfile kprobe.
 
 - **nginx's reverse-proxy row captures a two-hop artifact**: tinytap sees nginx's own outgoing request to the upstream server as a second, independent exchange (nginx acting as an HTTP/1.0 client) — worth knowing about when reading proxy rows, not a bug.
-
-The full per-server investigation notes (exact `strace` output, byte
-counts, and how each finding was verified) live in
-[`docs/server-compat.md`](https://github.com/shinagawa-web/tinytap/blob/main/docs/server-compat.md)
-in the repo.

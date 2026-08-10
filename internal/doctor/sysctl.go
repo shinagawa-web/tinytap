@@ -12,10 +12,11 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/loader"
 )
 
-// sysctlPaths are read as informational context for a bug report — see
-// docs/capabilities.md's "When cap_syslog is and isn't enough" for how
-// nuanced their interaction with capabilities actually is. doctor doesn't
-// try to model that interaction; it just surfaces the raw values.
+// sysctlPaths are read as informational context for a bug report — see the
+// docs site's Running Without Full Root page, "When cap_syslog is and isn't
+// enough" section, for how nuanced their interaction with capabilities
+// actually is. doctor doesn't try to model that interaction; it just
+// surfaces the raw values.
 var sysctlPaths = []string{
 	"/proc/sys/kernel/perf_event_paranoid",
 	"/proc/sys/kernel/unprivileged_bpf_disabled",
@@ -40,8 +41,9 @@ func checkSysctls(root string) []Check {
 
 // checkMemlockRlimit reports RLIMIT_MEMLOCK — informational context only;
 // cilium/ebpf's rlimit.RemoveMemlock (called by loader.Load) already
-// handles raising it on kernels that need that (see docs/capabilities.md's
-// "Why cap_sys_resource turned out not to matter").
+// handles raising it on kernels that need that (see the docs site's Running
+// Without Full Root page, "Why cap_sys_resource turned out not to matter"
+// section).
 func checkMemlockRlimit() Check {
 	var rlim unix.Rlimit
 	if err := getrlimitFn(unix.RLIMIT_MEMLOCK, &rlim); err != nil {

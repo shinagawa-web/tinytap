@@ -19,7 +19,7 @@ func checkDryRunLoad() Check {
 	if err := removeMemlock(); err != nil {
 		return Check{Name: "BPF dry-run load", Severity: Blocking, Detail: fmt.Sprintf("remove memlock: %v", err),
 			Affects: "Everything — this is the first step tinytap's real startup performs.",
-			Fix:     "run with the capabilities in docs/capabilities.md, or as root"}
+			Fix:     "run with the capabilities listed at https://shinagawa-web.github.io/tinytap/docs/running-without-root/, or as root"}
 	}
 	if err := loadTinytapObjects(); err != nil {
 		return Check{

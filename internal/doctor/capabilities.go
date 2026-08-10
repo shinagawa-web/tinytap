@@ -26,7 +26,8 @@ const defaultStatusPath = "/proc/self/status"
 // which architecture actually runs the test.
 var currentGOARCH = runtime.GOARCH
 
-// capability describes one entry in docs/capabilities.md's table.
+// capability describes one entry in the docs site's Running Without Full
+// Root page's capability table.
 type capability struct {
 	name     string
 	bit      uint
@@ -50,9 +51,9 @@ var capabilities = []capability{
 		affects: "x86_64 sendfile payload capture only (reads /proc/kallsyms). sendfile transfers still pair correctly, just without body content."},
 }
 
-// checkCapabilities reports one Check per capability in docs/capabilities.md,
-// read from the running process's effective capability set. statusPath, if
-// non-empty, overrides /proc/self/status — tests use this.
+// checkCapabilities reports one Check per capability in the capabilities
+// table above, read from the running process's effective capability set.
+// statusPath, if non-empty, overrides /proc/self/status — tests use this.
 func checkCapabilities(statusPath string) []Check {
 	if statusPath == "" {
 		statusPath = defaultStatusPath
@@ -85,7 +86,7 @@ func checkCapabilities(statusPath string) []Check {
 }
 
 // setcapFix returns the exact setcap invocation to grant name alongside the
-// full documented set, matching docs/capabilities.md.
+// full documented set (see the docs site's Running Without Full Root page).
 func setcapFix(name string) string {
 	return fmt.Sprintf("sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog=eip <path-to-tinytap>   # adds %s", name)
 }
