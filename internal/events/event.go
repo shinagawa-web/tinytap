@@ -1,7 +1,3 @@
-// Package events defines the shape of a single observation from BPF and
-// the protocol-agnostic decoder that turns a ringbuf record into an
-// Event. Per-protocol parsers (under internal/protocols/) consume Event
-// values without knowing how they were produced.
 package events
 
 import (
@@ -9,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Syscall identifiers. Must match the SYS_* enum in bpf/tinytap.bpf.c.
+// Must match the SYS_* enum in bpf/tinytap.bpf.c.
 const (
 	SyscallAccept4  = 1
 	SyscallRead     = 2
@@ -24,16 +20,8 @@ const (
 	SyscallSendfile = 11
 )
 
-// MaxPayload is the payload sample cap on the BPF side (MAX_PAYLOAD in
-// bpf/tinytap.bpf.c). Sampled bytes may be shorter than the syscall's
-// actual wire byte count; consumers that care about wire-level framing
-// must read Event.Bytes, not len(Event.Payload).
 const MaxPayload = 4096
 
-// Event mirrors the C `struct event` emitted by the BPF program. Field
-// order, sizes, and alignment must stay in lockstep with the C struct —
-// the wire format is decoded directly from raw ringbuf record bytes (see
-// Decode).
 type Event struct {
 	TsNs       uint64
 	Pid        uint32
@@ -46,8 +34,6 @@ type Event struct {
 	Payload    [MaxPayload]byte
 }
 
-// SyscallNames maps syscall IDs back to human-readable strings for
-// rendering raw event lines.
 var SyscallNames = map[uint32]string{
 	SyscallAccept4:  "accept4",
 	SyscallRead:     "read",
@@ -62,21 +48,8 @@ var SyscallNames = map[uint32]string{
 	SyscallSendfile: "sendfile",
 }
 
-// eventWireSize is sizeof(struct event) on the C side: the fixed 48-byte
-// header (ts_ns through comm) plus the MaxPayload-sized payload array.
-const eventWireSize = 48 + MaxPayload
+const eventWireSize = 48 + MaxPayload // sizeof(struct event) in bpf/tinytap.bpf.c
 
-// Decode parses a single ringbuf record into an Event. Returns an error
-// only if the buffer is too short or otherwise malformed; partial events
-// are not produced.
-//
-// This decodes fields directly via encoding/binary's byte-slice helpers
-// and copy() instead of binary.Read(reader, ..., e): binary.Read falls
-// back to reflection for struct targets, and at MaxPayload=4096 (#36) that
-// reflection overhead on Event's [4096]byte field was CPU-bound enough,
-// per syscall event, to become the actual throughput bottleneck under a
-// request burst — confirmed by ruling out ring buffer capacity first (an
-// 8x larger ring changed the drop rate by well under 2%).
 func Decode(raw []byte, e *Event) error {
 	if len(raw) < eventWireSize {
 		return fmt.Errorf("events: short ringbuf record: got %d bytes, want %d", len(raw), eventWireSize)

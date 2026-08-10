@@ -1,8 +1,3 @@
-// Package loader owns the BPF program lifecycle: lock memory, load the
-// generated bindings, attach every tracepoint the program declares, and
-// expose a ringbuf.Reader for userspace consumption. Callers see this as
-// "give me an attached, running BPF and a Reader to drain it" — they
-// never touch cilium/ebpf directly.
 package loader
 
 import (
@@ -15,25 +10,15 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
 )
 
-// Tinytap owns the loaded BPF objects, the tracepoint attachments, and
-// the ringbuf reader. Close releases everything in the reverse order it
-// was set up.
 type Tinytap struct {
 	objs             bpf.TinytapObjects
-	objsCloser       io.Closer // &objs at runtime; injectable in tests
-	kprobeObjsCloser io.Closer // non-nil only when fentry kprobe is loaded
+	objsCloser       io.Closer
+	kprobeObjsCloser io.Closer
 	tracepoints      []io.Closer
-	readerCloser     io.Closer // Reader at runtime; injectable in tests
-	// Reader drains the BPF ringbuf. Each record is the raw bytes of a
-	// `struct event` (see internal/events.Event for the matching Go type).
-	Reader *ringbuf.Reader
+	readerCloser     io.Closer
+	Reader           *ringbuf.Reader
 }
 
-// Close detaches every tracepoint, closes the ringbuf reader, and
-// releases the loaded BPF objects. Safe to call on a partially
-// initialised Tinytap (after a failed Load). All teardown errors are
-// joined and returned so a single failing component doesn't silently
-// hide its sibling's failures.
 func (t *Tinytap) Close() error {
 	var errs []error
 	if t.readerCloser != nil {
