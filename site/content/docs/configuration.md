@@ -37,7 +37,11 @@ comm = []         # []string — schema only, not yet enforced by the BPF progra
 
 ## CLI surface
 
-The only CLI surface is one-shot actions, not session settings: `--config
-<path>` (point at an alternate config file), `--version` (build metadata,
-exits before any eBPF load), `config init` (above), and `doctor` (see
-[Troubleshooting]({{< relref "troubleshooting" >}})).
+The only CLI surface is one-shot actions, not session settings:
+
+| Flag / command | What it does |
+|---|---|
+| `--config <path>` | Point at an alternate config file |
+| `--version` | Print build metadata, exiting before any eBPF load |
+| `config init` | Write a fully-populated default config file (see above) |
+| `doctor` | Read-only preflight checks (see [Troubleshooting]({{< relref "troubleshooting" >}})) |
