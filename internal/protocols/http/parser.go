@@ -325,11 +325,8 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 
 	var out []Message
 
-	// If the stream is mid-chunk, debit wire bytes from chunkRemaining first.
-	// Same rationale as stateNeedBody: body bytes are opaque, so we account
-	// for them by wire count rather than buffering. Both wireBytesConsumed and
-	// wireBytesSinceMessageStart are advanced by the debit so that the
-	// chunkDataArrived formula in advance() stays consistent across events.
+	// If the stream is mid-chunk, debit wire bytes from chunkRemaining first
+	// (same accounting as the body-debit block below).
 	if s.state == stateNeedChunkData {
 		debit := wireBytes
 		if debit > s.chunkRemaining {
@@ -368,11 +365,9 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 			debit = s.bodyRemaining
 		}
 		s.bodyRemaining -= debit
-		// Capture the body portion of this event's sample before trimming it
-		// off. The first `debit` wire bytes of this event are body; the sample
-		// carries the first min(debit, len(payload)) of them. If debit ran past
-		// the sample, the syscall exceeded MaxPayload and the tail is wire-only
-		// — mark the body truncated (#35).
+		// The first `debit` wire bytes are body; the sample carries at most
+		// len(payload) of them — if debit ran past that, the syscall exceeded
+		// MaxPayload and the tail is wire-only.
 		bodyInSample := debit
 		if bodyInSample > len(payload) {
 			bodyInSample = len(payload)
@@ -438,10 +433,8 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 		}
 	}
 
-	// If the stream is accumulating without finding HTTP structure, abandon
-	// it so it cannot grow unbounded. Body draining above never touches buf,
-	// so this cap is only reached during start-line / header scanning of a
-	// stream that almost certainly is not HTTP.
+	// Abandon streams that grow past maxBufBytes without finding HTTP
+	// structure. See TestMalformedOversizedHeaderTripsAbandoned.
 	if len(s.buf) > maxBufBytes {
 		s.abandoned = true
 		s.buf = nil
@@ -544,15 +537,9 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			s.state = stateNeedHeaders
 
 		case stateNeedHeaders:
-			// The header section ends at the empty line that follows it.
-			// In wire form that empty line is `\r\n` immediately *after*
-			// the previous line's `\r\n` — i.e. `\r\n\r\n` straddling the
-			// boundary. The start-line state already consumed the
-			// boundary's first `\r\n`, so we now expect either:
-			//   - `\r\n` at the very start of buf → zero headers
-			//   - `<header lines>\r\n\r\n` somewhere in buf → some headers
-			// Without the zero-headers case, responses like `HTTP/1.1 100
-			// Continue\r\n\r\n` (no header lines) stall the parser.
+			// The start-line already consumed the boundary's first \r\n, so
+			// the header section now ends at either a bare \r\n (zero
+			// headers, e.g. "100 Continue") or <headers>\r\n\r\n.
 			var headerBlock string
 			var consume int
 			if len(s.buf) >= 2 && s.buf[0] == '\r' && s.buf[1] == '\n' {
@@ -646,24 +633,17 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				continue
 			}
 
-			// Content-Length path (existing logic).
-			// Recover how much of the body has already arrived in wire bytes.
-			// Buf positions consumed by start-line + headers map 1:1 to wire
-			// positions (a truncation gap inside that prefix would have
-			// prevented finding the terminator); the leftover wire bytes are
-			// body that's already been delivered.
+			// Recover how much of the body has already arrived in wire bytes:
+			// buf positions consumed by start-line + headers map 1:1 to wire
+			// positions, so the leftover wire bytes are body already delivered.
 			bodyAlready := s.wireBytesSinceMessageStart - s.wireBytesConsumed
 			if bodyAlready < 0 {
 				bodyAlready = 0
 			}
 
-			// Capture the body bytes already sitting in buf (the body portion,
-			// capped by what the samples carried). The message is emitted only
-			// once its body has fully drained (#35) — a body delivered across
-			// later syscalls is still attached — so until then it waits in
-			// pendingMsg. A zero-body message (no Content-Length, or no-body
-			// status/method) takes the bodyAlready >= contentLength branch with
-			// an empty body and is emitted immediately.
+			// Capture the body bytes already sitting in buf. The message is
+			// emitted only once its body has fully drained; until then it
+			// waits in pendingMsg.
 			bodyInBuf := s.contentLength
 			if bodyInBuf > len(s.buf) {
 				bodyInBuf = len(s.buf)
@@ -752,11 +732,8 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			}
 			chunkSize := int(size64)
 
-			// How many wire bytes of this chunk's data have already arrived?
-			// wireBytesSinceMessageStart accumulates every event's Bytes;
-			// wireBytesConsumed tracks all framing + drained chunk data bytes.
-			// Their difference is the wire bytes still "unaccounted for",
-			// i.e. chunk data that has arrived but not yet been consumed.
+			// Wire bytes of this chunk's data already arrived = bytes seen
+			// since message start minus bytes consumed by framing so far.
 			chunkDataArrived := s.wireBytesSinceMessageStart - s.wireBytesConsumed
 			if chunkDataArrived < 0 {
 				chunkDataArrived = 0
