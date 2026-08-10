@@ -11,11 +11,6 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
 )
 
-// tryAttachKprobe loads the fentry/tcp_sendmsg_locked kprobe and attaches it.
-// The kprobe program derives kernel VAs with arch-specific memory-map bases
-// (arm64 constants, x86_64 live KASLR ksyms) and is compiled per target arch
-// by bpf2go, so its bindings only exist on amd64 and arm64 — hence this build
-// tag.  Every other GOARCH gets the no-op stub in load_kprobe_other.go.
 func (tt *Tinytap) tryAttachKprobe() {
 	kprobeSpec, err := bpf.LoadTinytapKprobe()
 	if err != nil {
