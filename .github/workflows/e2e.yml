@@ -11,8 +11,21 @@ on:
 
 jobs:
   e2e:
+    name: e2e (${{ matrix.name }})
     runs-on: ubuntu-22.04
     timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: plain
+            script: scripts/test-e2e.sh
+          - name: nginx
+            script: scripts/test-e2e-tls-nginx.sh
+          - name: node
+            script: scripts/test-e2e-tls-node.sh
+            needs_node: true
 
     steps:
       - name: Checkout code
@@ -29,5 +42,11 @@ jobs:
       - name: Set up BPF toolchain and regenerate bindings
         uses: ./.github/actions/setup-bpf-toolchain
 
+      - name: Install Node.js (NodeSource — statically links OpenSSL, unstripped)
+        if: matrix.needs_node
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+
       - name: Run e2e tests
-        run: bash scripts/test-e2e.sh
+        run: bash ${{ matrix.script }}
