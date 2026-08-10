@@ -22,7 +22,7 @@ sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf=eip ./tinytap
 ```
 
 That's enough for the core capture path everywhere, and for the optional
-`sendfile` payload-capture kprobe on arm64 — but **not** for that same
+`sendfile` payload-capture kprobe on arm64 — but not for that same
 kprobe on x86_64, which additionally needs `cap_syslog` (see the table
 below). Its failure degrades gracefully either way (sendfile events just
 carry no payload bytes), so this only matters if you want full-fidelity
@@ -42,8 +42,7 @@ below.
 TLS capture (the `SSL_set_fd`/`SSL_write`/`SSL_read`/`SSL_free` libssl
 uprobes) needs `cap_sys_admin` on top of the base three — see
 [Why TLS capture needs `cap_sys_admin`](#why-tls-capture-needs-cap_sys_admin)
-below for why. Combined with the x86_64 kprobe requirement above, the full
-set is:
+below for why. Combined with the x86_64 kprobe requirement above, the full set is:
 
 ```bash
 sudo setcap cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog=eip ./tinytap
@@ -80,10 +79,10 @@ and libssl uprobes, none of which touch netfilter/tc.
 | 0 | ≤ 1 | works | works | works |
 | 0 | ≥ 2 | disabled | works | works |
 | 1 | any | disabled | works | works |
-| 2 | any | disabled | **disabled** | **disabled** |
+| 2 | any | disabled | disabled | disabled |
 
-Practical consequence: **on a `kptr_restrict=2` host, x86_64 `sendfile`
-payload capture is unavailable at any privilege level** — no capability
+Practical consequence: on a `kptr_restrict=2` host, x86_64 `sendfile`
+payload capture is unavailable at any privilege level — no capability
 set, not even running as root, restores it. The failure is still graceful
 (`sendfile` events pair correctly, they just carry no payload bytes), so
 tinytap remains usable; only full-fidelity `sendfile` bodies are lost.
@@ -102,7 +101,7 @@ probe itself needs `CAP_BPF`. That's why removing `cap_bpf` (not
 probe fails, the code falls back to actually raising the rlimit, and that
 fallback path is what needs `cap_sys_resource`.
 
-Practically: on a 5.11+ kernel, `cap_bpf` alone covers this path. On an
+In practice, on a 5.11+ kernel, `cap_bpf` alone covers this path. On an
 older kernel (5.8–5.10) that lacks memcg-based BPF accounting, tinytap
 would additionally need `cap_sys_resource` to raise `RLIMIT_MEMLOCK`.
 
@@ -123,7 +122,7 @@ attaching to an existing one. That's the same class of operation as writing
 to the legacy `uprobe_events`/`kprobe_events` control files, and the kernel
 gates it on `CAP_SYS_ADMIN` rather than `CAP_PERFMON`.
 
-Practical effect: TLS capture needs `cap_sys_admin` for tinytap's entire
+In practice, TLS capture needs `cap_sys_admin` for tinytap's entire
 runtime whenever it's in use. `cap_sys_admin` is broad enough that this
 materially weakens the "not full root" story for anyone who wants TLS
 capture — running plaintext-only with the 3-capability set is meaningfully

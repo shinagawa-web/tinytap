@@ -41,8 +41,8 @@ struct event {
 };
 ```
 
-Total: 4144 bytes. No implicit padding — fields are ordered so the natural
-layout aligns to 8 bytes.
+That's 4144 bytes total, with no implicit padding — fields are ordered so
+the natural layout aligns to 8 bytes.
 
 ## Go side (userspace)
 
@@ -96,7 +96,7 @@ byte order (arm64 / x86_64 native).
 | 28  | 4   | `payload_len` |
 | 32  | 16  | `comm[16]` |
 | 48  | 4096 | `payload[4096]` |
-| **Total** | **4144** | |
+| Total | 4144 | |
 
 ## SSL plaintext event (uprobe)
 
@@ -125,7 +125,7 @@ struct ssl_event {
 };
 ```
 
-Total: 4152 bytes.
+That's 4152 bytes total.
 
 - **`op`** — `SSL_OP_WRITE` is captured at `SSL_write`/`SSL_write_ex` entry, where `(ssl, buf, num)` are already valid arguments. `SSL_OP_READ` is captured at `SSL_read`/`SSL_read_ex` *return* instead, since the plaintext buffer is only filled by the time the call returns.
 
@@ -149,4 +149,4 @@ Total: 4152 bytes.
 | 36  | 4   | `_pad` |
 | 40  | 16  | `comm[16]` |
 | 56  | 4096 | `payload[4096]` |
-| **Total** | **4152** | |
+| Total | 4152 | |

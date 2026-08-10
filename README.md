@@ -12,9 +12,9 @@
 
 ![Left: an ordinary app makes one HTTPS API call. Right: tinytap shows the exact request it sent — headers, Authorization: Bearer, and the JSON body — in plaintext, with no proxy and no CA certificate installed](docs/tui-demo.gif)
 
-Left: an ordinary app calling an API over HTTPS. Right: tinytap's TUI
+An ordinary app calls an API over HTTPS; tinytap's TUI
 (`output = "tui"` in the config file — see [Configuration](#configuration))
-showing the exact bytes that app sent — the request line, every header
+shows the exact bytes that app sent — the request line, every header
 including `Authorization: Bearer`, and the decoded JSON body — in plaintext,
 with no proxy and no CA certificate installed. In the request table `j`/`k`
 scroll and `Enter` opens the detail panel (`b` toggles the hex body view). See
@@ -22,7 +22,7 @@ scroll and `Enter` opens the detail panel (`b` toggles the hex body view). See
 
 ## Quick start
 
-Install:
+Install it with:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/install.sh | sh
@@ -76,8 +76,7 @@ on the docs site for the full container story and kernel requirements.
 `tinytap` attaches eBPF probes to a process's socket syscalls
 (`accept4`/`read`/`write`/`close`/`recvfrom`/`sendto`/`recvmsg`/`sendmsg`),
 parses the payload bytes as HTTP/1.1, pairs each request with its response,
-and renders the exchange live — either in the terminal TUI above or as a
-line-oriented stream:
+and renders the exchange live — either in the terminal TUI above or as a line-oriented stream:
 
 ```text
 12:47:57.005  python3[27122]  GET   /                        200    1304B     0.3ms
@@ -147,14 +146,17 @@ Full documentation is available at
 - [Where tinytap Runs](https://shinagawa-web.github.io/tinytap/docs/where-it-runs/)
 - [Running Without Full Root](https://shinagawa-web.github.io/tinytap/docs/running-without-root/)
 - [How It Works](https://shinagawa-web.github.io/tinytap/docs/how-it-works/)
+
 - [Configuration](https://shinagawa-web.github.io/tinytap/docs/configuration/)
 - [Server Compatibility](https://shinagawa-web.github.io/tinytap/docs/server-compatibility/)
 - [TLS Compatibility](https://shinagawa-web.github.io/tinytap/docs/tls-compatibility/)
 - [Installing & Verifying Releases](https://shinagawa-web.github.io/tinytap/docs/installing-and-verifying/)
+
 - [Troubleshooting](https://shinagawa-web.github.io/tinytap/docs/troubleshooting/)
 - [Event Schema](https://shinagawa-web.github.io/tinytap/docs/event-schema/)
 - [Terminology](https://shinagawa-web.github.io/tinytap/docs/terminology/)
 - [Current Limitations](https://shinagawa-web.github.io/tinytap/docs/limitations/)
+
 - [Roadmap](https://shinagawa-web.github.io/tinytap/docs/roadmap/)
 
 ## Toolchain
@@ -173,7 +175,7 @@ Full documentation is available at
 
 Mac (Apple Silicon) + Lima with Ubuntu 24.04. Build and run inside the Lima VM. Edit code on Mac via VS Code's remote SSH or the auto-mounted filesystem. This is private to the maintainer's workflow — it does not constrain users; see [Where tinytap Runs](#where-tinytap-runs) for how tinytap runs on a user's machine.
 
-Setup commands:
+Setup commands are:
 
 ```bash
 # Mac side
@@ -251,5 +253,6 @@ kernel's GPL-2.0 license instead.
 - [hengyoush/kyanos](https://github.com/hengyoush/kyanos) — reference for HTTP capture implementation patterns
 - [mozillazg/ptcpdump](https://github.com/mozillazg/ptcpdump) — reference for process-awareness patterns
 - [Pixie blog: Debugging with eBPF Part 2](https://blog.px.dev/ebpf-http-tracing/) — the canonical "tracing HTTP via syscalls" walkthrough
+
 - [eunomia eBPF tutorials](https://eunomia.dev/) — readable, hands-on
 - Brendan Gregg's blog — for the kernel-side mental model

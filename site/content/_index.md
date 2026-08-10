@@ -39,9 +39,10 @@ Debugging HTTP traffic usually means a MITM proxy: install a CA certificate, poi
 - TLS capture via libssl uprobes — no proxy, no CA certificate
 - Runs without full root — three Linux capabilities instead of `sudo`
 - Single static binary, no runtime dependencies
+
 - Sees traffic from containerized processes too — no sidecar, no install-inside-the-container
 
-Planned:
+What's planned next:
 
 - Container-aware attribution (mapping a PID to the container it belongs to)
 - HTTP/2 and gRPC support

@@ -8,8 +8,7 @@ weight: 4
 `tinytap` attaches eBPF probes to a process's socket syscalls
 (`accept4`/`read`/`write`/`close`/`recvfrom`/`sendto`/`recvmsg`/`sendmsg`),
 parses the payload bytes as HTTP/1.1, pairs each request with its response,
-and renders the exchange live — either in the terminal TUI or as a
-line-oriented stream:
+and renders the exchange live — either in the terminal TUI or as a line-oriented stream:
 
 ```text
 12:47:57.005  python3[27122]  GET   /                        200    1304B     0.3ms
@@ -67,8 +66,8 @@ int handle_write(struct trace_event_raw_sys_enter *ctx) {
 char LICENSE[] SEC("license") = "GPL";
 ```
 
-Data captured in the kernel needs to be passed to user space — **eBPF
-maps** (in tinytap's case, a ring buffer) are the bridge, shared memory
+Data captured in the kernel needs to be passed to user space — eBPF
+maps (in tinytap's case, a ring buffer) are the bridge, shared memory
 accessible from both sides.
 
 Because eBPF programs run inside the kernel, there are strict constraints

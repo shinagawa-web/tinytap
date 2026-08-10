@@ -25,8 +25,7 @@ by hand instead (from the
 script that intentionally avoids `curl | sh`) and confirming its full chain
 of trust, including the cosign signature the install script doesn't check.
 
-Every tagged release publishes, alongside the `linux_amd64`/`linux_arm64`
-archives:
+Every tagged release publishes, alongside the `linux_amd64`/`linux_arm64` archives:
 
 - `checksums.txt` — SHA-256 of every archive and SBOM in the release
 

@@ -11,9 +11,9 @@ Which TLS-terminating servers/clients tinytap can capture via the
 ## Why this is separate from server compatibility
 
 [Server Compatibility]({{< relref "server-compatibility" >}})'s table measures how many
-**wire bytes** of a plaintext body survive tinytap's per-syscall sample cap.
-That question doesn't apply to TLS capture: the uprobe reads the **full
-plaintext buffer** directly from the `SSL_write`/`SSL_read` call's
+wire bytes of a plaintext body survive tinytap's per-syscall sample cap.
+That question doesn't apply to TLS capture: the uprobe reads the full
+plaintext buffer directly from the `SSL_write`/`SSL_read` call's
 arguments (up to a separate 4096 B cap), before encryption or after
 decryption — however many ciphertext syscalls happen underneath is
 invisible to this capture path entirely. Reusing the same table would
@@ -40,7 +40,7 @@ Every other row above has the traced process load OpenSSL as a separate
 `libssl.so*` mapping, which tinytap locates by scanning the process's
 memory maps. Node.js doesn't fit that shape — its official, NodeSource, and
 nvm builds statically bundle OpenSSL, so a Node.js process never has a
-`libssl.so*` mapping at all. Those same builds ship **unstripped**, though,
+`libssl.so*` mapping at all. Those same builds ship unstripped, though,
 exporting `SSL_read`/`SSL_write`/`SSL_set_fd`/`SSL_free` from the `node`
 binary itself — so tinytap falls back to the process's own executable once
 the library scan comes up empty, and attaches there instead.

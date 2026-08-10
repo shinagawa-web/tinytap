@@ -9,8 +9,7 @@ If it didn't work, run `tinytap doctor` first — read-only preflight checks
 (kernel version, BTF availability, the required
 [capabilities]({{< relref "running-without-root" >}}), syscall tracepoint
 availability, a dry-run BPF load, and the host's libssl execute bit),
-printed as a copy-paste-friendly report, without needing root or
-capabilities itself:
+printed as a copy-paste-friendly report, without needing root or capabilities itself:
 
 ```bash
 tinytap doctor
@@ -53,9 +52,9 @@ Granting the capabilities named in each `Fix` line (see
 [Running Without Full Root]({{< relref "running-without-root" >}})) turns
 every `BLOCKING`/`DEGRADED` line above into `OK`.
 
-Each result is classified by what it actually costs: a **blocking** result
+Each result is classified by what it actually costs: a blocking result
 means tinytap can't run at all (e.g. a kernel below the 5.8 floor); a
-**degraded** result means tinytap runs but one specific capability is lost
+degraded result means tinytap runs but one specific capability is lost
 (e.g. no TLS capture without `cap_sys_admin`) — it's never printed as if
 something were broken. `doctor` exits non-zero only when a blocking result
 is present, so `tinytap doctor && tinytap` is a reasonable way to run it. A
