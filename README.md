@@ -202,9 +202,9 @@ build's version, commit, and date, and exits without needing root.
 
 ## Configuration
 
-Session settings (`output`, `verbose`, and process filters) live in a TOML
-config file, not CLI flags. `tinytap config init` writes one, fully populated
-with defaults, so `tinytap config init && tinytap` just works:
+Session settings (`output`, `verbose`) live in a TOML config file, not CLI
+flags. `tinytap config init` writes one, fully populated with defaults, so
+`tinytap config init && tinytap` just works:
 
 ```bash
 tinytap config init          # writes ./tinytap.toml
@@ -220,10 +220,6 @@ defaults below apply.
 ```toml
 output = "auto"   # auto | stdout | tui
 verbose = false
-
-[filter]
-pid  = []         # []uint32 — schema only, not yet enforced by the BPF program (#211)
-comm = []         # []string — schema only, not yet enforced by the BPF program (#211)
 ```
 
 The only CLI surface is one-shot actions, not session settings: `--config

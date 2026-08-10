@@ -177,32 +177,6 @@ func TestLoad_CwdFile(t *testing.T) {
 	}
 }
 
-func TestLoad_FilterSection(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	write(t, filepath.Join(dir, "tinytap.toml"), `
-output = "tui"
-
-[filter]
-pid = [123, 456]
-comm = ["nginx", "curl"]
-`)
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantPID := []uint32{123, 456}
-	if len(cfg.Filter.PID) != len(wantPID) || cfg.Filter.PID[0] != wantPID[0] || cfg.Filter.PID[1] != wantPID[1] {
-		t.Errorf("Filter.PID = %v, want %v", cfg.Filter.PID, wantPID)
-	}
-	wantComm := []string{"nginx", "curl"}
-	if len(cfg.Filter.Comm) != len(wantComm) || cfg.Filter.Comm[0] != wantComm[0] || cfg.Filter.Comm[1] != wantComm[1] {
-		t.Errorf("Filter.Comm = %v, want %v", cfg.Filter.Comm, wantComm)
-	}
-}
-
 func TestLoad_ExplicitPath(t *testing.T) {
 	dir := t.TempDir()
 	custom := filepath.Join(dir, "custom.toml")
@@ -283,7 +257,7 @@ func TestInit_WritesLoadableDefaultFile(t *testing.T) {
 	}
 }
 
-func TestInit_WrittenFileListsFilterKeys(t *testing.T) {
+func TestInit_WrittenFileListsDefaultKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tinytap.toml")
 
 	if err := Init(path, false); err != nil {
@@ -295,7 +269,7 @@ func TestInit_WrittenFileListsFilterKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(data)
-	for _, want := range []string{"output = \"auto\"", "verbose = false", "[filter]", "pid = []", "comm = []"} {
+	for _, want := range []string{"output = \"auto\"", "verbose = false"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Init() output = %q, want it to contain %q", got, want)
 		}
@@ -375,30 +349,6 @@ func TestInit_CreatesParentDirs(t *testing.T) {
 
 	if _, err := Load(path); err != nil {
 		t.Fatalf("generated file didn't load: %v", err)
-	}
-}
-
-func TestInit_FilterDefaultsSurviveNilNormalization(t *testing.T) {
-	old := defaultConfig
-	defaultConfig = func() Config {
-		return Config{Output: "auto", Filter: FilterConfig{PID: []uint32{99}}}
-	}
-	defer func() { defaultConfig = old }()
-
-	path := filepath.Join(t.TempDir(), "tinytap.toml")
-	if err := Init(path, false); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Filter.PID) != 1 || cfg.Filter.PID[0] != 99 {
-		t.Errorf("Filter.PID = %v, want [99] (a non-nil default must survive Init's nil-normalization)", cfg.Filter.PID)
-	}
-	if cfg.Filter.Comm == nil {
-		t.Error("Filter.Comm = nil, want normalized to []string{}")
 	}
 }
 
