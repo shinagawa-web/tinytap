@@ -35,7 +35,7 @@ type fakeSink struct {
 	closeErr     error
 }
 
-func (s *fakeSink) OnEvent(*events.Event)         { s.eventCount++ }
+func (s *fakeSink) OnEvent(*events.Event)          { s.eventCount++ }
 func (s *fakeSink) OnMessage(httpproto.Message)    { s.messageCount++ }
 func (s *fakeSink) OnPaired(httpproto.PairedEvent) { s.pairedCount++ }
 func (s *fakeSink) Close() error                   { return s.closeErr }
