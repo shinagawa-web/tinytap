@@ -56,11 +56,9 @@ func (a TimeAnchor) WallTime(tsNs uint64) time.Time {
 }
 
 // sslFallbackMarker is appended to a rendered line when PairedEvent.SSLFallback
-// is true, so a (pid, SSL*)-keyed exchange (#171 — e.g. curl, which never
-// calls SSL_set_fd, #167) never reads as an ordinary fd-verified pairing.
-// Appended as trailing text rather than a new column: existing rows'
-// layout — and any grep/awk over it (#63) — is untouched, since today no
-// message ever sets SSLFallback and this marker never appears.
+// is true, so a (pid, SSL*)-keyed exchange never reads as an ordinary
+// fd-verified pairing. Appended as trailing text rather than a new column:
+// existing rows' layout — and any grep/awk over it (#63) — is untouched.
 const sslFallbackMarker = "  [ssl-keyed, fd unverified]"
 
 // RenderPaired returns the one-line summary of a paired exchange: a single
@@ -74,10 +72,9 @@ const sslFallbackMarker = "  [ssl-keyed, fd unverified]"
 // record — EncodeJSONL (jsonl.go) is that. p is round-tripped through the
 // JSONL encoding before anything below reads it (roundTripJSONL, jsonl.go),
 // so this line is genuinely derived from the JSONL representation rather
-// than an independent reader of the same struct (#192); jsonl_test.go's
-// TestPairedEventFieldsAreClassified is what keeps the curation itself
-// honest, failing if a new PairedEvent field isn't consciously placed in
-// or kept out of this line.
+// than an independent reader of the same struct; jsonl_test.go's
+// TestPairedEventFieldsAreClassified keeps the curation honest, failing if
+// a new PairedEvent field isn't consciously placed in or kept out of it.
 //
 // When ResBodyTruncated is true, the bytes field prints "<kept>/<total>B"
 // (e.g. "512/1304B" — how much of the body tinytap actually captured versus
@@ -135,10 +132,8 @@ func RenderAbandoned(p PairedEvent, when time.Time) string {
 // RenderPairedDetail returns the `-v` continuation lines for an exchange: the
 // request start line and headers (prefixed `>`), then the response start line
 // and headers (prefixed `<`), in on-wire order. Indented so they read as
-// belonging to the summary line above. Body contents follow once #35 lands.
-// Like RenderPaired/RenderAbandoned, p is round-tripped through the JSONL
-// encoding first (roundTripJSONL, jsonl.go) so this is genuinely derived
-// from the JSONL representation, not an independent reader (#192).
+// belonging to the summary line above. Like RenderPaired, p is round-tripped
+// through the JSONL encoding first — see RenderPaired's doc comment for why.
 func RenderPairedDetail(p PairedEvent) []string {
 	p = roundTripJSONL(p)
 	lines := make([]string, 0, len(p.ReqHeaders)+len(p.ResHeaders)+2)

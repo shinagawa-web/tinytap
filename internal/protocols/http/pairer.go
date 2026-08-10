@@ -16,24 +16,19 @@ const (
 // 413/417, or a 100-continue reply, arriving while the client is still
 // streaming its request body) is held rather than dropped, and the
 // PairedEvent is instead emitted once the matching request is later pushed.
-// heldResponses is bounded
-// (maxHeldResponses, oldest dropped first) so a response whose request was
-// never captured at all — a stream joined mid-flight — cannot accumulate
-// unbounded; that bound is the reason unmatched responses were dropped in
-// the first place.
+// heldResponses is bounded (maxHeldResponses, oldest dropped first) so a
+// response whose request was never captured at all cannot accumulate
+// unbounded.
 //
 // HTTP/1.1 keep-alive guarantees responses are returned in request order,
 // so a simple FIFO per identity is sufficient. Chunked encoding and HTTP/2
 // are out of scope for v0.1.0.
 //
-// Connection identity is normally (pid, fd). For TLS-sourced messages with
-// no verified fd (Message.SSLFallback, #171) it is (pid, SSL*) instead — a
-// dimension distinct from (pid, fd) by construction (see pairKey), so a
-// fallback message can never collide with a real fd-keyed connection or
-// with another SSL* on the same pid. Guessing or inferring a fd for these
-// is explicitly rejected (#171): a wrong guess would silently cross-pair
-// two unrelated exchanges. CloseSSL (#173) is the SSL*-keyed counterpart to
-// Close, driven by the SSL_free uprobe instead of the close(2) syscall.
+// Connection identity is normally (pid, fd); for TLS-sourced messages with
+// no verified fd it's (pid, SSL*) instead — see pairKey for the
+// discriminator that keeps the two key spaces from colliding. CloseSSL is
+// the SSL*-keyed counterpart to Close, driven by the SSL_free uprobe
+// instead of the close(2) syscall.
 type Pairer struct {
 	pending       map[pairKey][]timedMessage
 	heldResponses []heldResponse
@@ -60,7 +55,8 @@ type heldResponse struct {
 // pairKey identifies a connection for pairing purposes. sslFallback is an
 // explicit discriminator, not inferred from fd/ssl being zero — so the
 // fd-keyed and SSL-keyed halves of the key space can never collide by
-// construction, regardless of what values fd or ssl happen to hold.
+// construction, regardless of what values fd or ssl happen to hold. See
+// TestPairerSSLFallbackNeverCollidesWithSameNumericFd.
 type pairKey struct {
 	pid         uint32
 	fd          int32  // meaningful only when sslFallback is false
@@ -87,14 +83,13 @@ type timedMessage struct {
 
 // PairedEvent is what the pairer hands off to the renderer once a request
 // and response have been matched on the same (pid, fd). It carries every
-// HTTP-level field the parser surfaced — even ones the default render
-// line doesn't print — so future detail views (TUI row-expand, structured
-// export) don't need to reach back into the parser layer. It's the single
-// struct every output derives from: see jsonl.go's EncodeJSONL for the
-// full-fidelity JSON encoding, and jsonl_test.go's
-// TestPairedEventFieldsAreClassified for the drift guard that keeps the
-// curated stdout summary line (render.go) honest about which fields it
-// does and doesn't show (#192).
+// HTTP-level field the parser surfaced — even ones the default render line
+// doesn't print — so future detail views don't need to reach back into the
+// parser layer. It's the single struct every output derives from: see
+// jsonl.go's EncodeJSONL for the full-fidelity JSON encoding, and
+// jsonl_test.go's TestPairedEventFieldsAreClassified for the drift guard
+// that keeps render.go's curated summary line honest about which fields it
+// shows.
 //
 // When Abandoned is true the event represents a request that never received
 // a response; Status is 0 and AbandonReason describes why.
@@ -122,10 +117,9 @@ type PairedEvent struct {
 	ReqBodyTruncated bool   `json:"reqBodyTruncated"`
 	ResBody          []byte `json:"resBody,omitempty"`
 	ResBodyTruncated bool   `json:"resBodyTruncated"`
-	// SSL and SSLFallback mirror Message's fields of the same name (#171).
-	// When SSLFallback is true, Fd carries no meaning — this pair was matched
-	// on (Pid, SSL) instead, and renderers must show it as such rather than
-	// display Fd as if it were verified.
+	// SSL and SSLFallback mirror Message's fields of the same name. When
+	// SSLFallback is true, Fd carries no meaning — this pair was matched on
+	// (Pid, SSL) instead, and renderers must show it as such.
 	SSL         uint64 `json:"ssl,omitempty"`
 	SSLFallback bool   `json:"sslFallback"`
 }
@@ -149,15 +143,10 @@ func newPairerWithClock(now func() time.Time) *Pairer {
 // heldResponses) so a later request can still claim it.
 //
 // A request and its response only pair when they carry the *same* identity
-// kind: an SSLFallback request never pairs with an ordinary fd-keyed
-// response even if their Pid/Fd/SSL values happened to coincide, and vice
-// versa — keyFor's discriminator makes that impossible by construction.
-//
-// A malformed SSLFallback message (SSL == 0 — no producer should ever emit
-// one, but Push does not trust that) is dropped rather than paired or held:
-// keying it on (pid, ssl=0) would collapse every SSL* this pid ever fails to
-// set onto one shared FIFO, reopening exactly the cross-pairing risk #171
-// exists to close, just from a different bug than a guessed fd.
+// kind — keyFor's discriminator makes cross-kind pairing impossible by
+// construction. A malformed SSLFallback message (SSL == 0, which no
+// producer should ever emit, but Push does not trust that) is dropped
+// rather than paired or held; see TestPairerSSLFallbackZeroSSLIsDropped.
 func (p *Pairer) Push(e Message) (PairedEvent, bool) {
 	if e.SSLFallback && e.SSL == 0 {
 		return PairedEvent{}, false
@@ -266,14 +255,11 @@ func bodyBytes(cl int, sample []byte) int {
 // Close emits an abandoned PairedEvent for every pending request on the given
 // (pid, fd) and removes them from the queue. Called when the socket closes.
 //
-// This only ever targets the fd-keyed identity space — close is a syscall-
-// level event and always carries a real fd, but an SSLFallback request was
-// deliberately never filed under one (#171: guessing a fd is rejected as a
-// cross-pairing risk). So Close can never evict an SSLFallback-pending
-// request, even when the underlying socket for its SSL* did close; CloseSSL
-// (driven by the SSL_free uprobe, #173) is the fd-less counterpart, with
-// Sweep's timeout eviction remaining as the fallback for both key spaces
-// when neither close signal ever arrives (e.g. a hard crash).
+// This only ever targets the fd-keyed identity space, so it can never evict
+// an SSLFallback-pending request even when the underlying socket for its
+// SSL* did close (see TestPairerCloseNeverEvictsSSLFallback); CloseSSL is
+// the fd-less counterpart, with Sweep's timeout eviction as the fallback for
+// both key spaces when neither close signal ever arrives (e.g. a crash).
 func (p *Pairer) Close(pid uint32, fd int32, closeTsNs uint64) []PairedEvent {
 	key := keyFor(pid, fd, 0, false)
 	p.discardHeldResponses(key)
@@ -292,13 +278,10 @@ func (p *Pairer) Close(pid uint32, fd int32, closeTsNs uint64) []PairedEvent {
 
 // CloseSSL emits an abandoned PairedEvent for every pending SSLFallback
 // request on the given (pid, ssl) and removes them from the queue. Called
-// when the SSL_free uprobe (#173) observes the connection's SSL* object
-// being freed — OpenSSL's mandatory, always-called teardown API, fired
-// exactly once per SSL object regardless of how its BIO/fd was wired
-// (confirmed for curl's custom-BIO path too, see #167). This is the
-// fd-less counterpart to Close: it only ever targets the SSL*-keyed
-// identity space and can never evict an ordinary fd-keyed request, by the
-// same keyFor discriminator Push and Close rely on.
+// when the SSL_free uprobe observes the connection's SSL* object being
+// freed — OpenSSL's mandatory teardown API, fired exactly once per SSL
+// object regardless of how its BIO/fd was wired. This is the fd-less
+// counterpart to Close: it only ever targets the SSL*-keyed identity space.
 func (p *Pairer) CloseSSL(pid uint32, ssl uint64, closeTsNs uint64) []PairedEvent {
 	key := keyFor(pid, 0, ssl, true)
 	p.discardHeldResponses(key)

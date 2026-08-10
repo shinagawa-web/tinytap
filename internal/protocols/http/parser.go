@@ -32,13 +32,10 @@ import (
 // Body length comes from Content-Length or Transfer-Encoding: chunked.
 // Messages with neither are treated as having a zero-byte body.
 //
-// Connection identity is normally (pid, fd). For TLS traffic whose fd never
-// resolved (FeedSSL, #179 — e.g. curl, which never calls SSL_set_fd, #167)
-// it is (pid, SSL*) instead — a dimension distinct from (pid, fd) by
-// construction (see connKey), mirroring Pairer's identical pairKey split
-// (#171). Feed and FeedSSL share the same state-machine core (the
-// unexported feed method); only how the stream is looked up and keyed
-// differs.
+// Connection identity is normally (pid, fd); for TLS traffic whose fd never
+// resolved it's (pid, SSL*) instead via FeedSSL — see connKey for the
+// discriminator that keeps the two key spaces from colliding. Feed and
+// FeedSSL share the same state-machine core (the unexported feed method).
 
 type httpParseState int
 
@@ -63,7 +60,7 @@ const (
 // is an explicit discriminator, not inferred from fd/ssl being zero — so
 // the fd-keyed and SSL-keyed halves of the key space can never collide by
 // construction, regardless of what values fd or ssl happen to hold (same
-// reasoning as Pairer's pairKey, #171).
+// split as Pairer's pairKey; see TestPairerSSLFallbackNeverCollidesWithSameNumericFd).
 type connKey struct {
 	pid         uint32
 	fd          int32  // meaningful only when sslFallback is false
@@ -174,14 +171,12 @@ type Message struct {
 	// the sample cap (wire-only tail) or the body exceeded maxBodyBytes.
 	BodySample    []byte
 	BodyTruncated bool
-	// SSL and SSLFallback support pairing TLS-sourced messages that have no
-	// verified fd (#171): some clients (curl, confirmed in #167) never call
-	// SSL_set_fd, so the SSL_write/SSL_read uprobe (#146) plaintext can only
-	// be identified by its SSL* pointer, not a socket fd. Feed always
-	// produces fd-sourced messages (SSLFallback false); FeedSSL (#179) always
-	// produces SSL*-sourced ones (SSLFallback true, SSL set, Fd meaningless).
-	// Never both false/set and true/unset — see Pairer, which keys strictly
-	// on one or the other and never guesses a fd for an SSLFallback message.
+	// SSL and SSLFallback support pairing TLS-sourced messages with no
+	// verified fd (some clients, e.g. curl, never call SSL_set_fd): Feed
+	// always produces fd-sourced messages (SSLFallback false); FeedSSL
+	// always produces SSL*-sourced ones (SSLFallback true, SSL set, Fd
+	// meaningless) — never both false/set and true/unset. See Pairer, which
+	// keys strictly on one or the other.
 	SSL         uint64
 	SSLFallback bool
 }
@@ -207,14 +202,11 @@ type Parser struct {
 	// the full cmdline (e.g. "python3 manage.py runserver") in place of
 	// the kernel's 15-char truncated task name.
 	resolve func(pid uint32) string
-	// HeaderLossCount counts messages discarded because their start-line
-	// or header block exceeded the BPF sample cap mid-message (#224) —
-	// see feed()'s truncation-gap check. Each occurrence means one
-	// message's headers were unrecoverable and the stream was
-	// resynchronised at the next start line rather than emitting a
-	// message with a spliced/fabricated header set. Exported so callers
-	// can surface it; full UI/TUI plumbing is deferred to #210's drop
-	// accounting.
+	// HeaderLossCount counts messages discarded because their start-line or
+	// header block exceeded the BPF sample cap mid-message — see feed()'s
+	// truncation-gap check. Each occurrence means one message's headers
+	// were unrecoverable and the stream was resynchronised at the next
+	// start line rather than emitting a spliced/fabricated header set.
 	HeaderLossCount int
 }
 
@@ -271,13 +263,12 @@ func (p *Parser) Feed(e *events.Event) []Message {
 }
 
 // FeedSSL processes a plaintext event captured by the SSL_write/SSL_read
-// uprobe (#146) for a connection whose fd never resolved (#167 — e.g.
-// curl, which never calls SSL_set_fd). fd-resolvable TLS traffic instead
-// goes through the ordinary Feed after translation via tls.FromSSL (#148),
-// reusing the fd-keyed stream — this method exists so the fd-less
-// remainder isn't dropped outright (#179). Every Message it emits has
-// SSLFallback true and SSL set to e.SSL; see Pairer, which requires that
-// discriminator to route pairing through its SSL*-keyed identity space.
+// uprobe for a connection whose fd never resolved (e.g. curl, which never
+// calls SSL_set_fd). fd-resolvable TLS traffic instead goes through the
+// ordinary Feed after translation via tls.FromSSL, reusing the fd-keyed
+// stream — this method exists so the fd-less remainder isn't dropped
+// outright. Every Message it emits has SSLFallback true and SSL set to
+// e.SSL.
 func (p *Parser) FeedSSL(e *events.SSLEvent) []Message {
 	var dir direction
 	switch e.Op {
@@ -431,30 +422,16 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 
 	out = append(out, p.advance(s, pid, comm, tsNs)...)
 
-	// A start-line or header block that's still incomplete after advance()
-	// may be stalled for two entirely different reasons: legitimately
-	// waiting for more bytes on a future syscall (normal — every sampled
-	// byte so far is real and contiguous), or permanently unrecoverable
-	// because some syscall's sample didn't cover its full wire length
-	// (#224 — the BPF payload cap was hit mid-header). The two look
-	// identical from advance()'s state alone, but wire-byte accounting
-	// tells them apart: if no bytes were ever dropped, the wire bytes
-	// seen since the last completed framing boundary
-	// (wireBytesSinceMessageStart - wireBytesConsumed) always equals
-	// len(s.buf) exactly, since every sampled byte maps 1:1 to a wire
-	// position. A strict excess means some of those wire bytes never
-	// made it into buf — a gap exists somewhere in the currently-buffered
-	// prefix, and it can never be filled by anything that arrives later
-	// (those bytes are gone, not delayed). Continuing to wait (or worse,
-	// appending a later event's payload straight onto this prefix, as if
-	// it were contiguous) would either stall forever or splice two
-	// non-adjacent wire positions into one fabricated header set.
-	//
-	// The fix is the same either way: the in-flight message's headers are
-	// unrecoverable, so discard the prefix and resynchronise at the next
-	// message boundary — treating whatever arrives next as a fresh
-	// start-line search — rather than emitting a message built from
-	// spliced bytes or leaving the connection stalled indefinitely.
+	// A stalled start-line/header wait may be legitimate (more bytes still
+	// coming) or a truncation gap that can never be filled (a syscall's
+	// sample didn't cover its full wire length, #224). Wire-byte accounting
+	// tells them apart: absent any drop, wireBytesSinceMessageStart -
+	// wireBytesConsumed always equals len(s.buf); a strict excess means a
+	// gap exists in the buffered prefix, so the message is discarded and
+	// the stream resynchronises at the next start line rather than
+	// splicing non-adjacent wire positions into a fabricated header set.
+	// See TestHeaderBlockExceedingSampleCapSplicesNextRequest and
+	// TestHeaderTruncationResynchronisesResponseStream.
 	if s.state == stateNeedStartLine || s.state == stateNeedHeaders {
 		if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
 			p.HeaderLossCount++
@@ -830,28 +807,17 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			}
 
 		case stateNeedChunkCRLF:
-			// Consume the "\r\n" that follows each chunk's data.
+			// Consume the "\r\n" that follows each chunk's data. If wire-byte
+			// accounting shows at least 2 more bytes arrived than consumed,
+			// trust it — the CRLF reached the wire even though MaxPayload
+			// kept it out of the sample (same model as stateNeedBody, #116)
+			// — rather than stall forever. This branch never sets
+			// BodyTruncated itself; that flag reflects only body content
+			// loss, tracked separately by the chunk-data path above. See
+			// TestChunkedCRLFDroppedByMaxPayloadTrustsWireBytes for the
+			// accepted trade-off when a non-compliant peer's byte count
+			// doesn't actually end in CRLF.
 			if len(s.buf) < 2 {
-				// If wire-byte accounting already shows at least 2 more
-				// bytes arrived beyond what's been consumed, the CRLF made
-				// it onto the wire even though the MaxPayload cap kept it
-				// (or part of it) out of the sample. Trust that accounting
-				// instead of abandoning — same model stateNeedBody already
-				// uses for opaque body bytes (#116) — rather than stalling
-				// forever waiting for bytes that will never appear in
-				// s.buf. Any leftover byte already in s.buf is discarded
-				// unvalidated along with it: this is a deliberate trade,
-				// accepting that a non-compliant peer whose declared byte
-				// count doesn't actually end in "\r\n" would be silently
-				// mis-framed, in exchange for correctly pairing well-formed
-				// exchanges regardless of chunk size. This branch itself
-				// never sets BodyTruncated — it only skips 2 framing bytes,
-				// not body content. BodyTruncated may already be true by
-				// the time we get here (set earlier, by the chunk-data path
-				// above, if the chunk's *data* didn't fully fit the
-				// sample) or may still be false (if the data fit but only
-				// this trailing CRLF was cut) — either way it accurately
-				// reflects whether body content, specifically, was lost.
 				if s.wireBytesSinceMessageStart-s.wireBytesConsumed >= 2 {
 					s.wireBytesConsumed += 2
 					s.buf = nil
@@ -880,27 +846,13 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			} else {
 				tidx := bytes.Index(s.buf, []byte("\r\n\r\n"))
 				if tidx < 0 {
-					// Terminator not in sample. If wire bytes exceed what the
-					// sample captured, the terminator was dropped by the
-					// MaxPayload cap and will never appear in s.buf — abandon
-					// to avoid a permanent stall.
-					//
-					// Unlike stateNeedChunkCRLF (#116), this can't be fixed
-					// the same way: the trailer section has no fixed length,
-					// so "more wire bytes arrived than the sample captured"
-					// doesn't prove the terminator itself arrived — it could
-					// just as easily mean a single trailer field is long
-					// enough to exceed MaxPayload on its own and continues in
-					// a later syscall, nowhere near the terminator yet.
-					// Trusting that case would emit the message prematurely
-					// and misframe every event after it (confirmed while
-					// reviewing this fix — see PR #120 discussion). Properly
-					// fixing this needs a way to tell "this sample was
-					// truncated mid-trailer-field, more is coming" apart
-					// from "the terminator specifically was dropped", which
-					// stateNeedChunkCRLF gets for free from the chunk's
-					// already-known size and this state does not. Left as a
-					// separate, more carefully-scoped follow-up.
+					// Terminator not in sample: unlike stateNeedChunkCRLF,
+					// this can't trust wire-byte accounting the same way —
+					// the trailer has no fixed length, so excess wire bytes
+					// could mean the terminator was dropped, or just that a
+					// trailer field is still streaming in. Abandon instead
+					// of risking a premature, misframed emission. See
+					// TestChunkedTrailerTerminatorDroppedByMaxPayloadAbandons.
 					if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
 						s.abandoned = true
 						s.buf = nil

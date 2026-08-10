@@ -1615,7 +1615,13 @@ func TestChunkedOversizedChunkSizeAbandons(t *testing.T) {
 // arrives on the wire but is dropped from the sample. Wire-byte accounting
 // already proves the chunk completed correctly, so the parser trusts it and
 // keeps pairing instead of abandoning (#116) — matching stateNeedBody's trust
-// model for opaque body bytes elsewhere in this file.
+// model for opaque body bytes elsewhere in this file. This is a deliberate
+// trade-off: a non-compliant peer whose declared byte count doesn't actually
+// end in "\r\n" would be silently mis-framed, in exchange for correctly
+// pairing every well-formed exchange regardless of chunk size. Trusting the
+// accounting here only skips the 2 framing bytes — it never marks the body
+// itself truncated, which stays accurate to whatever the chunk-data path
+// already recorded.
 func TestChunkedCRLFDroppedByMaxPayloadTrustsWireBytes(t *testing.T) {
 	headers := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
 	chunkLine := []byte("5\r\n")
@@ -1646,12 +1652,18 @@ func TestChunkedCRLFDroppedByMaxPayloadTrustsWireBytes(t *testing.T) {
 }
 
 // When the trailer terminator arrives on the wire but is dropped by the
-// MaxPayload cap, the parser must abandon rather than stall — unlike
-// stateNeedChunkCRLF (#116), the trailer section has no fixed length, so
-// "more wire bytes arrived than the sample captured" doesn't prove the
-// terminator itself arrived (a long trailer field could still be streaming
-// in). See the code comment in stateNeedTrailer for why this can't safely
-// use the same trust-wire-bytes fix as the chunk-CRLF case.
+// MaxPayload cap, the parser must abandon rather than stall. Unlike
+// stateNeedChunkCRLF's fixed 2-byte gap (#116), the trailer section has no
+// fixed length, so "more wire bytes arrived than the sample captured"
+// doesn't prove the terminator itself arrived — it could just as easily
+// mean a single trailer field is long enough to exceed MaxPayload on its
+// own and continues in a later syscall, nowhere near the terminator yet.
+// Trusting that case would emit the message prematurely and misframe every
+// event after it. Properly telling the two apart needs a way to know "this
+// sample was truncated mid-field, more is coming" versus "the terminator
+// specifically was dropped" — which the chunk-CRLF case gets for free from
+// the chunk's already-known size, and this state does not. Left as a
+// separate, more carefully-scoped follow-up.
 func TestChunkedTrailerTerminatorDroppedByMaxPayloadAbandons(t *testing.T) {
 	headers := []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
 	termChunk := []byte("0\r\n")
