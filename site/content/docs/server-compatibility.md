@@ -6,11 +6,7 @@ weight: 6
 # Server Compatibility
 
 Which syscall a plaintext HTTP server uses to send its response body
-determines how much of it tinytap can see. (TLS-terminating servers, e.g.
-nginx captured via the `SSL_write`/`SSL_read` libssl uprobe, are a
-different capture mechanism with a different visibility model — see
-[TLS Compatibility]({{< relref "tls-compatibility" >}}) instead, not just a
-new row here.)
+determines how much of it tinytap can see.
 
 ## Compatibility table
 
