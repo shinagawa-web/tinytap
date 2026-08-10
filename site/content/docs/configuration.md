@@ -6,18 +6,8 @@ weight: 5
 # Configuration
 
 Session settings (`output`, `verbose`, and process filters) live in a TOML
-config file, not CLI flags.
-
-## Generating a config file
-
-`tinytap config init` writes one, fully populated with defaults, so
-`tinytap config init && tinytap` just works:
-
-```bash
-tinytap config init          # writes ./tinytap.toml
-tinytap config init path/to/config.toml   # or a specific path
-tinytap config init --force  # overwrite an existing file
-```
+config file, not CLI flags. `tinytap config init && tinytap` just works —
+see `config init` in [CLI surface](#cli-surface) below.
 
 ## Search order and defaults
 
@@ -43,5 +33,5 @@ The only CLI surface is one-shot actions, not session settings:
 |---|---|
 | `--config <path>` | Point at an alternate config file |
 | `--version` | Print build metadata, exiting before any eBPF load |
-| `config init` | Write a fully-populated default config file (see above) |
+| `config init` | Write a fully-populated default config file |
 | `doctor` | Read-only preflight checks (see [Troubleshooting]({{< relref "troubleshooting" >}})) |
