@@ -1,9 +1,3 @@
-// Package http parses HTTP/1.x messages from BPF observation streams,
-// pairs requests with responses on the same (pid, fd), and renders the
-// one-line summary the demo emits. The package is protocol-specific —
-// peers under internal/protocols/ (PostgreSQL, Redis, etc.) will mirror
-// this shape rather than share code with it, because each protocol's
-// framing and pairing semantics differ.
 package http
 
 import (
@@ -15,27 +9,6 @@ import (
 
 	"github.com/shinagawa-web/tinytap/internal/events"
 )
-
-// Parser reassembles HTTP/1.x messages from per-direction byte streams
-// observed in BPF events. One stream per (pid, fd, direction). A stream
-// can carry multiple messages in sequence (HTTP/1.1 keep-alive), so on
-// body completion the state resets to look for the next start line.
-//
-// Direction is taken from the syscall (Feed) or the SSL op (FeedSSL):
-//   - read / recvfrom / recvmsg / readv / SSLOpRead → incoming
-//   - write / sendto / sendmsg / writev / sendfile / SSLOpWrite → outgoing
-//
-// Discrimination between request and response is by the start line:
-//   - "GET / HTTP/1.1"      → request
-//   - "HTTP/1.0 200 OK"     → response
-//
-// Body length comes from Content-Length or Transfer-Encoding: chunked.
-// Messages with neither are treated as having a zero-byte body.
-//
-// Connection identity is normally (pid, fd); for TLS traffic whose fd never
-// resolved it's (pid, SSL*) instead via FeedSSL — see connKey for the
-// discriminator that keeps the two key spaces from colliding. Feed and
-// FeedSSL share the same state-machine core (the unexported feed method).
 
 type httpParseState int
 
@@ -56,15 +29,10 @@ const (
 	dirOutgoing
 )
 
-// connKey identifies a connection+direction for stream lookup. sslFallback
-// is an explicit discriminator, not inferred from fd/ssl being zero — so
-// the fd-keyed and SSL-keyed halves of the key space can never collide by
-// construction, regardless of what values fd or ssl happen to hold (same
-// split as Pairer's pairKey; see TestPairerSSLFallbackNeverCollidesWithSameNumericFd).
 type connKey struct {
 	pid         uint32
-	fd          int32  // meaningful only when sslFallback is false
-	ssl         uint64 // meaningful only when sslFallback is true
+	fd          int32
+	ssl         uint64
 	sslFallback bool
 	dir         direction
 }
@@ -78,23 +46,9 @@ type httpStatusLine struct {
 	status          int
 }
 
-// maxBufBytes caps how much a stream may buffer before we decide it is
-// not HTTP and stop processing it. Real HTTP/1.1 headers are bounded
-// (most clients reject > 8 KiB); going past 16 KiB without finding a
-// recognisable start line or header terminator means this fd carries
-// some other byte stream (a log pipe, a binary file, …).
-const maxBufBytes = 16 * 1024
-
-// maxBodyBytes caps how many body bytes a single message retains (#35). A
-// streamed upload or download can be megabytes; we keep a prefix so the detail
-// panel has something to show without letting RSS track the largest exchange.
-// Beyond it the body is marked truncated and further bytes are dropped.
+const maxBufBytes = 16 * 1024 // most HTTP/1.1 clients reject headers > 8 KiB
 const maxBodyBytes = 16 * 1024
 
-// pendingKey identifies a connection across both directions, fd-keyed or
-// SSL-keyed (same discriminator shape as connKey). Used to thread
-// request-side state (e.g., the request method) over to the response side
-// for framing decisions like "HEAD responses have no body".
 type pendingKey struct {
 	pid         uint32
 	fd          int32
@@ -102,111 +56,54 @@ type pendingKey struct {
 	sslFallback bool
 }
 
-// stream holds parser state for one direction of one connection (fd-keyed
-// or SSL-keyed, see connKey).
 type stream struct {
-	// fd/ssl/sslFallback are copied from connKey so advance() can derive
-	// this stream's pendingKey and outgoing Messages can carry the same
-	// identity. fd is meaningful only when sslFallback is false; ssl only
-	// when it's true (mirrors connKey/Message's own split).
-	fd             int32
-	ssl            uint64
-	sslFallback    bool
-	buf            []byte
-	state          httpParseState
-	abandoned      bool // marked true if buf grew past maxBufBytes without progress
-	isRequest      bool // set when the start line is parsed
-	chunked        bool // Transfer-Encoding: chunked detected for this message
-	chunkRemaining int  // wire bytes of current chunk still to drain
-	contentLength  int
-	bodyRemaining  int // wire bytes of body still to drain (not sample bytes)
-	req            httpRequestLine
-	res            httpStatusLine
-	// Body capture (#35). A message is emitted only once its body has fully
-	// drained, so while bodyRemaining > 0 the parsed-but-bodyless message waits
-	// in pendingMsg and body sample bytes accumulate in bodyBuf (capped at
-	// maxBodyBytes). bodyTruncated records that some body bytes were lost.
-	bodyBuf       []byte
-	bodyTruncated bool
-	pendingMsg    Message
-	pendingValid  bool
-	// wireBytesSinceMessageStart sums Event.Bytes for events whose payload
-	// has been appended to buf since the current message's start. At the
-	// header→body transition we subtract wireBytesConsumed to recover how
-	// many wire bytes of body have already been seen — necessary because
-	// payload samples are capped at events.MaxPayload, so buf length and
-	// wire length diverge for any syscall larger than that.
+	fd                         int32
+	ssl                        uint64
+	sslFallback                bool
+	buf                        []byte
+	state                      httpParseState
+	abandoned                  bool
+	isRequest                  bool
+	chunked                    bool
+	chunkRemaining             int
+	contentLength              int
+	bodyRemaining              int
+	req                        httpRequestLine
+	res                        httpStatusLine
+	bodyBuf                    []byte
+	bodyTruncated              bool
+	pendingMsg                 Message
+	pendingValid               bool
 	wireBytesSinceMessageStart int
-	// wireBytesConsumed is the wire-byte length of buf slices consumed by
-	// start-line + headers parsing for the current message. Buf positions
-	// map 1:1 to wire positions for the consumed prefix (a truncation gap
-	// inside that prefix would have prevented header parsing from finding
-	// the terminator), so this counter is exact for the common path.
-	wireBytesConsumed int
-	// messageStartTs is the BPF timestamp of the first event that
-	// contributed bytes to the current message. Used as the Message's
-	// timestamp, and as the basis for latency once a response is paired
-	// with its request.
-	messageStartTs uint64
+	wireBytesConsumed          int
+	messageStartTs             uint64
 }
 
-// Message is what the parser emits for one HTTP message. A message with a body
-// is emitted once that body has fully drained, so BodySample is populated (#35);
-// a body-less message (no Content-Length, or a no-body status/method) is emitted
-// as soon as its headers are recognised. TsNs is always the first-byte
-// timestamp regardless of emission timing, so latency stays header-to-header.
 type Message struct {
-	TsNs          uint64 // first-byte timestamp of this message (BPF ktime ns)
+	TsNs          uint64
 	Pid           uint32
-	Fd            int32 // file descriptor — pairs request with response on the same socket
+	Fd            int32
 	Comm          string
 	IsRequest     bool
 	Req           httpRequestLine
 	Res           httpStatusLine
-	ContentLength int      // body length as advertised by Content-Length (post-no-body override)
-	Headers       []Header // request/response headers in on-wire order
-	// BodySample is the captured body bytes, up to maxBodyBytes per message and
-	// bounded per syscall by the BPF MaxPayload sample cap (#35). BodyTruncated
-	// is set when any body bytes were lost — either a single syscall exceeded
-	// the sample cap (wire-only tail) or the body exceeded maxBodyBytes.
+	ContentLength int
+	Headers       []Header
 	BodySample    []byte
 	BodyTruncated bool
-	// SSL and SSLFallback support pairing TLS-sourced messages with no
-	// verified fd (some clients, e.g. curl, never call SSL_set_fd): Feed
-	// always produces fd-sourced messages (SSLFallback false); FeedSSL
-	// always produces SSL*-sourced ones (SSLFallback true, SSL set, Fd
-	// meaningless) — never both false/set and true/unset. See Pairer, which
-	// keys strictly on one or the other.
-	SSL         uint64
-	SSLFallback bool
+	SSL           uint64
+	SSLFallback   bool
 }
 
-// Header is a single HTTP header field as it appeared on the wire. Name and
-// Value are trimmed of surrounding whitespace but otherwise unmodified — no
-// canonicalisation or lowercasing, so the detail panel shows exactly what was
-// sent. Order is preserved (the slice mirrors wire order).
 type Header struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
 }
 
 type Parser struct {
-	streams map[connKey]*stream
-	// pendingMethods is a per-connection FIFO of request methods awaiting
-	// their response. Used so the response-side parser can frame the body
-	// correctly when the request was a HEAD (response has no body even
-	// when Content-Length is present, per RFC 7230 §3.3.3).
-	pendingMethods map[pendingKey][]string
-	// resolve maps a PID to a display name. When non-nil it is called
-	// instead of reading Comm from the BPF event, so callers can supply
-	// the full cmdline (e.g. "python3 manage.py runserver") in place of
-	// the kernel's 15-char truncated task name.
-	resolve func(pid uint32) string
-	// HeaderLossCount counts messages discarded because their start-line or
-	// header block exceeded the BPF sample cap mid-message — see feed()'s
-	// truncation-gap check. Each occurrence means one message's headers
-	// were unrecoverable and the stream was resynchronised at the next
-	// start line rather than emitting a spliced/fabricated header set.
+	streams         map[connKey]*stream
+	pendingMethods  map[pendingKey][]string
+	resolve         func(pid uint32) string
 	HeaderLossCount int
 }
 
@@ -217,19 +114,12 @@ func NewParser() *Parser {
 	}
 }
 
-// NewParserWithResolve returns a Parser that calls resolve(pid) to obtain the
-// process display name. Falls back to the BPF event's Comm field when resolve
-// returns "".
 func NewParserWithResolve(resolve func(pid uint32) string) *Parser {
 	p := NewParser()
 	p.resolve = resolve
 	return p
 }
 
-// Feed processes a plaintext syscall BPF event. Returns the HTTP events
-// whose headers completed during this call (zero, one, or more if a stream
-// contained multiple pipelined messages). Always produces fd-keyed
-// Messages (SSLFallback false) — see FeedSSL for the SSL*-keyed path.
 func (p *Parser) Feed(e *events.Event) []Message {
 	var dir direction
 	switch e.Syscall {
@@ -262,13 +152,6 @@ func (p *Parser) Feed(e *events.Event) []Message {
 	return p.feed(s, e.Pid, comm, e.TsNs, e.Payload[:n], int(e.Bytes))
 }
 
-// FeedSSL processes a plaintext event captured by the SSL_write/SSL_read
-// uprobe for a connection whose fd never resolved (e.g. curl, which never
-// calls SSL_set_fd). fd-resolvable TLS traffic instead goes through the
-// ordinary Feed after translation via tls.FromSSL, reusing the fd-keyed
-// stream — this method exists so the fd-less remainder isn't dropped
-// outright. Every Message it emits has SSLFallback true and SSL set to
-// e.SSL.
 func (p *Parser) FeedSSL(e *events.SSLEvent) []Message {
 	var dir direction
 	switch e.Op {
@@ -299,9 +182,6 @@ func (p *Parser) FeedSSL(e *events.SSLEvent) []Message {
 	return p.feed(s, e.Pid, comm, e.TsNs, e.Payload[:n], int(e.Len))
 }
 
-// resolveComm looks up pid's display name via p.resolve when set, falling
-// back to the BPF-supplied comm bytes (both events.Event.Comm and
-// events.SSLEvent.Comm are [16]byte) when resolve is unset or returns "".
 func (p *Parser) resolveComm(pid uint32, fallback [16]byte) string {
 	if p.resolve != nil {
 		if comm := p.resolve(pid); comm != "" {
@@ -311,13 +191,6 @@ func (p *Parser) resolveComm(pid uint32, fallback [16]byte) string {
 	return string(bytes.TrimRight(fallback[:], "\x00"))
 }
 
-// feed is the shared state-machine core for Feed and FeedSSL: given a
-// stream already looked up (or created) under the caller's identity, debit
-// wireBytes/payload against any in-flight chunk or body, then hand
-// whatever's left to advance() to parse start-line/headers. Once a stream
-// is recognised as non-HTTP (abandoned), further bytes are dropped instead
-// of recreating state on every call — the marker entry stays in the map
-// until the connection closes.
 func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload []byte, wireBytes int) []Message {
 	if s.abandoned {
 		return nil
@@ -325,8 +198,6 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 
 	var out []Message
 
-	// If the stream is mid-chunk, debit wire bytes from chunkRemaining first
-	// (same accounting as the body-debit block below).
 	if s.state == stateNeedChunkData {
 		debit := wireBytes
 		if debit > s.chunkRemaining {
@@ -355,19 +226,12 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 		s.state = stateNeedChunkCRLF
 	}
 
-	// If the stream is mid-body, debit wire bytes from bodyRemaining first.
-	// We don't append the body to buf — body content is opaque to this
-	// parser, and accumulating it would defeat the maxBufBytes cap on long
-	// keep-alive streams.
 	if s.state == stateNeedBody {
 		debit := wireBytes
 		if debit > s.bodyRemaining {
 			debit = s.bodyRemaining
 		}
 		s.bodyRemaining -= debit
-		// The first `debit` wire bytes are body; the sample carries at most
-		// len(payload) of them — if debit ran past that, the syscall exceeded
-		// MaxPayload and the tail is wire-only.
 		bodyInSample := debit
 		if bodyInSample > len(payload) {
 			bodyInSample = len(payload)
@@ -385,14 +249,9 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 		if s.bodyRemaining > 0 {
 			return out
 		}
-		// Body fully drained — emit the pending message with its body now.
 		if s.pendingValid {
 			out = append(out, s.takeBody(s.pendingMsg))
 		}
-		// Any leftover wire/sample bytes are the next message. Reset
-		// messageStartTs to 0; either the carry-over append below (next-message
-		// bytes in this event) will reseed it via the "if messageStartTs == 0"
-		// check, or the next feed call will.
 		s.state = stateNeedStartLine
 		s.wireBytesSinceMessageStart = 0
 		s.wireBytesConsumed = 0
@@ -403,11 +262,6 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 		return out
 	}
 
-	// First event of a new message — capture its timestamp so Message.TsNs
-	// reflects when bytes first hit the wire (not when headers finished
-	// arriving). messageStartTs is reset alongside wireBytesSinceMessageStart
-	// whenever a message completes, so a zero value identifies a fresh stream
-	// or a fresh post-body state.
 	if s.messageStartTs == 0 {
 		s.messageStartTs = tsNs
 	}
@@ -417,12 +271,8 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 
 	out = append(out, p.advance(s, pid, comm, tsNs)...)
 
-	// wireBytesSinceMessageStart-wireBytesConsumed > len(s.buf) means a
-	// truncation gap exists in the buffered prefix (#224): discard and
-	// resynchronise rather than splice. See
-	// TestHeaderBlockExceedingSampleCapSplicesNextRequest and
-	// TestHeaderTruncationResynchronisesResponseStream.
 	if s.state == stateNeedStartLine || s.state == stateNeedHeaders {
+		// gap in buf: discard and resynchronise rather than splice (#224)
 		if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
 			p.HeaderLossCount++
 			s.buf = nil
@@ -433,8 +283,6 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 		}
 	}
 
-	// Abandon streams that grow past maxBufBytes without finding HTTP
-	// structure. See TestMalformedOversizedHeaderTripsAbandoned.
 	if len(s.buf) > maxBufBytes {
 		s.abandoned = true
 		s.buf = nil
@@ -442,28 +290,18 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 	return out
 }
 
-// Close evicts both directions for the given (pid, fd). Pending data
-// (an incomplete message, or queued request methods awaiting a response
-// that will never arrive) is dropped silently. fd-keyed counterpart to
-// CloseSSL.
 func (p *Parser) Close(pid uint32, fd int32) {
 	delete(p.streams, connKey{pid: pid, fd: fd, dir: dirIncoming})
 	delete(p.streams, connKey{pid: pid, fd: fd, dir: dirOutgoing})
 	delete(p.pendingMethods, pendingKey{pid: pid, fd: fd})
 }
 
-// CloseSSL evicts both directions for the given (pid, SSL*) — the SSL*-keyed
-// counterpart to Close, for connections fed via FeedSSL. Called when
-// SSL_free (#173) tears down a connection that was never fd-resolved.
-// Pending data is dropped silently, same as Close.
 func (p *Parser) CloseSSL(pid uint32, ssl uint64) {
 	delete(p.streams, connKey{pid: pid, ssl: ssl, sslFallback: true, dir: dirIncoming})
 	delete(p.streams, connKey{pid: pid, ssl: ssl, sslFallback: true, dir: dirOutgoing})
 	delete(p.pendingMethods, pendingKey{pid: pid, ssl: ssl, sslFallback: true})
 }
 
-// appendBody accumulates body sample bytes for the in-flight message, capped at
-// maxBodyBytes. Hitting the cap (or appending past it) marks the body truncated.
 func (s *stream) appendBody(p []byte) {
 	if len(p) == 0 {
 		return
@@ -480,8 +318,6 @@ func (s *stream) appendBody(p []byte) {
 	s.bodyBuf = append(s.bodyBuf, p...)
 }
 
-// takeBody attaches the accumulated body to msg and resets the stream's body
-// capture state, returning the completed message.
 func (s *stream) takeBody(msg Message) Message {
 	msg.BodySample = s.bodyBuf
 	msg.BodyTruncated = s.bodyTruncated
@@ -492,11 +328,6 @@ func (s *stream) takeBody(msg Message) Message {
 	return msg
 }
 
-// advance drives the state machine until the buffer is drained or more
-// bytes are needed. Each completed header set produces one Message.
-// currentEventTs is the BPF ktime of the event Feed is currently
-// processing — used to seed the next message's messageStartTs when a
-// pipelined message's bytes carry over from the same event.
 func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint64) []Message {
 	var out []Message
 	for {
@@ -513,7 +344,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			if strings.HasPrefix(line, "HTTP/") {
 				parts := strings.SplitN(line, " ", 3)
 				if len(parts) < 2 {
-					return out // malformed; give up on this stream until next message
+					return out
 				}
 				status, err := strconv.Atoi(parts[1])
 				if err != nil {
@@ -537,9 +368,6 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			s.state = stateNeedHeaders
 
 		case stateNeedHeaders:
-			// The start-line already consumed the boundary's first \r\n, so
-			// the header section now ends at either a bare \r\n (zero
-			// headers, e.g. "100 Continue") or <headers>\r\n\r\n.
 			var headerBlock string
 			var consume int
 			if len(s.buf) >= 2 && s.buf[0] == '\r' && s.buf[1] == '\n' {
@@ -567,9 +395,6 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				value := strings.TrimSpace(h[colon+1:])
 				headers = append(headers, Header{Name: name, Value: value})
 				if strings.EqualFold(name, "Content-Length") {
-					// Ignore negative or unparseable values; a hostile or buggy
-					// origin sending Content-Length: -1 would otherwise set
-					// bodyRemaining < 0 and crash stateNeedBody on s.buf[consume:].
 					if n, err := strconv.Atoi(value); err == nil && n >= 0 {
 						s.contentLength = n
 					}
@@ -584,11 +409,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				}
 			}
 
-			// Determine whether the response actually has a body (RFC 7230
-			// §3.3.3), using the per-(pid, fd) queued request method so a
-			// HEAD's response is recognised as bodyless regardless of
-			// Content-Length. 1xx responses peek the queue instead of
-			// popping it — see TestInformationalResponseDoesNotConsumeMethodQueue.
+			// RFC 7230 §3.3.3
 			key := pendingKey{pid: pid, fd: s.fd, ssl: s.ssl, sslFallback: s.sslFallback}
 			if s.isRequest {
 				p.pendingMethods[key] = append(p.pendingMethods[key], s.req.method)
@@ -601,7 +422,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				}
 				if hasNoBody(s.res.status, method) {
 					s.contentLength = 0
-					chunked = false // no-body status overrides Transfer-Encoding
+					chunked = false
 				}
 			}
 			s.chunked = chunked
@@ -621,29 +442,17 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			}
 
 			if s.chunked {
-				// Chunked body: park the header-complete message and start
-				// consuming chunks. wireBytesConsumed already reflects the
-				// start-line + headers; stateNeedChunkSize uses the same
-				// wireBytesSinceMessageStart - wireBytesConsumed formula to
-				// know how many chunk-data wire bytes have already arrived.
 				s.pendingMsg = msg
 				s.pendingValid = true
 				s.state = stateNeedChunkSize
-				// Fall through to stateNeedChunkSize in the same loop iteration.
 				continue
 			}
 
-			// Recover how much of the body has already arrived in wire bytes:
-			// buf positions consumed by start-line + headers map 1:1 to wire
-			// positions, so the leftover wire bytes are body already delivered.
 			bodyAlready := s.wireBytesSinceMessageStart - s.wireBytesConsumed
 			if bodyAlready < 0 {
 				bodyAlready = 0
 			}
 
-			// Capture the body bytes already sitting in buf. The message is
-			// emitted only once its body has fully drained; until then it
-			// waits in pendingMsg.
 			bodyInBuf := s.contentLength
 			if bodyInBuf > len(s.buf) {
 				bodyInBuf = len(s.buf)
@@ -651,10 +460,6 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			s.appendBody(s.buf[:bodyInBuf])
 
 			if bodyAlready >= s.contentLength {
-				// Body fully covered by events already in buf. Any extra
-				// sample bytes belong to the next pipelined message. If the
-				// samples didn't carry the whole body (a syscall > MaxPayload),
-				// the wire-only tail is lost — mark it truncated.
 				if bodyInBuf < s.contentLength {
 					s.bodyTruncated = true
 				}
@@ -664,21 +469,12 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				s.wireBytesSinceMessageStart = bodyAlready - s.contentLength
 				s.wireBytesConsumed = 0
 				out = append(out, s.takeBody(msg))
-				// Carry-over buf bytes belong to the same syscall Feed is
-				// processing, so they share its TsNs; an empty buf resets to
-				// 0 so Feed reseeds it on the next event. See
-				// TestPipelinedMessagesInOneSyscallShareTsNs and
-				// TestNextEventAfterBodyCompletesGetsItsOwnTsNs.
 				if len(s.buf) > 0 {
 					s.messageStartTs = currentEventTs
 				} else {
 					s.messageStartTs = 0
 				}
 			} else {
-				// Body still draining — subsequent events are debited via
-				// Feed's wire-byte accounting and appended to the pending
-				// message. If the buf portion already dropped wire bytes (a
-				// syscall > MaxPayload), mark it truncated now.
 				if bodyAlready > bodyInBuf {
 					s.bodyTruncated = true
 				}
@@ -693,14 +489,9 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			}
 
 		case stateNeedBody:
-			// Body draining is handled in Feed via wire-byte accounting; the
-			// state machine only re-enters this branch defensively when an
-			// internal contract is violated.
 			return out
 
-		case stateNeedChunkSize:
-			// Parse "HEX[;ext]\r\n". Strip chunk extensions (RFC 7230 §4.1.1);
-			// they carry no information relevant to framing.
+		case stateNeedChunkSize: // "HEX[;ext]\r\n" (RFC 7230 §4.1.1)
 			idx := bytes.Index(s.buf, []byte("\r\n"))
 			if idx < 0 {
 				return out
@@ -723,23 +514,18 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				s.state = stateNeedTrailer
 				continue
 			}
-			if size64 > math.MaxInt32 {
-				// Chunk sizes above MaxInt32 are implausible and would overflow
-				// int on 32-bit platforms; abandon to avoid a potential panic.
+			if size64 > math.MaxInt32 { // would overflow int on 32-bit platforms
 				s.abandoned = true
 				s.buf = nil
 				return out
 			}
 			chunkSize := int(size64)
 
-			// Wire bytes of this chunk's data already arrived = bytes seen
-			// since message start minus bytes consumed by framing so far.
 			chunkDataArrived := s.wireBytesSinceMessageStart - s.wireBytesConsumed
 			if chunkDataArrived < 0 {
 				chunkDataArrived = 0
 			}
 
-			// Capture the sample bytes available for this chunk from buf.
 			bodyInBuf := chunkSize
 			if bodyInBuf > len(s.buf) {
 				bodyInBuf = len(s.buf)
@@ -747,8 +533,6 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			s.appendBody(s.buf[:bodyInBuf])
 
 			if chunkDataArrived >= chunkSize {
-				// All wire bytes of this chunk have arrived. The sample may
-				// be shorter than the chunk if any syscall exceeded MaxPayload.
 				if bodyInBuf < chunkSize {
 					s.bodyTruncated = true
 				}
@@ -756,8 +540,6 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				s.wireBytesConsumed += chunkSize
 				s.state = stateNeedChunkCRLF
 			} else {
-				// Chunk still arriving across future events; Feed will debit
-				// the remainder via stateNeedChunkData wire-byte accounting.
 				if chunkDataArrived > bodyInBuf {
 					s.bodyTruncated = true
 				}
@@ -769,9 +551,6 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			}
 
 		case stateNeedChunkCRLF:
-			// If wire-byte accounting shows >= 2 more bytes arrived than
-			// consumed, trust it (same model as stateNeedBody, #116). See
-			// TestChunkedCRLFDroppedByMaxPayloadTrustsWireBytes.
 			if len(s.buf) < 2 {
 				if s.wireBytesSinceMessageStart-s.wireBytesConsumed >= 2 {
 					s.wireBytesConsumed += 2
@@ -790,10 +569,7 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			s.buf = s.buf[2:]
 			s.state = stateNeedChunkSize
 
-		case stateNeedTrailer:
-			// Trailer section: zero or more header fields followed by a blank
-			// line. We ignore trailer field values (RFC 7230 §4.1.2 limits
-			// what can appear there anyway).
+		case stateNeedTrailer: // RFC 7230 §4.1.2
 			var trailerConsumed int
 			if len(s.buf) >= 2 && s.buf[0] == '\r' && s.buf[1] == '\n' {
 				trailerConsumed = 2
@@ -801,11 +577,6 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			} else {
 				tidx := bytes.Index(s.buf, []byte("\r\n\r\n"))
 				if tidx < 0 {
-					// Terminator not in sample: unlike stateNeedChunkCRLF,
-					// wire-byte accounting alone can't prove the terminator
-					// (vs. a still-streaming trailer field) was dropped, so
-					// abandon rather than risk a misframed emission. See
-					// TestChunkedTrailerTerminatorDroppedByMaxPayloadAbandons.
 					if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
 						s.abandoned = true
 						s.buf = nil
@@ -834,10 +605,6 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 	}
 }
 
-// popMethod pulls the next pending request method for the given (pid, fd).
-// Returns "" if no request has been seen — which happens when the parser
-// started mid-stream (responses observed without their request) or when
-// the request was on a connection we did not capture from.
 func (p *Parser) popMethod(key pendingKey) string {
 	q := p.pendingMethods[key]
 	if len(q) == 0 {
@@ -852,9 +619,6 @@ func (p *Parser) popMethod(key pendingKey) string {
 	return m
 }
 
-// peekMethod returns the next pending request method without dequeuing.
-// Used for 1xx informational responses, where the same request will be
-// followed by a final response (>=200) that still needs the method.
 func (p *Parser) peekMethod(key pendingKey) string {
 	q := p.pendingMethods[key]
 	if len(q) == 0 {
@@ -863,11 +627,7 @@ func (p *Parser) peekMethod(key pendingKey) string {
 	return q[0]
 }
 
-// hasNoBody reports whether a response with the given status, sent in
-// reply to the given method, is required by HTTP/1.1 framing to have an
-// empty body regardless of any Content-Length header. Method may be ""
-// when the request side was missed; in that case only the status is
-// checked. RFC 7230 §3.3.3.
+// RFC 7230 §3.3.3
 func hasNoBody(status int, method string) bool {
 	if method == "HEAD" {
 		return true
