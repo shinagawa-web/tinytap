@@ -13,23 +13,23 @@ new row here.
 
 ## Compatibility table
 
-**Group** is what determines visibility — see
+Which syscall a server uses determines its visibility group — see
 [Cross-server summary](#cross-server-summary) below for what each one means
 in practice.
 
-| Server | Syscall | Group | Notes |
-|--------|---------|-------|-------|
-| Python `http.server` | `sendto` | Plain `sendto`/`write` | Headers and body go out as separate `sendto` calls, no chunking |
-| Go `net/http` | `write` / `sendfile` | `sendfile` | `write` for small bodies, `sendfile` above ~512 B |
-| Node.js `http.createServer` | `writev` | `writev` | Chunked encoding when `Content-Length` is unknown |
-| nginx (static, `sendfile on`) | `writev` + `sendfile` | `sendfile` | Default nginx config |
-| nginx (static, `sendfile off`) | `writev` | `writev` | Body lives in `iovec[1+]` |
-| nginx (reverse proxy) | `writev` | `writev` | `proxy_pass` never touches `sendfile` |
-| Caddy | `write` / `sendfile` | `sendfile` | Same syscall shape as Go `net/http` |
-| Bun.serve | `sendto` | Plain `sendto`/`write` | No `sendfile` despite `Bun.file()` |
-| Uvicorn (ASGI) | `sendto` | Plain `sendto`/`write` | Same shape as Python `http.server` |
-| Gunicorn (WSGI) | `sendto` | Plain `sendto`/`write` | Same shape as Python `http.server`/Uvicorn |
-| Axum (Rust / hyper) | `writev` | `writev` | `Content-Length` always known, no chunking |
+| Server | Syscall | Notes |
+|--------|---------|-------|
+| Python `http.server` | `sendto` | Headers and body go out as separate `sendto` calls, no chunking |
+| Go `net/http` | `write` / `sendfile` | `write` for small bodies, `sendfile` above ~512 B |
+| Node.js `http.createServer` | `writev` | Chunked encoding when `Content-Length` is unknown |
+| nginx (static, `sendfile on`) | `writev` + `sendfile` | Default nginx config |
+| nginx (static, `sendfile off`) | `writev` | Body lives in `iovec[1+]` |
+| nginx (reverse proxy) | `writev` | `proxy_pass` never touches `sendfile` |
+| Caddy | `write` / `sendfile` | Same syscall shape as Go `net/http` |
+| Bun.serve | `sendto` | No `sendfile` despite `Bun.file()` |
+| Uvicorn (ASGI) | `sendto` | Same shape as Python `http.server` |
+| Gunicorn (WSGI) | `sendto` | Same shape as Python `http.server`/Uvicorn |
+| Axum (Rust / hyper) | `writev` | `Content-Length` always known, no chunking |
 
 ## Cross-server summary
 
