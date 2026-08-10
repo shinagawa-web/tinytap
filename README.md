@@ -139,6 +139,8 @@ Full documentation is available at
 [shinagawa-web.github.io/tinytap](https://shinagawa-web.github.io/tinytap/):
 
 - [Quick Start](https://shinagawa-web.github.io/tinytap/docs/quick-start/)
+- [Use Cases](https://shinagawa-web.github.io/tinytap/docs/use-cases/)
+- [Usage](https://shinagawa-web.github.io/tinytap/docs/usage/)
 - [Where tinytap Runs](https://shinagawa-web.github.io/tinytap/docs/where-it-runs/)
 - [Running Without Full Root](https://shinagawa-web.github.io/tinytap/docs/running-without-root/)
 - [How It Works](https://shinagawa-web.github.io/tinytap/docs/how-it-works/)

@@ -1,6 +1,6 @@
 ---
 title: Terminology
-weight: 11
+weight: 13
 ---
 
 # Terminology

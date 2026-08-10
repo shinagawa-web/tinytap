@@ -1,6 +1,6 @@
 ---
 title: Where tinytap Runs
-weight: 2
+weight: 4
 ---
 
 # Where tinytap Runs

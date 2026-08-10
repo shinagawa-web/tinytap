@@ -1,6 +1,6 @@
 ---
 title: Installing & Verifying Releases
-weight: 8
+weight: 10
 ---
 
 # Installing & Verifying Releases

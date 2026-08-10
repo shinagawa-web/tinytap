@@ -1,6 +1,6 @@
 ---
 title: How It Works
-weight: 4
+weight: 6
 ---
 
 # How It Works

@@ -1,6 +1,6 @@
 ---
 title: Running Without Full Root
-weight: 3
+weight: 5
 ---
 
 # Running Without Full Root
