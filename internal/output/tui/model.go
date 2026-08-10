@@ -13,73 +13,40 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
 )
 
-// maxRows bounds the live ring buffer. Beyond this, the oldest row is
-// dropped (FIFO) so a long-running capture can't grow memory without limit.
 const maxRows = 10000
 
-// Fixed column widths (see #32). PATH is flexible and takes whatever space
-// is left after the fixed columns and their single-space separators.
 const (
-	colTime    = 12 // "19:35:24.123" — millisecond precision, no date
+	colTime    = 12
 	colPID     = 7  // pid_max = 4194304 is 7 digits
 	colComm    = 15 // TASK_COMM_LEN = 16, minus the trailing null
-	colMethod  = 7  // longest standard method is OPTIONS
+	colMethod  = 7
 	colStatus  = 6
 	colBytes   = 8
-	colLatency = 8 // "999.9ms" (the widest value) is 7; the 8th column is breathing room
+	colLatency = 8
 )
 
-// fixedWidth is the sum of the seven fixed columns; with the seven separator
-// spaces between the eight columns, the remainder is PATH's width.
 const fixedWidth = colTime + colPID + colComm + colMethod + colStatus + colBytes + colLatency
-const separators = 7 // single spaces between the 8 columns
+const separators = 7
 
-// markerCol is the one-column left gutter carrying the ▸ selection marker
-// (blank on unselected rows). It eats into PATH's flexible width so each line
-// still fills exactly m.width and nothing wraps.
 const markerCol = 1
 
-// Gutter contents. ▸ is a single left-pointing arrow (not box-drawing),
-// matching the borderless pgincident style.
 const (
 	markerSelected = "▸"
 	markerBlank    = " "
 )
 
-// chromeLines is the non-row height of the table view: top divider, column
-// header, header divider, the bottom line, and the footer help line. The
-// bottom line is the closing divider when the detail panel is closed, or the
-// detail panel's own header divider when it is open — one line either way, so
-// chromeLines holds whether the panel is open or not.
 const chromeLines = 5
 
-// maxDiagLines bounds the diagnostics panel's ring buffer, mirroring maxRows —
-// a long session shouldn't grow this without limit either.
 const maxDiagLines = 1000
 
-// diagChromeLines is the non-content height of the diagnostics panel: its
-// header divider and the footer help line.
 const diagChromeLines = 2
 
-// detailMaxFraction caps the detail panel's share of the row area when open.
-// The panel grows to fit its content (#34) rather than claiming a fixed slice,
-// but never past this cap — so the table always keeps at least the remaining
-// 1-detailMaxFraction of the rows to scroll and navigate, and visibleRows()
-// can never reach 0. Originally a fixed 40% split (#40); content-aware sizing
-// replaced it so short header sets don't shrink the table for no reason and
-// long ones get as much room as the cap allows before truncating.
 const detailMaxFraction = 0.6
 
-// sessionBodyBudget bounds the total body bytes retained across all rows (#35).
-// When a new row pushes the total past it, body samples are dropped from the
-// oldest rows first — their summary line and headers stay; only the body is
-// lost — so a long-running session can't grow unbounded.
 const sessionBodyBudget = 8 * 1024 * 1024
 
-// row is a single rendered exchange. Values are kept raw (not pre-padded) so
-// View can re-truncate PATH/COMM when the terminal is resized.
 type row struct {
-	time    string // "15:04:05.000", stamped by the sink's time anchor
+	time    string
 	pid     uint32
 	comm    string
 	method  string
@@ -88,25 +55,17 @@ type row struct {
 	bytes   int
 	latency time.Duration
 
-	// Detail-panel fields: the full start lines, header sets, and body samples,
-	// surfaced only when the panel is open (#34, #35). Headers keep their
-	// on-wire order. A body slice is empty when the message carried no body or
-	// its sample was dropped to stay within sessionBodyBudget.
 	reqVersion       string
 	resVersion       string
 	reason           string
 	reqHeaders       []http.Header
 	resHeaders       []http.Header
-	reqBytes         int // request Content-Length (body total, for the kept/total label)
+	reqBytes         int
 	reqBody          []byte
 	resBody          []byte
 	reqBodyTruncated bool
 	resBodyTruncated bool
 
-	// sslFallback mirrors PairedEvent.SSLFallback (#171): true when this row
-	// was matched on (pid, SSL*) instead of a verified fd — e.g. curl, which
-	// never calls SSL_set_fd (#167). rowLine paints the PID cell distinctly
-	// so this never reads as an ordinary fd-verified pairing.
 	sslFallback bool
 }
 
@@ -135,50 +94,34 @@ func newRow(pe http.PairedEvent, when time.Time) row {
 	}
 }
 
-// bodyBytes is the row's contribution to the session body budget.
 func (r row) bodyBytes() int { return len(r.reqBody) + len(r.resBody) }
 
-// rowMsg delivers a new exchange from the capture goroutine into the model
-// via Program.Send.
 type rowMsg row
 
-// diagMsg delivers one captured diagnostic log line — e.g. why the TLS
-// attach path skipped a process — from the process-wide log buffer into the
-// model via Program.Send (#216). See Sink.SendDiag.
 type diagMsg string
 
 type model struct {
 	rows         []row
 	width        int
 	height       int
-	selected     int    // display index (filtered or raw) of the ▸ row; 0 when empty
-	top          int    // display index of the first visible row (the scroll anchor)
-	follow       bool   // when true, selection tracks the newest row as rows arrive
-	detailOpen   bool   // when true, the bottom detail panel is shown for the selection
-	panelFocus   bool   // when true (and detailOpen), keys scroll the panel instead of the table
-	detailOffset int    // first visible line of the panel body when its content overflows
-	hexMode      bool   // when true, body blocks render as a hex dump instead of decoded text
-	bodyBytes    int    // total retained body bytes across rows, bounded by sessionBodyBudget
-	filterMode   bool   // when true, keystrokes feed the filter input instead of navigating
-	filterTerm   string // live filter text; empty means all rows are visible
-	filtered     []int  // indices into rows for matching rows; nil when filterTerm is empty
+	selected     int
+	top          int
+	follow       bool
+	detailOpen   bool
+	panelFocus   bool
+	detailOffset int
+	hexMode      bool
+	bodyBytes    int
+	filterMode   bool
+	filterTerm   string
+	filtered     []int
 
-	// diagLines holds captured log lines that would otherwise be discarded
-	// during the TUI session (#216) — e.g. why the TLS attach path skipped a
-	// process. diagOpen shows them full-screen; diagOffset is the scroll
-	// position (0 = oldest). While the panel is open, it re-pins to the
-	// newest line as new lines arrive, like tailing a log; opening the panel
-	// always re-pins too, so a session's worth of lines that arrived while
-	// it was closed never leaves the scroll position stranded on stale
-	// content.
 	diagLines  []string
 	diagOpen   bool
 	diagOffset int
 }
 
 func newModel(width, height int) model {
-	// Start in follow mode so the table tracks the live tail until the user
-	// scrolls up to inspect.
 	return model{width: width, height: height, follow: true}
 }
 
@@ -230,9 +173,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "d":
-				// Open the diagnostics panel (#216) — mutually exclusive with the
-				// detail panel to keep the two full-height views from fighting
-				// over the same screen space.
 				if m.detailOpen {
 					m.detailOpen = false
 					m.panelFocus = false
@@ -241,29 +181,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diagOpen = true
 				m.diagOffset = m.maxDiagOffset()
 			case "tab":
-				// Toggle focus between the table and the open detail panel. A no-op
-				// when the panel is closed (there is nothing to drill into).
 				if m.detailOpen {
 					m.panelFocus = !m.panelFocus
 					if m.panelFocus {
-						// You came to read the current row — stop the tail from
-						// moving the selection out from under you.
 						m.follow = false
 					} else {
 						m.rearmFollowAtBottom()
 					}
 				}
 			case "enter":
-				// Toggle the detail panel for the current selection. Navigation keys
-				// keep working while it is open.
 				m.detailOpen = !m.detailOpen
 				if !m.detailOpen {
 					m.panelFocus = false
 					m.detailOffset = 0
 				}
 			case "esc":
-				// Step out one level: panel focus → table focus (panel stays open),
-				// table focus → close panel, close panel → clear filter.
 				switch {
 				case m.detailOpen && m.panelFocus:
 					m.panelFocus = false
@@ -277,25 +209,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "up", "k":
 				if m.panelFocus {
-					m.detailOffset-- // clamped below
+					m.detailOffset--
 					break
 				}
-				// Moving off the newest row means the user wants to inspect, so
-				// stop letting new rows steal the selection.
 				if m.selected > 0 {
 					m.selected--
 				}
 				m.follow = false
-				m.detailOffset = 0 // the selection changed, so the panel content did too
+				m.detailOffset = 0
 			case "down", "j":
 				if m.panelFocus {
-					m.detailOffset++ // clamped below
+					m.detailOffset++
 					break
 				}
 				if m.selected < m.displayCount()-1 {
 					m.selected++
 				}
-				// Re-arm follow once the selection is back on the newest row.
 				if m.selected == m.displayCount()-1 {
 					m.follow = true
 				}
@@ -319,9 +248,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.follow = true
 				m.detailOffset = 0
 			case "b", "h":
-				// Global toggle: flip every body block between decoded text and a
-				// hex dump at once (#35). Sticky as the selection moves. The line
-				// count can change with the mode, so re-clamp the panel scroll below.
 				m.hexMode = !m.hexMode
 			case "/":
 				m.filterMode = true
@@ -329,21 +255,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case rowMsg:
 		nr := row(msg)
-		// Append until full, then shift in place so the backing array stays
-		// bounded at maxRows instead of growing on every drop.
 		if len(m.rows) < maxRows {
 			m.rows = append(m.rows, nr)
 		} else {
-			// Check before the drop whether the about-to-be-removed row is
-			// currently visible — needed to adjust the display-index selection.
 			droppedVisible := m.filterTerm == "" || rowMatchesFilter(m.rows[0], strings.ToLower(m.filterTerm))
-			m.bodyBytes -= m.rows[0].bodyBytes() // the row about to fall off
+			m.bodyBytes -= m.rows[0].bodyBytes()
 			copy(m.rows, m.rows[1:])
 			m.rows[maxRows-1] = nr
-			// The drop slid every raw index down by one. If the removed row was
-			// visible and we are inspecting (not following), the display positions
-			// also shift, so decrement the display-index selection to stay on the
-			// same logical row.
 			if !m.follow && m.selected > 0 && droppedVisible {
 				m.selected--
 			}
@@ -352,8 +270,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bodyBytes += nr.bodyBytes()
 		m.evictBodiesOverBudget()
 		if m.follow {
-			// Following re-pins the selection to the new tail, so the panel is
-			// showing a different exchange — reset its scroll.
 			if dc := m.displayCount(); dc > 0 {
 				m.selected = dc - 1
 			}
@@ -367,31 +283,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			copy(m.diagLines, m.diagLines[1:])
 			m.diagLines[maxDiagLines-1] = line
 		}
-		// Stay pinned to the newest line, like tailing a log — but only while
-		// the panel is open; a closed panel has no scroll position to preserve.
 		if m.diagOpen {
 			m.diagOffset = m.maxDiagOffset()
 		}
 	}
-	// Reconcile the scroll anchor after any selection / row-count / size
-	// change so the selected row stays inside the visible window.
 	m.clampScroll()
 	m.clampDetailOffset()
 	m.clampDiagOffset()
 	return m, nil
 }
 
-// rearmFollowAtBottom resumes live tracking when the selection already sits on
-// the newest row — used when focus returns to the table, so stepping back out of
-// the panel at the tail picks the live stream back up.
 func (m *model) rearmFollowAtBottom() {
 	if dc := m.displayCount(); dc > 0 && m.selected == dc-1 {
 		m.follow = true
 	}
 }
 
-// detailLineCount is the full, unclipped height of the selected row's detail
-// content (0 when there are no rows).
 func (m model) detailLineCount() int {
 	if m.displayCount() == 0 {
 		return 0
@@ -399,10 +306,6 @@ func (m model) detailLineCount() int {
 	return len(detailContent(m.displayRow(m.selected), m.hexMode))
 }
 
-// maxDetailOffset is the furthest the panel can scroll. At the bottom the up
-// indicator still occupies one body line, so only the last (bodyLines-1) content
-// lines are shown — hence the +1 over a naive height subtraction. 0 when the
-// content fits.
 func (m model) maxDetailOffset() int {
 	L, n := m.detailLineCount(), m.bodyLines()
 	if L <= n {
@@ -411,8 +314,6 @@ func (m model) maxDetailOffset() int {
 	return L - (n - 1)
 }
 
-// clampDetailOffset keeps the panel scroll offset within [0, maxDetailOffset]
-// after any key / selection / resize change.
 func (m *model) clampDetailOffset() {
 	if max := m.maxDetailOffset(); m.detailOffset > max {
 		m.detailOffset = max
@@ -422,9 +323,6 @@ func (m *model) clampDetailOffset() {
 	}
 }
 
-// maxDiagOffset is the furthest the diagnostics panel can scroll: enough that
-// the last diagContentLines() lines are visible at the bottom. 0 when the
-// content fits without scrolling.
 func (m model) maxDiagOffset() int {
 	n := m.diagContentLines()
 	if len(m.diagLines) <= n {
@@ -433,8 +331,6 @@ func (m model) maxDiagOffset() int {
 	return len(m.diagLines) - n
 }
 
-// clampDiagOffset keeps the diagnostics panel's scroll offset within
-// [0, maxDiagOffset] after any key / resize / new-line change.
 func (m *model) clampDiagOffset() {
 	if max := m.maxDiagOffset(); m.diagOffset > max {
 		m.diagOffset = max
@@ -444,8 +340,6 @@ func (m *model) clampDiagOffset() {
 	}
 }
 
-// diagContentLines is how many diagnostic lines fit at the current height,
-// after the panel's chrome (header divider, footer).
 func (m model) diagContentLines() int {
 	n := m.height - diagChromeLines
 	if n < 0 {
@@ -454,9 +348,6 @@ func (m model) diagContentLines() int {
 	return n
 }
 
-// visibleRows is how many table rows fit at the current height, after the
-// chrome (top divider, header, header divider, bottom line, footer) and the
-// detail panel's body, if open.
 func (m model) visibleRows() int {
 	v := m.height - chromeLines - m.bodyLines()
 	if v < 0 {
@@ -465,13 +356,6 @@ func (m model) visibleRows() int {
 	return v
 }
 
-// bodyLines is the height of the detail panel's body (the lines below its
-// header divider), 0 when the panel is closed. The panel grows to fit the
-// selected row's detail content but is capped at detailMaxFraction of the row
-// area *and* at avail-1, so the table always keeps at least one row and
-// visibleRows() can never reach 0 — even if a runtime resize shrinks the
-// terminal below the startup floor (#57). With no rows yet it reserves a
-// single blank line.
 func (m model) bodyLines() int {
 	if !m.detailOpen {
 		return 0
@@ -480,7 +364,6 @@ func (m model) bodyLines() int {
 	if avail <= 0 {
 		return 0
 	}
-	// detailMaxFraction < 1 guarantees max < avail, so at least one table row always remains.
 	max := int(float64(avail) * detailMaxFraction)
 	want := 1
 	if len(m.rows) > 0 {
@@ -492,13 +375,7 @@ func (m model) bodyLines() int {
 	return want
 }
 
-// clampScroll moves the scroll anchor only when the selection has left the
-// visible window — scrolling up when it rises above `top`, down when it falls
-// below the last visible row — and otherwise leaves `top` put. This is what
-// keeps the ▸ row stationary on screen while the user steps through rows,
-// rather than pinning it to an edge. `top` is then clamped to a valid range.
 func (m *model) clampScroll() {
-	// Clamp selected to a valid display index first.
 	if dc := m.displayCount(); dc > 0 && m.selected >= dc {
 		m.selected = dc - 1
 	} else if dc == 0 {
@@ -534,18 +411,12 @@ func (m model) View() string {
 		return m.diagView()
 	}
 
-	// PATH absorbs the slack left after the marker gutter, the fixed columns,
-	// and their separators.
 	pathWidth := m.width - markerCol - fixedWidth - separators
 	if pathWidth < 1 {
 		pathWidth = 1
 	}
 	divider := strings.Repeat("─", m.width)
 
-	// The scroll anchor (m.top) is maintained in Update; here we just render
-	// the window [top, top+visible). Capping at `visible` rows keeps the
-	// output within the terminal height so the alt-screen never scrolls and
-	// pushes the header off the top.
 	visible := m.visibleRows()
 	start := m.top
 	end := start + visible
@@ -553,9 +424,6 @@ func (m model) View() string {
 		end = m.displayCount()
 	}
 
-	// The reverse-video focus bar sits on the table's selected row unless focus
-	// has moved into the detail panel, in which case it moves to the panel's
-	// divider (below) so it is always obvious which region the keys drive.
 	tableFocused := !m.detailOpen || !m.panelFocus
 
 	lines := make([]string, 0, m.height)
@@ -563,19 +431,11 @@ func (m model) View() string {
 	for i := start; i < end; i++ {
 		lines = append(lines, rowLine(m.displayRow(i), pathWidth, i == m.selected, tableFocused))
 	}
-	// Pad the table to its full row budget so the bottom line, detail panel,
-	// and footer stay pinned to the bottom even before the buffer fills.
 	for i := end - start; i < visible; i++ {
 		lines = append(lines, "")
 	}
 
-	// The line below the table is the closing divider when the panel is closed,
-	// or the panel's own header divider (with the selection's pid/comm) when it
-	// is open, followed by the placeholder body.
 	if m.detailOpen {
-		// When the panel holds focus, paint its divider in reverse video — the
-		// same bright bar the selected row wears when the table holds focus — so
-		// the focus reads at a glance, not from the small ▸ alone.
 		div := m.detailDivider()
 		if m.panelFocus {
 			div = selectedStyle.Render(div)
@@ -590,11 +450,6 @@ func (m model) View() string {
 	return strings.Join(lines, "\n")
 }
 
-// diagView renders the diagnostics panel full-screen (#216): the log lines
-// captured instead of discarded during this session (chiefly the TLS attach
-// path explaining why HTTPS traffic for some process never appeared),
-// oldest first, scrollable when they overflow the terminal height. Bounded
-// by maxDiagLines — the oldest lines drop once that many have arrived.
 func (m model) diagView() string {
 	label := "───── Diagnostics "
 	if n := len(m.diagLines); n > 0 {
@@ -628,9 +483,6 @@ func (m model) diagView() string {
 	return strings.Join(lines, "\n")
 }
 
-// footer is the help line. It has three states: panel closed, panel open with
-// table focus, and panel open with panel focus — each advertising the keys that
-// do something in that state.
 func (m model) footer() string {
 	if m.filterMode {
 		return fmt.Sprintf(" /%s │ Enter: apply │ Esc: clear", m.filterTerm)
@@ -642,8 +494,6 @@ func (m model) footer() string {
 	diag := m.diagIndicator()
 	switch {
 	case m.detailOpen && m.panelFocus:
-		// Esc steps back to table focus here (it doesn't close until the next
-		// Esc from the table), so it reads "back", and quit stays advertised.
 		return fmt.Sprintf(" ↑↓/jk: scroll │ g/G: top/bottom │ Tab: table │ b: %s body │ Esc: back │ q: quit%s", mode, diag)
 	case m.detailOpen:
 		return fmt.Sprintf(" ↑↓/jk: navigate │ Tab: inspect │ b: %s body │ Enter/Esc: close │ q: quit%s", mode, diag)
@@ -655,10 +505,6 @@ func (m model) footer() string {
 	}
 }
 
-// diagIndicator flags that diagnostic lines are waiting — e.g. why the TLS
-// attach path skipped a process (#216) — so "why is HTTPS missing?" is
-// answerable without knowing to open the panel. Stays visible for as long as
-// any lines are buffered, not just until first opened.
 func (m model) diagIndicator() string {
 	if n := len(m.diagLines); n > 0 {
 		return " │ " + slowLatencyStyle.Render(fmt.Sprintf("⚠ %d diag (d)", n))
@@ -666,15 +512,7 @@ func (m model) diagIndicator() string {
 	return ""
 }
 
-// detailDivider renders the detail panel's header line for the selected row:
-//
-//	 ───── Detail ───── pid=5950 (curl) ─────   ← table focus (leading space)
-//	▸───── Detail ───── pid=5950 (curl) ─────   ← panel focus
-//
-// A one-column gutter mirrors the row ▸ marker: blank when the table holds
-// focus, ▸ when the panel does. It is exactly m.width display columns wide,
-// padded with box-drawing dashes. With no rows selected it omits the pid/comm
-// clause.
+// ───── Detail ───── pid=5950 (curl) ─────
 func (m model) detailDivider() string {
 	marker := markerBlank
 	if m.panelFocus {
@@ -695,15 +533,6 @@ func (m model) detailDivider() string {
 	return label + strings.Repeat("─", m.width-n)
 }
 
-// detailBody returns exactly bodyLines() lines for the selected row: the
-// structured request/response header sections (#34), followed by a body
-// placeholder (#35). Every line is fit to m.width so a long header value can't
-// wrap and push the panel past its fixed height. When the content is taller
-// than the panel it scrolls (#61): the body shows content from m.detailOffset,
-// reserving a line for a directional hint at each end that has hidden content —
-// `↑ N more` above, `↓ N more` below. The hint sits on its own line rather than
-// over a content line, so a one-line scroll moves the body by exactly one line
-// and no header is skipped behind an indicator.
 func (m model) detailBody() []string {
 	n := m.bodyLines()
 	if n == 0 {
@@ -725,8 +554,6 @@ func (m model) detailBody() []string {
 		offset = 0
 	}
 
-	// Reserve a body line for each end that hides content; the visible content
-	// fills what's left, starting after the top hint (if any).
 	showUp := offset > 0
 	first, avail := 0, n
 	if showUp {
@@ -748,11 +575,6 @@ func (m model) detailBody() []string {
 	return lines
 }
 
-// detailContent builds the full, unbounded set of detail lines for a row: a
-// Request section (start line + headers + body) and a Response section,
-// mirroring the on-wire order. A body block is omitted entirely when that side
-// carried no body. hex selects the body view mode. detailBody clips this to the
-// panel height.
 func detailContent(r row, hex bool) []string {
 	lines := []string{" Request:", fmt.Sprintf("   %s %s %s", r.method, r.path, r.reqVersion)}
 	lines = append(lines, headerLines(r.reqHeaders)...)
@@ -763,14 +585,6 @@ func detailContent(r row, hex bool) []string {
 	return lines
 }
 
-// bodyBlock renders a blank separator and a "<label> (<mode>, kept/total bytes
-// [— truncated]):" header followed by the body as decoded text or a hex dump.
-// It returns nil — no block at all — when there is no body to show (#32: GET
-// shows only a response body; a body-less side renders nothing, not "(none)").
-// When headers name a binary/media Content-Type (#117), the hex/decoded dump
-// is replaced by a one-line "<label>: [<content-type>, N bytes]" placeholder —
-// neither view is useful for images, video, audio, or other non-text bodies,
-// and what little a sample cap kept is never a meaningful slice of one.
 func bodyBlock(label string, body []byte, total int, truncated, hex bool, headers []http.Header) []string {
 	if len(body) == 0 {
 		return nil
@@ -800,16 +614,8 @@ func bodyBlock(label string, body []byte, total int, truncated, hex bool, header
 	return append(out, decodedLines(body)...)
 }
 
-// binaryContentTypes lists the top-level types and exact values treated as
-// binary/media (#117): decoded text and hex dumps are equally useless for
-// these, so the detail panel shows a placeholder instead. Anything else —
-// text/*, application/json, no Content-Type at all — keeps the existing
-// hex/decoded rendering.
 var binaryContentTypes = []string{"image/", "video/", "audio/", "font/", "application/octet-stream", "application/pdf"}
 
-// binaryContentType returns the (trimmed, parameter-stripped) Content-Type
-// value and true when headers name a binary/media type per
-// binaryContentTypes. It trusts the header only — no magic-byte sniffing.
 func binaryContentType(headers []http.Header) (string, bool) {
 	for _, h := range headers {
 		if !strings.EqualFold(h.Name, "Content-Type") {
@@ -833,10 +639,6 @@ func binaryContentType(headers []http.Header) (string, bool) {
 	return "", false
 }
 
-// decodedLines renders body bytes as indented text lines: printable ASCII is
-// kept, a newline starts a new line, every other byte shows as '.'. A carriage
-// return is dropped so CRLF-delimited text breaks cleanly instead of leaving a
-// spurious '.' at each line end.
 func decodedLines(body []byte) []string {
 	var lines []string
 	var b strings.Builder
@@ -846,7 +648,6 @@ func decodedLines(body []byte) []string {
 			lines = append(lines, "   "+b.String())
 			b.Reset()
 		case c == '\r':
-			// drop — pairs with the \n that follows in CRLF
 		case c >= 0x20 && c <= 0x7e:
 			b.WriteByte(c)
 		default:
@@ -856,8 +657,6 @@ func decodedLines(body []byte) []string {
 	return append(lines, "   "+b.String())
 }
 
-// hexLines renders body bytes as an xxd-style dump: 8-digit offset, 16 bytes as
-// hex pairs (split into two columns of 8), then the printable-ASCII gutter.
 func hexLines(body []byte) []string {
 	var lines []string
 	for off := 0; off < len(body); off += 16 {
@@ -887,9 +686,6 @@ func hexLines(body []byte) []string {
 	return lines
 }
 
-// evictBodiesOverBudget drops body samples from the oldest rows until the total
-// retained body bytes fall back within sessionBodyBudget. Evicted rows keep
-// their summary line and headers; only the body bytes are released (#35).
 func (m *model) evictBodiesOverBudget() {
 	for i := 0; i < len(m.rows) && m.bodyBytes > sessionBodyBudget; i++ {
 		n := m.rows[i].bodyBytes()
@@ -902,7 +698,6 @@ func (m *model) evictBodiesOverBudget() {
 	}
 }
 
-// displayCount is the number of rows currently visible under the active filter.
 func (m model) displayCount() int {
 	if m.filtered != nil {
 		return len(m.filtered)
@@ -910,8 +705,6 @@ func (m model) displayCount() int {
 	return len(m.rows)
 }
 
-// displayRow returns the row at display position i, mapping through filtered
-// when a filter is active.
 func (m model) displayRow(i int) row {
 	if m.filtered != nil {
 		return m.rows[m.filtered[i]]
@@ -919,8 +712,6 @@ func (m model) displayRow(i int) row {
 	return m.rows[i]
 }
 
-// rebuildFilter regenerates m.filtered from the current rows and filterTerm.
-// Cheap when filterTerm is empty: sets filtered to nil and returns immediately.
 func (m *model) rebuildFilter() {
 	if m.filterTerm == "" {
 		m.filtered = nil
@@ -936,17 +727,11 @@ func (m *model) rebuildFilter() {
 	m.filtered = result
 }
 
-// rowMatchesFilter reports whether r contains lowerTerm (already lowercased)
-// in its comm or path field.
 func rowMatchesFilter(r row, lowerTerm string) bool {
 	return strings.Contains(strings.ToLower(r.comm), lowerTerm) ||
 		strings.Contains(strings.ToLower(r.path), lowerTerm)
 }
 
-// headerLines renders one header section, one "   Name: Value" line per header
-// in wire order (three-space indent, matching the start lines under each
-// section label). A section with no headers shows an explicit "(none)" so the
-// panel never looks like it failed to capture them.
 func headerLines(hs []http.Header) []string {
 	if len(hs) == 0 {
 		return []string{"   (none)"}
@@ -959,9 +744,6 @@ func headerLines(hs []http.Header) []string {
 }
 
 func headerLine(pathWidth int) string {
-	// Numeric columns (STATUS / BYTES / LATENCY) carry right-aligned values,
-	// so their labels are right-aligned too — otherwise a label narrower than
-	// its column (e.g. BYTES in an 8-wide field) drifts left of the digits.
 	return markerBlank + strings.Join([]string{
 		fitLeft("TIME", colTime),
 		fitLeft("PID", colPID),
@@ -974,34 +756,17 @@ func headerLine(pathWidth int) string {
 	}, " ")
 }
 
-// selectedStyle renders the ▸ row in reverse video so the selection reads at a
-// glance even where the marker glyph is easy to miss.
 var selectedStyle = lipgloss.NewStyle().Reverse(true)
 
-// slowLatencyStyle highlights second-scale latencies. "1.2s" and "1.2ms" differ
-// by a single character that the eye skips, so the slow case (≥ 1s) is painted
-// bold yellow — the unit ceases to be the only signal that a request was slow.
 var slowLatencyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 
-// sslFallbackStyle marks rows matched on (pid, SSL*) instead of a verified fd
-// (#171). Applied to the PID cell — the closest on-screen stand-in for
-// connection identity, since fd itself isn't a displayed column — so a
-// fallback pairing is never mistaken for an ordinary fd-verified one.
 var sslFallbackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
 
-// rowLine renders one exchange. `selected` draws the ▸ gutter marker (blank
-// otherwise); `focused` additionally paints the row in reverse video — the
-// bright focus bar. The two are separate so that when focus is in the detail
-// panel the selected row keeps its ▸ but yields the highlight to the panel's
-// divider. The returned line is exactly m.width display columns wide before
-// styling so the columns stay aligned regardless of selection.
 func rowLine(r row, pathWidth int, selected, focused bool) string {
 	marker := markerBlank
 	if selected {
 		marker = markerSelected
 	}
-	// Color the padded cell (not the bare value) so the zero-width escapes
-	// leave the column's display width untouched and the table stays aligned.
 	latency := fitRight(latencyStr(r.latency), colLatency)
 	if r.latency >= time.Second {
 		latency = slowLatencyStyle.Render(latency)
@@ -1026,12 +791,6 @@ func rowLine(r row, pathWidth int, selected, focused bool) string {
 	return line
 }
 
-// latencyStr keeps the value inside the LATENCY budget: "999.9ms" is the widest
-// millisecond form (7 columns), so anything >= 1s switches to seconds rather
-// than overflow (and be silently clipped by fitRight). The boundary is exactly
-// 1s, matching the slowLatencyStyle highlight in rowLine. The ms form is capped
-// at 999.9ms so float rounding just under the boundary (e.g. 999.95ms) can't
-// emit "1000.0ms" — a value that would read as second-scale yet stay uncolored.
 func latencyStr(d time.Duration) string {
 	if d < time.Second {
 		ms := float64(d) / float64(time.Millisecond)
@@ -1043,10 +802,6 @@ func latencyStr(d time.Duration) string {
 	return fmt.Sprintf("%.1fs", float64(d)/float64(time.Second))
 }
 
-// fitLeft left-aligns s in a field of n display columns: pad with spaces, or
-// keep the front and mark a dropped tail with a trailing ellipsis. Used for
-// text columns — PATH (front-priority) and COMM (tail-truncated) both want
-// the front kept.
 func fitLeft(s string, n int) string {
 	r := []rune(s)
 	if len(r) > n {
@@ -1058,10 +813,6 @@ func fitLeft(s string, n int) string {
 	return s + strings.Repeat(" ", n-len(r))
 }
 
-// fitRight right-aligns s in a field of n columns: pad on the left, or, when
-// it overflows, keep the tail behind a leading ellipsis so a clipped number
-// reads as clipped rather than as a different, smaller value. Used for the
-// numeric columns.
 func fitRight(s string, n int) string {
 	r := []rune(s)
 	if len(r) > n {
