@@ -1,6 +1,6 @@
 ---
 title: Event Schema
-weight: 9
+weight: 10
 ---
 
 # Event Schema

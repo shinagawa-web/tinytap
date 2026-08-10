@@ -1,6 +1,6 @@
 ---
 title: TLS Compatibility
-weight: 2
+weight: 7
 ---
 
 # TLS Compatibility
@@ -10,7 +10,7 @@ Which TLS-terminating servers/clients tinytap can capture via the
 
 ## Why this is separate from server compatibility
 
-[Server Compatibility]({{< relref "server" >}})'s table measures how many
+[Server Compatibility]({{< relref "server-compatibility" >}})'s table measures how many
 **wire bytes** of a plaintext body survive tinytap's per-syscall sample cap.
 That question doesn't apply to TLS capture: the uprobe reads the **full
 plaintext buffer** directly from the `SSL_write`/`SSL_read` call's

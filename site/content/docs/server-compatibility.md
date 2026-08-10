@@ -1,15 +1,15 @@
 ---
 title: Server Compatibility
-weight: 1
+weight: 6
 ---
 
 # Server Compatibility
 
 This covers plaintext HTTP only. For TLS-terminating servers (nginx, etc.)
 captured via the `SSL_write`/`SSL_read` libssl uprobe, see
-[TLS Compatibility]({{< relref "tls" >}}) instead — it's a different
-capture mechanism with a different visibility model, not just a new row
-here.
+[TLS Compatibility]({{< relref "tls-compatibility" >}}) instead — it's a
+different capture mechanism with a different visibility model, not just a
+new row here.
 
 ## How to read this table
 
