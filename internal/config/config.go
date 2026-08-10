@@ -15,17 +15,11 @@ var encodeTOML = func(w io.Writer, v any) error {
 }
 
 type Config struct {
-	Output  string       `toml:"output"`
-	Verbose bool         `toml:"verbose"`
-	Filter  FilterConfig `toml:"filter"`
+	Output  string `toml:"output"`
+	Verbose bool   `toml:"verbose"`
 }
 
-type FilterConfig struct {
-	PID  []uint32 `toml:"pid"`
-	Comm []string `toml:"comm"`
-}
-
-var defaultConfig = func() Config {
+func defaultConfig() Config {
 	return Config{Output: "auto"}
 }
 
@@ -70,12 +64,6 @@ func Init(path string, force bool) error {
 	}
 
 	cfg := defaultConfig()
-	if cfg.Filter.PID == nil {
-		cfg.Filter.PID = []uint32{}
-	}
-	if cfg.Filter.Comm == nil {
-		cfg.Filter.Comm = []string{}
-	}
 
 	var buf bytes.Buffer
 	buf.WriteString("# tinytap config file — see README.md's Configuration section for field docs.\n\n")
