@@ -5,17 +5,17 @@ weight: 6
 
 # Server Compatibility
 
-This covers plaintext HTTP only. For TLS-terminating servers (nginx, etc.)
-captured via the `SSL_write`/`SSL_read` libssl uprobe, see
-[TLS Compatibility]({{< relref "tls-compatibility" >}}) instead — it's a
-different capture mechanism with a different visibility model, not just a
-new row here.
+Which syscall a plaintext HTTP server uses to send its response body
+determines how much of it tinytap can see. (TLS-terminating servers, e.g.
+nginx captured via the `SSL_write`/`SSL_read` libssl uprobe, are a
+different capture mechanism with a different visibility model — see
+[TLS Compatibility]({{< relref "tls-compatibility" >}}) instead, not just a
+new row here.)
 
 ## Compatibility table
 
-Which syscall a server uses determines its visibility group — see
-[Cross-server summary](#cross-server-summary) below for what each one means
-in practice.
+See [Cross-server summary](#cross-server-summary) below for what each
+syscall means for visibility in practice.
 
 | Server | Syscall | Notes |
 |--------|---------|-------|
