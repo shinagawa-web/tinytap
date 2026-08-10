@@ -422,15 +422,10 @@ func (p *Parser) feed(s *stream, pid uint32, comm string, tsNs uint64, payload [
 
 	out = append(out, p.advance(s, pid, comm, tsNs)...)
 
-	// A stalled start-line/header wait may be legitimate (more bytes still
-	// coming) or a truncation gap that can never be filled (a syscall's
-	// sample didn't cover its full wire length, #224). Wire-byte accounting
-	// tells them apart: absent any drop, wireBytesSinceMessageStart -
-	// wireBytesConsumed always equals len(s.buf); a strict excess means a
-	// gap exists in the buffered prefix, so the message is discarded and
-	// the stream resynchronises at the next start line rather than
-	// splicing non-adjacent wire positions into a fabricated header set.
-	// See TestHeaderBlockExceedingSampleCapSplicesNextRequest and
+	// wireBytesSinceMessageStart-wireBytesConsumed > len(s.buf) means a
+	// truncation gap exists in the buffered prefix (#224): discard and
+	// resynchronise rather than splice. See
+	// TestHeaderBlockExceedingSampleCapSplicesNextRequest and
 	// TestHeaderTruncationResynchronisesResponseStream.
 	if s.state == stateNeedStartLine || s.state == stateNeedHeaders {
 		if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
@@ -603,17 +598,10 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			}
 
 			// Determine whether the response actually has a body (RFC 7230
-			// §3.3.3). Requests are tracked on a per-(pid, fd) FIFO so the
-			// response side can recognise that a HEAD's response carries no
-			// body regardless of Content-Length. Done before emitting so
-			// Message.ContentLength reflects the *effective* body size.
-			//
-			// 1xx responses are *informational* — they precede a final
-			// response for the same request (e.g. "100 Continue" before a
-			// "201 Created"). Pop the queued method only on final responses
-			// (>=200); for 1xx peek so the method stays available for the
-			// final reply. Otherwise pipelined HEAD requests get
-			// desynchronised when a prior request emits a 1xx.
+			// §3.3.3), using the per-(pid, fd) queued request method so a
+			// HEAD's response is recognised as bodyless regardless of
+			// Content-Length. 1xx responses peek the queue instead of
+			// popping it — see TestInformationalResponseDoesNotConsumeMethodQueue.
 			key := pendingKey{pid: pid, fd: s.fd, ssl: s.ssl, sslFallback: s.sslFallback}
 			if s.isRequest {
 				p.pendingMethods[key] = append(p.pendingMethods[key], s.req.method)
@@ -696,14 +684,11 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				s.wireBytesSinceMessageStart = bodyAlready - s.contentLength
 				s.wireBytesConsumed = 0
 				out = append(out, s.takeBody(msg))
-				// If carry-over buf bytes belong to the next message, they
-				// came in via the event Feed is currently processing — the
-				// same syscall that carried this message's body tail — so
-				// the next message's first byte hit the wire at the same
-				// TsNs. Without this, advance() loops into the next
-				// start-line and emits an Message with TsNs==0, breaking
-				// latency. When buf is empty, the next message will arrive
-				// in a future event; reset to 0 so Feed reseeds it then.
+				// Carry-over buf bytes belong to the same syscall Feed is
+				// processing, so they share its TsNs; an empty buf resets to
+				// 0 so Feed reseeds it on the next event. See
+				// TestPipelinedMessagesInOneSyscallShareTsNs and
+				// TestNextEventAfterBodyCompletesGetsItsOwnTsNs.
 				if len(s.buf) > 0 {
 					s.messageStartTs = currentEventTs
 				} else {
@@ -807,16 +792,9 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 			}
 
 		case stateNeedChunkCRLF:
-			// Consume the "\r\n" that follows each chunk's data. If wire-byte
-			// accounting shows at least 2 more bytes arrived than consumed,
-			// trust it — the CRLF reached the wire even though MaxPayload
-			// kept it out of the sample (same model as stateNeedBody, #116)
-			// — rather than stall forever. This branch never sets
-			// BodyTruncated itself; that flag reflects only body content
-			// loss, tracked separately by the chunk-data path above. See
-			// TestChunkedCRLFDroppedByMaxPayloadTrustsWireBytes for the
-			// accepted trade-off when a non-compliant peer's byte count
-			// doesn't actually end in CRLF.
+			// If wire-byte accounting shows >= 2 more bytes arrived than
+			// consumed, trust it (same model as stateNeedBody, #116). See
+			// TestChunkedCRLFDroppedByMaxPayloadTrustsWireBytes.
 			if len(s.buf) < 2 {
 				if s.wireBytesSinceMessageStart-s.wireBytesConsumed >= 2 {
 					s.wireBytesConsumed += 2
@@ -847,11 +825,9 @@ func (p *Parser) advance(s *stream, pid uint32, comm string, currentEventTs uint
 				tidx := bytes.Index(s.buf, []byte("\r\n\r\n"))
 				if tidx < 0 {
 					// Terminator not in sample: unlike stateNeedChunkCRLF,
-					// this can't trust wire-byte accounting the same way —
-					// the trailer has no fixed length, so excess wire bytes
-					// could mean the terminator was dropped, or just that a
-					// trailer field is still streaming in. Abandon instead
-					// of risking a premature, misframed emission. See
+					// wire-byte accounting alone can't prove the terminator
+					// (vs. a still-streaming trailer field) was dropped, so
+					// abandon rather than risk a misframed emission. See
 					// TestChunkedTrailerTerminatorDroppedByMaxPayloadAbandons.
 					if s.wireBytesSinceMessageStart-s.wireBytesConsumed > len(s.buf) {
 						s.abandoned = true
