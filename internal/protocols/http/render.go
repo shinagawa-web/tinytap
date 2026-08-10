@@ -7,40 +7,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// timeFormat is the layout used by RenderPaired/RenderAbandoned. It carries
-// full date and a fixed-width timezone offset (never the bare "Z" RFC 3339
-// allows for UTC) so every stdout line is unambiguous once redirected to a
-// file and read back later, independent of the reader's local time (#193).
 const timeFormat = "2006-01-02T15:04:05.000-07:00"
 
-// TimeAnchor converts BPF ktime (monotonic ns since boot) values into wall
-// clock time via a single fixed (wall, ktime) correlation point captured once
-// by NewTimeAnchor. Every timestamp is then a pure linear offset from that
-// point, so accuracy no longer depends on how long any particular event took
-// to reach userspace — the previous design anchored on the first observed
-// event instead, inheriting that event's (usually sub-millisecond, but
-// unbounded in the worst case) delivery delay as error for every timestamp
-// after it.
 type TimeAnchor struct {
 	wallStart time.Time
 	bpfStart  uint64
 }
 
-// clockGettime is a var so tests can force the failure path below; every
-// production caller uses the real syscall.
 var clockGettime = unix.ClockGettime
 
-// NewTimeAnchor samples wall-clock time and CLOCK_MONOTONIC back-to-back.
-// CLOCK_MONOTONIC is the same clock domain the kernel's bpf_ktime_get_ns()
-// reads (bpf-helpers(7): "time elapsed since system boot... does not include
-// time the system was suspended") — so the two readings correlate directly
-// with the ktime values events arrive with.
-//
-// clock_gettime is not expected to fail for this fixed, valid clock id on
-// Linux, but silently ignoring an error here would leave ts at its zero
-// value and corrupt every WallTime conversion for the rest of the process's
-// life with no signal — exactly the kind of silent bad data this anchor
-// redesign exists to eliminate. Fail loud instead.
 func NewTimeAnchor() TimeAnchor {
 	var ts unix.Timespec
 	wall := time.Now()
@@ -55,41 +30,10 @@ func (a TimeAnchor) WallTime(tsNs uint64) time.Time {
 	return a.wallStart.Add(time.Duration(delta))
 }
 
-// sslFallbackMarker is appended to a rendered line when PairedEvent.SSLFallback
-// is true, so a (pid, SSL*)-keyed exchange (#171 — e.g. curl, which never
-// calls SSL_set_fd, #167) never reads as an ordinary fd-verified pairing.
-// Appended as trailing text rather than a new column: existing rows'
-// layout — and any grep/awk over it (#63) — is untouched, since today no
-// message ever sets SSLFallback and this marker never appears.
 const sslFallbackMarker = "  [ssl-keyed, fd unverified]"
 
-// RenderPaired returns the one-line summary of a paired exchange: a single
-// self-contained line that reads top-to-bottom for a human and splits on
-// whitespace for grep/awk (#63). The HTTP versions and the reason phrase are
-// dropped from this line — the status code carries the gist, and the full
-// start lines show up under `-v` via RenderPairedDetail. The column widths
-// keep typical short paths aligned; long paths overflow rather than truncate.
-//
-// This is a deliberately curated subset of PairedEvent, not the full
-// record — EncodeJSONL (jsonl.go) is that. p is round-tripped through the
-// JSONL encoding before anything below reads it (roundTripJSONL, jsonl.go),
-// so this line is genuinely derived from the JSONL representation rather
-// than an independent reader of the same struct (#192); jsonl_test.go's
-// TestPairedEventFieldsAreClassified is what keeps the curation itself
-// honest, failing if a new PairedEvent field isn't consciously placed in
-// or kept out of this line.
-//
-// When ResBodyTruncated is true, the bytes field prints "<kept>/<total>B"
-// (e.g. "512/1304B" — how much of the body tinytap actually captured versus
-// the declared/observed total) instead of the plain "<total>B" (#190). This
-// also surfaces the pre-existing ambiguity in that total: bodyBytes()
-// (pairer.go) returns Content-Length when present, so a lone number could
-// already mean "what the server declared" rather than "what tinytap saw" —
-// printing both numbers together removes the guesswork whenever a
-// truncation makes that gap matter.
-//
-//	2026-08-01T12:47:57.005+09:00  python3[27122]  GET   /                        200    1304B     0.3ms
-//	2026-08-01T12:47:57.005+09:00  python3[27122]  GET   /                        200  512/1304B     0.3ms
+// 2026-08-01T12:47:57.005+09:00  python3[27122]  GET   /                        200    1304B     0.3ms
+// 2026-08-01T12:47:57.005+09:00  python3[27122]  GET   /                        200  512/1304B     0.3ms
 func RenderPaired(p PairedEvent, when time.Time) string {
 	p = roundTripJSONL(p)
 	latencyMs := float64(p.Latency) / float64(time.Millisecond)
@@ -110,11 +54,7 @@ func RenderPaired(p PairedEvent, when time.Time) string {
 	return line
 }
 
-// RenderAbandoned returns the one-line summary for a request that never
-// received a response. Columns align with RenderPaired: the status+bytes
-// field (12 chars) is replaced by the literal "ABANDONED".
-//
-//	2026-08-01T12:47:57.005+09:00  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
+// 2026-08-01T12:47:57.005+09:00  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
 func RenderAbandoned(p PairedEvent, when time.Time) string {
 	p = roundTripJSONL(p)
 	latencyMs := float64(p.Latency) / float64(time.Millisecond)
@@ -132,13 +72,6 @@ func RenderAbandoned(p PairedEvent, when time.Time) string {
 	return line
 }
 
-// RenderPairedDetail returns the `-v` continuation lines for an exchange: the
-// request start line and headers (prefixed `>`), then the response start line
-// and headers (prefixed `<`), in on-wire order. Indented so they read as
-// belonging to the summary line above. Body contents follow once #35 lands.
-// Like RenderPaired/RenderAbandoned, p is round-tripped through the JSONL
-// encoding first (roundTripJSONL, jsonl.go) so this is genuinely derived
-// from the JSONL representation, not an independent reader (#192).
 func RenderPairedDetail(p PairedEvent) []string {
 	p = roundTripJSONL(p)
 	lines := make([]string, 0, len(p.ReqHeaders)+len(p.ResHeaders)+2)

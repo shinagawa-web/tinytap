@@ -1,11 +1,5 @@
 //go:build amd64 || arm64
 
-// SSL uprobe support (#147/#146) is built for amd64 and arm64. Its
-// PT_REGS_PARMn argument macros need a real, arch-correct struct pt_regs at
-// compile time (arm64 from the vendored vmlinux.h, x86_64 from the
-// hand-declared bpf/pt_regs_x86_64.h — see bpf/gen.go and #156), so the
-// bpf2go bindings only exist on these two arches. load_uprobe_other.go covers
-// every other GOARCH with a stub that returns an error.
 package loader
 
 import (
@@ -20,19 +14,8 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
 )
 
-// ErrLibSSLNotExecutable means libsslPath exists but has no POSIX execute
-// permission bit set. cilium/ebpf's link.OpenExecutable requires it, but
-// distro-packaged shared libraries commonly ship without it (e.g. Debian/
-// Ubuntu's libssl3 package installs libssl.so.3 as mode 0644, unlike
-// libc.so.6's 0755) even though the dynamic linker itself never checks the
-// mode bit. AttachSSLSetFd does not chmod the target itself — that would
-// silently mutate a system library's permissions as a side effect of
-// running a capture tool — so callers must fix this themselves, e.g.
-// `sudo chmod +x <path>`, before retrying.
 var ErrLibSSLNotExecutable = errors.New("libssl path has no execute permission bit set (try: sudo chmod +x <path>)")
 
-// checkLibSSLExecutable confirms libsslPath exists and has the execute
-// permission bit set, without modifying it (see ErrLibSSLNotExecutable).
 func checkLibSSLExecutable(libsslPath string) error {
 	info, err := os.Stat(libsslPath)
 	if err != nil {
@@ -44,30 +27,11 @@ func checkLibSSLExecutable(libsslPath string) error {
 	return nil
 }
 
-// SSLFdProbe attaches a uprobe on SSL_set_fd in a target process's libssl
-// and exposes a (pid, SSL*) -> fd lookup backed by a BPF hash map.
-//
-// This is a standalone capability (#147): it is not wired into Load() or
-// the live capture loop. Deciding which pid to target is the caller's job —
-// see cmd/tinytap's sslWatcher for the automatic per-pid discovery logic.
-//
-// Known gap: SSLFdProbe only observes fds set via the public
-// SSL_set_fd(ssl, fd) API. Applications that instead build their own BIO
-// via BIO_new_socket() + SSL_set_bio(ssl, bio, bio) bypass SSL_set_fd
-// entirely and will never appear in Lookup — an accepted limitation (see
-// #144's "Resolved questions" and #147's scope).
 type SSLFdProbe struct {
 	objs bpf.TinytapUprobeObjects
 	link link.Link
 }
 
-// AttachSSLSetFd loads the SSL_set_fd uprobe BPF program and attaches it to
-// the SSL_set_fd symbol in libsslPath.
-//
-// pid scopes the uprobe to a single process; pass 0 to attach system-wide
-// to every process that calls into libsslPath. libsslPath is expected to
-// come from internal/tls.Find — this function performs no discovery of its
-// own, only attachment.
 func AttachSSLSetFd(pid uint32, libsslPath string) (*SSLFdProbe, error) {
 	if err := checkLibSSLExecutable(libsslPath); err != nil {
 		return nil, err
@@ -99,8 +63,6 @@ func AttachSSLSetFd(pid uint32, libsslPath string) (*SSLFdProbe, error) {
 	return p, nil
 }
 
-// Lookup returns the fd most recently associated with ssl via SSL_set_fd
-// for pid, and whether an entry was found.
 func (p *SSLFdProbe) Lookup(pid uint32, ssl uint64) (int32, bool) {
 	key := bpf.TinytapUprobeSslFdKey{Pid: pid, Ssl: ssl}
 	var fd int32
@@ -110,7 +72,6 @@ func (p *SSLFdProbe) Lookup(pid uint32, ssl uint64) (int32, bool) {
 	return fd, true
 }
 
-// Close detaches the uprobe and releases the loaded BPF objects.
 func (p *SSLFdProbe) Close() error {
 	var errs []error
 	if p.link != nil {
@@ -124,45 +85,12 @@ func (p *SSLFdProbe) Close() error {
 	return errors.Join(errs...)
 }
 
-// SSLPayloadProbe attaches uprobes on SSL_write/SSL_write_ex (entry),
-// uretprobes on SSL_read/SSL_read_ex (return), and a uprobe on SSL_free
-// (entry, #173) in a target process's libssl, and exposes the captured
-// events over its own ringbuf. Reader yields raw records — callers decode
-// them with events.DecodeSSL into events.SSLEvent and switch on its Op field
-// (events.SSLOpWrite / SSLOpRead / SSLOpFree).
-//
-// SSL_free fires once per SSL object on connection teardown regardless of
-// how its BIO/fd was wired (see #167 and bpf/tinytap_uprobe.bpf.c's
-// handle_ssl_free comment), so its event is the (pid, SSL*)-scoped signal
-// Pairer.CloseSSL (#173) needs to evict a pending SSLFallback request the
-// same way Pairer.Close already does for fd-keyed connections on close(2).
-//
-// This is a standalone capability (#146/#173): like SSLFdProbe, it is not
-// wired into Load() or the live capture loop. Deciding which pid to target
-// is the caller's job. Out of scope for this probe (see #146's issue
-// scope): correlating the captured SSL* to a fd (SSLFdProbe covers that
-// separately), reassembling payloads that span multiple syscalls, and
-// feeding output into the HTTP parser.
 type SSLPayloadProbe struct {
 	objs   bpf.TinytapUprobeObjects
 	links  []link.Link
 	Reader *ringbuf.Reader
 }
 
-// AttachSSLReadWrite loads the SSL_write/SSL_read/SSL_free uprobe BPF
-// program and attaches it to libsslPath, capturing plaintext buffers and
-// connection-teardown signals (#173).
-//
-// pid scopes the uprobes to a single process; pass 0 to attach system-wide
-// to every process that calls into libsslPath. libsslPath is expected to
-// come from internal/tls.Find — this function performs no discovery of its
-// own, only attachment.
-//
-// SSL_write_ex/SSL_read_ex are attached best-effort: their absence (older
-// OpenSSL) does not fail the whole attach, since internal/tls.Find's
-// RequiredSymbols only guarantees SSL_read/SSL_write/SSL_set_fd/SSL_free —
-// the `_ex` variants are OpenSSL >= 1.1.1 only, unlike everything else
-// RequiredSymbols covers.
 func AttachSSLReadWrite(pid uint32, libsslPath string) (*SSLPayloadProbe, error) {
 	if err := checkLibSSLExecutable(libsslPath); err != nil {
 		return nil, err
@@ -225,8 +153,6 @@ func AttachSSLReadWrite(pid uint32, libsslPath string) (*SSLPayloadProbe, error)
 	return p, nil
 }
 
-// Close detaches every attached uprobe, closes the ringbuf reader, and
-// releases the loaded BPF objects.
 func (p *SSLPayloadProbe) Close() error {
 	var errs []error
 	if p.Reader != nil {

@@ -12,18 +12,11 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/loader"
 )
 
-// sysctlPaths are read as informational context for a bug report — see the
-// docs site's Running Without Full Root page, "When cap_syslog is and isn't
-// enough" section, for how nuanced their interaction with capabilities
-// actually is. doctor doesn't try to model that interaction; it just
-// surfaces the raw values.
 var sysctlPaths = []string{
 	"/proc/sys/kernel/perf_event_paranoid",
 	"/proc/sys/kernel/unprivileged_bpf_disabled",
 }
 
-// checkSysctls reports the raw value of each sysctl in sysctlPaths. root,
-// if non-empty, is prepended to each path — tests use this.
 func checkSysctls(root string) []Check {
 	checks := make([]Check, 0, len(sysctlPaths))
 	for _, p := range sysctlPaths {
@@ -39,11 +32,6 @@ func checkSysctls(root string) []Check {
 	return checks
 }
 
-// checkMemlockRlimit reports RLIMIT_MEMLOCK — informational context only;
-// cilium/ebpf's rlimit.RemoveMemlock (called by loader.Load) already
-// handles raising it on kernels that need that (see the docs site's Running
-// Without Full Root page, "Why cap_sys_resource turned out not to matter"
-// section).
 func checkMemlockRlimit() Check {
 	var rlim unix.Rlimit
 	if err := getrlimitFn(unix.RLIMIT_MEMLOCK, &rlim); err != nil {
@@ -52,8 +40,6 @@ func checkMemlockRlimit() Check {
 	return Check{Name: "RLIMIT_MEMLOCK", Severity: Info, Detail: fmt.Sprintf("soft=%s hard=%s", rlimitString(rlim.Cur), rlimitString(rlim.Max))}
 }
 
-// getrlimitFn is injected so tests can force an error without needing a
-// real broken rlimit.
 var getrlimitFn = unix.Getrlimit
 
 func rlimitString(v uint64) string {
@@ -63,10 +49,6 @@ func rlimitString(v uint64) string {
 	return fmt.Sprintf("%d", v)
 }
 
-// checkTracepoints confirms every tracepoint loader.Load attaches to
-// exists on this kernel (at its primary name, or its fallback if it has
-// one). root, if non-empty, overrides the tracing filesystem root — tests
-// use this; production callers pass "".
 func checkTracepoints(root string) Check {
 	roots := []string{"/sys/kernel/tracing", "/sys/kernel/debug/tracing"}
 	if root != "" {
@@ -109,18 +91,10 @@ func tracepointExists(roots []string, name string) bool {
 	return false
 }
 
-// checkArch reports the architecture and which arch-specific objects load
-// — informational, but useful bug-report context since the sendfile
-// kprobe and TLS uprobes are amd64/arm64-only (everything else degrades
-// gracefully on other GOARCH values, see load_kprobe_other.go /
-// load_uprobe_other.go).
 func checkArch() Check {
 	return checkArchFor(runtime.GOARCH)
 }
 
-// checkArchFor is checkArch with the GOARCH value injected, so tests can
-// exercise the unsupported-architecture branch deterministically instead
-// of depending on which arch actually runs the test suite.
 func checkArchFor(goarch string) Check {
 	if goarch == "amd64" || goarch == "arm64" {
 		return Check{Name: "architecture", Severity: OK, Detail: fmt.Sprintf("%s (sendfile kprobe + TLS uprobes supported)", goarch)}

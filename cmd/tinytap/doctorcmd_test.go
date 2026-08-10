@@ -13,7 +13,9 @@ import (
 
 func TestRunDoctorCmd_AllOK(t *testing.T) {
 	oldRun := doctorRun
-	doctorRun = func() []doctor.Check { return []doctor.Check{{Name: "kernel version", Severity: doctor.OK, Detail: "6.17"}} }
+	doctorRun = func() []doctor.Check {
+		return []doctor.Check{{Name: "kernel version", Severity: doctor.OK, Detail: "6.17"}}
+	}
 	defer func() { doctorRun = oldRun }()
 
 	stdout := captureStdout(t, func() {
@@ -28,7 +30,9 @@ func TestRunDoctorCmd_AllOK(t *testing.T) {
 
 func TestRunDoctorCmd_Blocking(t *testing.T) {
 	oldRun := doctorRun
-	doctorRun = func() []doctor.Check { return []doctor.Check{{Name: "kernel version", Severity: doctor.Blocking, Detail: "too old"}} }
+	doctorRun = func() []doctor.Check {
+		return []doctor.Check{{Name: "kernel version", Severity: doctor.Blocking, Detail: "too old"}}
+	}
 	defer func() { doctorRun = oldRun }()
 
 	stdout := captureStdout(t, func() {
