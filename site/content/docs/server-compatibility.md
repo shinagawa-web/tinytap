@@ -45,9 +45,7 @@ about what each project treats as its core use case:
 
 A few points that generalize across rows:
 
-- **The 4096 B cap is a per-syscall-buffer limit, not a body limit.** Most of the plain-`sendto` group shows a clean `4096/total` because headers and body are separate calls, but Bun.serve's medium case shows `3978/8192` because its headers shared the same `sendto` call as the body — the cap ate into the combined buffer.
-
-- **Client-side (curl) byte counts are never a fixed constant**, unlike the server-side numbers in the plain-`sendto` and `sendfile` groups — they depend on however many `read`/`recvfrom` calls curl happens to make, each capped independently.
+- **The 4096 B cap is a per-syscall-buffer limit, not a body limit.** When headers and body go out as separate `sendto`/`write` calls, the cap applies to the body alone. When a server combines them into a single call instead (Bun.serve does this), the cap eats into that combined buffer, so less of the body survives.
 
 - **`sendfile` is the one true visibility gap in this table.** Every other truncation (the flat cap, the per-iovec budget) is a matter of tinytap sampling less than the full body; `sendfile`'s body bytes never reach a BPF-visible syscall at all except through the sendfile kprobe.
 
