@@ -121,9 +121,10 @@ exits before any eBPF load), `config init` (above), and `doctor` (see
 ## Current limitations
 
 HTTP/1.1 only (no HTTP/2/gRPC yet), single-host only, and TLS capture needs
-a dynamically linked `libssl.so` (statically linked stacks like Go's
-`crypto/tls` are invisible). Full list, including per-server body-visibility
-details, on the
+the process to expose OpenSSL symbols, either a dynamically linked
+`libssl.so` or an unstripped static build. Stacks that don't use OpenSSL
+at all, like Go's `crypto/tls`, remain invisible either way. Full list,
+including per-server body-visibility details, on the
 [docs site](https://shinagawa-web.github.io/tinytap/docs/limitations/).
 
 ## Status & Roadmap
