@@ -21,12 +21,9 @@ jobs:
             const title = context.payload.pull_request.title.toLowerCase();
             const labels = [];
 
-            // Parse `type(scope)!: summary` once, so a `!` before the colon
-            // (e.g. `feat!:`) doesn't stop the type prefix from matching.
-            const match = title.match(/^([a-z]+)(\(([^)]+)\))?(!)?:/);
+            const match = title.match(/^([a-z]+)(\(([^)]+)\))?:/);
             const type = match ? match[1] : null;
             const scope = match ? match[3] : null;
-            const breaking = match ? Boolean(match[4]) : false;
             const isDeps = scope === 'deps';
 
             const TYPE_LABELS = {
@@ -43,9 +40,6 @@ jobs:
 
             if (type && TYPE_LABELS[type]) {
               labels.push(TYPE_LABELS[type]);
-            }
-            if (breaking) {
-              labels.push('breaking-change');
             }
 
             if (labels.length > 0) {
@@ -70,5 +64,5 @@ jobs:
       - name: Check for labels
         uses: docker://agilepathway/pull-request-label-checker@sha256:65e57fd98ba3ab6ca4fcbc5a0aef288dd984ee4ab988f124d83424d19b55b801
         with:
-          one_of: bug,documentation,enhancement,breaking-change,dependencies,chore,refactor,test,ci,build
+          one_of: bug,documentation,enhancement,dependencies,chore,refactor,test,ci,build
           repo_token: ${{ secrets.GITHUB_TOKEN }}
