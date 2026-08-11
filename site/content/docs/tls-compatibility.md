@@ -17,7 +17,9 @@ off the ciphertext syscalls underneath.
 tinytap has been verified against Python `ssl`-wrapped `http.server`, nginx
 (Debian-based and Alpine-based images), curl, and Node.js (NodeSource,
 official, and nvm builds): TLS traffic decrypts and pairs correctly for
-all of them.
+all of them. This only covers OpenSSL-based stacks; see
+[Current Limitations]({{< relref "limitations" >}}) for what's not covered,
+such as Go's `crypto/tls`.
 
 eBPF operates at the host kernel level, so this works the same whether the
 TLS-terminating process is running natively or inside a Docker container.
