@@ -26,15 +26,9 @@ that covers.
 
 ```mermaid
 flowchart LR
-    subgraph proxy["Proxy (mitmproxy, Charles)"]
-        A1["App"] -->|"needs a CA cert installed"| P["Proxy"]
-        P --> S1["Server"]
-    end
-    subgraph tap["tinytap"]
-        A2["App"] -->|"plaintext"| L["libssl"]
-        L -->|"encrypted"| S2["Server"]
-        L -.->|"uprobe reads the plaintext\nbefore encryption"| T["tinytap"]
-    end
+    A["App"] -->|"plaintext"| L["libssl"]
+    L -->|"encrypted"| S["Server"]
+    L -.->|"uprobe reads the plaintext\nbefore encryption"| T["tinytap"]
 ```
 
 ## Diagnose a request that never got a response
