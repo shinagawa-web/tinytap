@@ -148,7 +148,9 @@ in-process drop conditioned on that flag would become viable.
 
 ## Known gaps
 
-- **Kernel version**: verified on recent kernels well above the 5.8 floor. The exact boundary between 5.8 and today hasn't been exhaustively tested. Run `tinytap doctor` to check your own kernel directly rather than cross-referencing version numbers here.
+- **Kernel version**: the 5.8 floor is a tested statement. Ubuntu 20.04 GA (5.4.0) fails at startup with `BPF_MAP_TYPE_RINGBUF: map create: invalid argument`. The full tested matrix is in [Platform support](/docs/compat-matrix/).
+
+- **Non-Ubuntu distros**: tested on Fedora 43, Debian 12, AlmaLinux 9, and Alpine 3.23 in #213. The capability set holds on all of them with one exception: Debian 12 ships `kernel.perf_event_paranoid=3`, which blocks `perf_event_open` even with `CAP_PERFMON`. On Debian 12, `cap_sys_admin` is required even for plaintext-only capture. AlmaLinux 9 (RHEL 5.14 backport) is the only distro where TLS uprobe works without `cap_sys_admin`.
 
 - **x86_64**: confirmed: the documented capability set holds; the only arch-specific difference from arm64 is the `sendfile` kprobe's extra `cap_syslog` requirement.
 

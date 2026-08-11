@@ -94,5 +94,4 @@ tinytap_bpfel.go   ← embeds the .o file + generates loader functions
 
 The generated `*_bpfel.go`/`*_bpfeb.go` files are entirely auto-generated:
 never edited by hand, just regenerated after changing the C source (see
-[event schema]({{< relref "event-schema" >}}) for the exact struct layout
-carried across that boundary).
+the event schema for the exact struct layout carried across that boundary).
