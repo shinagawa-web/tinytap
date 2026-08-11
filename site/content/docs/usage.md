@@ -9,7 +9,7 @@ weight: 3
 covers what to do once it's up: reading the TUI, reading the `stdout` line
 format, and when to reach for `verbose` or `doctor`.
 
-## The TUI
+## TUI
 
 `output = "auto"` (the default) opens the TUI whenever stdout/stdin are an
 interactive terminal of at least 120x24. See
