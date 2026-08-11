@@ -34,13 +34,6 @@ func TestLoaderLoadAttachClose(t *testing.T) {
 	}
 }
 
-// TestLoaderDropCountsZeroOnFreshLoad confirms a fresh load — before any
-// capture activity — reports zero drops, the byte-for-byte-identical-output
-// baseline the rest of #210 builds on. Slot-index/value-type mismatches
-// between bpf/drops.h and internal/loader/drops.go are instead caught by
-// TestLoaderDropCounts_RingbufReserveFailure and _MapFullFailure in
-// drops_integration_test.go, which force a real drop of each kind and
-// assert it lands in the correct Counts field.
 func TestLoaderDropCountsZeroOnFreshLoad(t *testing.T) {
 	tt, err := loader.Load(uint32(os.Getpid()))
 	if err != nil {

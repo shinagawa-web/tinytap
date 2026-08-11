@@ -11,11 +11,8 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
 )
 
-// TestLoaderDropCounts_RingbufReserveFailure actually overflows the events
-// ring (nothing drains it) and confirms DROP_RINGBUF is counted, rather than
-// only asserting the counter reads zero on a fresh load.
 func TestLoaderDropCounts_RingbufReserveFailure(t *testing.T) {
-	tt, err := Load(0) // own_pid=0: no real process has this pid, so this test's own syscalls aren't filtered out.
+	tt, err := Load(0)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -28,7 +25,7 @@ func TestLoaderDropCounts_RingbufReserveFailure(t *testing.T) {
 	defer r.Close()
 	defer w.Close()
 
-	const maxWrites = 6000 // 8 MiB ring / ~4.1 KiB per event is ~2000; this is generous headroom.
+	const maxWrites = 6000
 	buf := []byte("x")
 	for i := 0; i < maxWrites; i++ {
 		if _, err := w.Write(buf); err != nil {
@@ -41,10 +38,6 @@ func TestLoaderDropCounts_RingbufReserveFailure(t *testing.T) {
 	t.Fatalf("Ringbuf drop count still 0 after %d writes with nothing draining the ring", maxWrites)
 }
 
-// TestLoaderDropCounts_MapFullFailure fills incoming_pending_map to its
-// max_entries cap directly, then triggers one real read syscall and confirms
-// DROP_MAP_FULL is counted, rather than only asserting the counter reads
-// zero on a fresh load.
 func TestLoaderDropCounts_MapFullFailure(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -56,8 +49,6 @@ func TestLoaderDropCounts_MapFullFailure(t *testing.T) {
 	}
 	defer tt.Close()
 
-	// Prefilled keys sit far above any real Linux pid/tid (default pid_max
-	// tops out well under this), so they can't collide with realTid.
 	const (
 		maxEntries = 10240
 		keyBase    = 1_000_000_000
