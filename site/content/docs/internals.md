@@ -46,7 +46,7 @@ a second capture engine.
 
 ## Why three separate eBPF objects
 
-| | Attach point | Sees | Output | If it fails to load |
+| Object | Attach point | Sees | Output | If it fails to load |
 |---|---|---|---|---|
 | A `tinytap.bpf.c` | syscall tracepoints | Plaintext HTTP bytes, fd lifecycle | ringbuf `events` | Fatal, this is the main object |
 | B `tinytap_kprobe.bpf.c` | `fentry/tcp_sendmsg_locked` | `sendfile`'s body, which bypasses the socket buffer entirely | writes into A's `sendfile_sample_map` | Logged and skipped, `tryAttachKprobe` never fails `Load` |
