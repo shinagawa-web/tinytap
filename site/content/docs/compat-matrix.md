@@ -14,7 +14,7 @@ Every row in the table below is a real test run. Untested combinations are not l
 |---|---|---|---|---|
 | Ubuntu 25.10 | 6.17.x | ✓ | ✓ | |
 | Ubuntu 24.04 | 6.8.0 | ✓ | ✓ | |
-| Ubuntu 22.04 | 5.15.0 | ✓ | ✓ | sendfile body not captured (fentry not supported on 5.15) |
+| Ubuntu 22.04 | 5.15.0 | ✓ | ✓ | sendfile body not captured (`BPF_PROG_TYPE_TRACING` not available in this kernel config) |
 | Fedora 43 | 6.17.1 | ✓ | ✓ | |
 | Debian 12 | 6.1.0 | ✓ | ✓ | sendfile body not captured; `cap_sys_admin` required even for plaintext |
 | AlmaLinux 9 | 5.14.0 (RHEL) | ✓ | ✓ | sendfile body not captured |
