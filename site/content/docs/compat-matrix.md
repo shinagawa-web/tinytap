@@ -24,6 +24,8 @@ Every row in the table below is a real test run. Untested combinations are not l
 | Distro | Kernel | Plaintext | TLS | Notes |
 |---|---|---|---|---|
 | Ubuntu 26.04 | 7.0.0 | ✓ | ✓ | sendfile body requires `cap_syslog` (`kptr_restrict=1` blocks kprobe symbol lookup without it) |
+| Ubuntu 24.04 | 6.17.0-azure (CI) | ✓ | ✓ | |
+| Ubuntu 22.04 | 6.8.0-azure (CI) | ✓ | ✓ | |
 
 "sendfile body not captured" means `GET /file.bin` returns status and size correctly but body bytes are 0. Only static file serving via `sendfile(2)` is affected. All other capture paths work normally. See [Server Compatibility]({{< relref "server-compatibility" >}}).
 
