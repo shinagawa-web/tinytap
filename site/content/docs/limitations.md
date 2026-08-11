@@ -25,10 +25,6 @@ No cross-container attribution or cross-service correlation yet.
 
 Response bodies are sampled up to a fixed per-syscall cap. See [Server Compatibility]({{< relref "server-compatibility" >}}) for exactly how each server's syscall pattern affects this.
 
-## `sendfile` payload capture: amd64/arm64 only
-
-`sendfile`-based transfers only carry payload bytes on amd64/arm64; other architectures see the exchange but not the sampled body.
-
 ## See also
 
 [Server Compatibility]({{< relref "server-compatibility" >}}) and
