@@ -24,6 +24,19 @@ cert to install — see
 [TLS Compatibility]({{< relref "tls-compatibility" >}}) for which TLS stacks
 that covers.
 
+```mermaid
+flowchart LR
+    subgraph proxy["Proxy (mitmproxy, Charles)"]
+        A1["App"] -->|"needs a CA cert installed"| P["Proxy"]
+        P --> S1["Server"]
+    end
+    subgraph tap["tinytap"]
+        A2["App"] -->|"plaintext"| L["libssl"]
+        L -->|"encrypted"| S2["Server"]
+        L -.->|"uprobe reads the plaintext\nbefore encryption"| T["tinytap"]
+    end
+```
+
 ## Diagnose a request that never got a response
 
 A request hangs or the app reports a failure with no clear cause. In
@@ -34,6 +47,22 @@ waiting). That distinction — connection dropped vs. server just never
 answered — is usually the first thing you want to know, and it's visible
 without adding any logging to the app or the server.
 
+```mermaid
+sequenceDiagram
+    participant App
+    participant Server
+    App->>Server: request
+    alt normal
+        Server-->>App: response (status code)
+    else peer closed
+        Server--xApp: connection closes, no response
+        Note over App: tinytap: ABANDONED (peer closed)
+    else timeout
+        Note over App,Server: no response ever arrives
+        Note over App: tinytap: ABANDONED (timeout)
+    end
+```
+
 ## Check what a third-party SDK or library actually sends
 
 Client libraries retry, add headers, or rewrite requests in ways their docs
@@ -41,6 +70,14 @@ don't fully spell out. Rather than reading the library's source to guess,
 `tinytap` shows the literal bytes it puts on the wire — how many requests a
 "single" call actually issues, which header it sends for auth, whether a
 retry changes the request at all.
+
+```mermaid
+flowchart LR
+    Code["your code\nclient.get(url)"] --> SDK["SDK"]
+    SDK -->|"request #1"| Server
+    SDK -.->|"retry: request #2"| Server
+    T["tinytap"] -.->|"captures every request the SDK actually sends"| SDK
+```
 
 ## Debug traffic across container boundaries without a sidecar
 
@@ -50,6 +87,21 @@ the pod. Run it on the host and it captures traffic for containers running
 there too; see [Where tinytap Runs]({{< relref "where-it-runs" >}}) for the
 container story in full.
 
+```mermaid
+flowchart TB
+    subgraph Host["Host kernel"]
+        Tinytap["tinytap"]
+        subgraph C1["Container A"]
+            App1["App"]
+        end
+        subgraph C2["Container B"]
+            App2["App"]
+        end
+    end
+    App1 -.->|"socket syscalls"| Tinytap
+    App2 -.->|"socket syscalls"| Tinytap
+```
+
 ## Spot-check traffic without touching the app
 
 Sometimes you just want to confirm "did that request actually go out, and
@@ -57,3 +109,10 @@ what came back" during local development — without adding a logging
 statement, restarting the app, or reaching for a full debugger. `tinytap`
 attaches to an already-running process and starts showing traffic
 immediately; no app changes, no restart required.
+
+```mermaid
+flowchart LR
+    A["app already running"] --> B["tinytap attaches"]
+    B --> C["traffic shows up immediately"]
+    B -.->|"no code change, no restart"| A
+```
