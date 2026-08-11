@@ -16,6 +16,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 
+	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/events"
 	fixturebpf "github.com/shinagawa-web/tinytap/internal/loader/bpf/fixture"
 	"github.com/shinagawa-web/tinytap/internal/loader"
@@ -30,6 +31,21 @@ func TestLoaderLoadAttachClose(t *testing.T) {
 	}
 	if err := tt.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestLoaderDropCountsZeroOnFreshLoad exercises the real per-CPU drop_counters
+// map read path and catches a slot-index or value-type mismatch between
+// bpf/drops.h and internal/loader/drops.go.
+func TestLoaderDropCountsZeroOnFreshLoad(t *testing.T) {
+	tt, err := loader.Load(uint32(os.Getpid()))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer tt.Close()
+
+	if got := tt.DropCounts(); got != (drops.Counts{}) {
+		t.Errorf("DropCounts() on a fresh load = %+v, want zero", got)
 	}
 }
 

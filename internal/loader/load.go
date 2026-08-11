@@ -9,6 +9,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 
+	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
 )
 
@@ -98,4 +99,11 @@ func Load(ownPid uint32) (*Tinytap, error) {
 	tt.readerCloser = rd
 
 	return tt, nil
+}
+
+func (t *Tinytap) DropCounts() drops.Counts {
+	if t.objs.DropCounters == nil {
+		return drops.Counts{}
+	}
+	return readDrops(t.objs.DropCounters)
 }

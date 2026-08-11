@@ -2,6 +2,7 @@
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
+#include "drops.h"
 
 // 4 KiB matches Go's net/http default response buffer and the arm64/x86_64
 // page size — enough to capture a typical "one syscall = one response body"
@@ -311,8 +312,10 @@ static __always_inline void submit_sendfile_event(__s32 fd, __u32 bytes,
         return;
 
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        count_drop(DROP_RINGBUF);
         return;
+    }
 
     e->ts_ns       = bpf_ktime_get_ns();
     e->pid         = pid;
@@ -346,8 +349,10 @@ static __always_inline void submit_event(__u32 syscall, __s32 fd, __u32 bytes,
         return;
 
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        count_drop(DROP_RINGBUF);
         return;
+    }
 
     e->ts_ns       = bpf_ktime_get_ns();
     e->pid         = pid;
@@ -384,8 +389,10 @@ static __always_inline void submit_event_iov(__u32 syscall, __s32 fd,
         return;
 
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        count_drop(DROP_RINGBUF);
         return;
+    }
 
     e->ts_ns   = bpf_ktime_get_ns();
     e->pid     = pid;
@@ -415,7 +422,8 @@ static __always_inline void stash_incoming(__u32 syscall, __s32 fd,
         .fd      = fd,
         .buf     = (__u64)(unsigned long)buf,
     };
-    bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY);
+    if (bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY) < 0)
+        count_drop(DROP_MAP_FULL);
 }
 
 // Like stash_incoming but also records the iov count for readv, so
@@ -435,7 +443,8 @@ static __always_inline void stash_incoming_iov(__u32 syscall, __s32 fd,
         .buf     = (__u64)(unsigned long)iov_ptr,
         .iovcnt  = iovcnt,
     };
-    bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY);
+    if (bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY) < 0)
+        count_drop(DROP_MAP_FULL);
 }
 
 // Look up the stashed (fd, buf) for this thread, emit the event with the
