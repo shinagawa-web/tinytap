@@ -33,43 +33,46 @@ flowchart LR
 
 ## Diagnose a request that never got a response
 
-A request hangs, or the app reports a failure with no clear cause.
-`peer closed` and `timeout` are two different bugs wearing the same
-symptom, and telling them apart is what actually narrows down where to
-look next.
+A client reports a hang or a failure with no clear cause, and you own the
+server it's calling but can't see why it never answered. Run `tinytap` on
+the server, attached to the process handling the request — `peer closed`
+and `timeout` are two different failures wearing the same symptom, and from
+the server's own socket they're easy to tell apart.
 
-`peer closed` means something on the other end actively closed the
-connection before answering — a crashed or restarting server, a load
-balancer or proxy hitting its own idle timeout, a reset somewhere upstream.
-`tinytap` also reports how long the connection stayed open before it
-closed, which you can match against a specific timeout setting in the
-chain — a connection that closes after 5 seconds points somewhere far more
-precise than one that runs the full 30.
+`timeout` means the server read the request and then never called `write`
+on that connection for 30 seconds straight — the request arrived, the
+server just never got back to it. That points squarely at the server
+process itself — stuck processing, deadlocked, or blocked on a downstream
+call that never returns — and since `tinytap` is already running on that
+host, you're straight into the process, no need to reproduce the failure
+somewhere else.
 
-`timeout` means the connection stayed open the whole time and nothing ever
-came back — that points at the server itself: stuck processing,
-deadlocked, or waiting on a downstream call that never returns. `tinytap`
-gives up waiting after 30 seconds either way, so a `timeout` line's latency
-caps out around there; it tells you the server hadn't answered within that
-window, not how long it would eventually have taken.
+`peer closed` means the connection died before the server ever wrote a
+response — the caller (client, or a load balancer/proxy in between) gave up
+and disconnected first. `tinytap` also reports how long the connection
+stayed open before that happened: closed after 5 seconds points at a
+specific timeout configured somewhere upstream of the server; closed
+instantly suggests the server's handler errored out without writing
+anything back at all.
 
 Either way, the line also carries the exact request that went
 unanswered — method, path, every header — without adding a single log
-line to the app or the server.
+line to the server.
 
 ```mermaid
 sequenceDiagram
-    participant App
+    participant Client
     participant Server
-    App->>Server: request
+    Note over Server: tinytap attaches here
+    Client->>Server: request
     alt normal
-        Server-->>App: response (status code)
-    else peer closed
-        Server--xApp: connection closes, no response
-        Note over App: ABANDONED (peer closed) — look at the server\nprocess/LB/proxy for what closed it
+        Server-->>Client: response (status code)
     else timeout
-        Note over App,Server: no response ever arrives
-        Note over App: ABANDONED (timeout) — look at the server\nfor why it never answered
+        Note over Server: 30s pass, Server never calls write()
+        Note over Server: ABANDONED (timeout) — Server itself is stuck
+    else peer closed
+        Client--xServer: caller disconnects first
+        Note over Server: ABANDONED (peer closed) — Server never got to answer
     end
 ```
 
