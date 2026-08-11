@@ -14,13 +14,10 @@ off the ciphertext syscalls underneath.
 
 ## What's covered
 
-| Server/client | fd-resolvable? | Result |
-|---|---|---|
-| Python `ssl`-wrapped `http.server` | ✅ calls `SSL_set_fd` | ✅ paired, decrypted correctly |
-| nginx, Debian-based (`nginx:latest`) | ✅ calls `SSL_set_fd` directly (`ngx_ssl_create_connection()`) | ✅ paired, decrypted correctly |
-| nginx, Alpine-based (`nginx:alpine`) | ✅ same as above | ✅ paired, decrypted correctly |
-| curl | ❌ never calls `SSL_set_fd` (custom `BIO_METHOD` + `SSL_set_bio`) | ✅ paired via an SSL*-keyed stream instead of an fd-keyed one |
-| Node.js (NodeSource / official / nvm builds) | ✅ calls `SSL_set_fd` (Node's own OpenSSL binding) | ✅ paired, decrypted correctly, via the executable fallback below, not a mapped `libssl.so` |
+tinytap has been verified against Python `ssl`-wrapped `http.server`, nginx
+(Debian-based and Alpine-based images), curl, and Node.js (NodeSource,
+official, and nvm builds): TLS traffic decrypts and pairs correctly for
+all of them.
 
 eBPF operates at the host kernel level, so this works the same whether the
 TLS-terminating process is running natively or inside a Docker container.
