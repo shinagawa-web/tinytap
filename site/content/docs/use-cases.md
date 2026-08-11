@@ -35,9 +35,11 @@ flowchart LR
 
 A client reports a hang or a failure with no clear cause, and you own the
 server it's calling but can't see why it never answered. Run `tinytap` on
-the server, attached to the process handling the request. `peer closed`
-and `timeout` are two different failures wearing the same symptom, and from
-the server's own socket they're easy to tell apart.
+the server, attached to the process handling the request (any of the
+servers on the [Server Compatibility]({{< relref "server-compatibility" >}})
+list works). `peer closed` and `timeout` are two different failures wearing
+the same symptom, and from the server's own socket they're easy to tell
+apart.
 
 `timeout` means the server read the request and then never called `write`
 on that connection for 30 seconds straight: the request arrived, the
