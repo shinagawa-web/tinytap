@@ -6,9 +6,9 @@ weight: 2
 # Use Cases
 
 `tinytap` attaches to a process's socket syscalls and libssl uprobes and
-decodes what it sees as HTTP/1.1; see [How It Works]({{< relref
-"how-it-works" >}}) for the mechanism. That gives it a few concrete uses
-beyond "watch traffic go by."
+decodes what it sees as HTTP/1.1; see
+[How It Works]({{< relref "how-it-works" >}}) for the mechanism. That
+gives it a few concrete uses beyond "watch traffic go by."
 
 ## See exactly what your app sent, including over HTTPS
 
