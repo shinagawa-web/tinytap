@@ -6,18 +6,11 @@ weight: 9
 # TLS Compatibility
 
 Which TLS-terminating servers/clients tinytap can capture via the
-`SSL_write`/`SSL_read`/`SSL_free` libssl uprobes.
-
-## Why this is separate from server compatibility
-
-[Server Compatibility]({{< relref "server-compatibility" >}})'s table measures how many
-wire bytes of a plaintext body survive tinytap's per-syscall sample cap.
-That question doesn't apply to TLS capture: the uprobe reads the full
-plaintext buffer directly from the `SSL_write`/`SSL_read` call's
-arguments (up to a separate 4096 B cap), before encryption or after
-decryption. However many ciphertext syscalls happen underneath is
-invisible to this capture path entirely. Reusing the same table would
-conflate two unrelated capture mechanisms under the same columns.
+`SSL_write`/`SSL_read`/`SSL_free` libssl uprobes, a separate mechanism from
+the [Server Compatibility]({{< relref "server-compatibility" >}}) sample-cap
+table. The uprobe reads the plaintext buffer directly (up to its own 4096 B
+cap) before encryption or after decryption, rather than sampling wire bytes
+off the ciphertext syscalls underneath.
 
 ## What's covered
 
