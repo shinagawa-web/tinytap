@@ -149,6 +149,17 @@ assert_contains() {
     fi
 }
 
+assert_jsonl() {
+    local description="$1"
+    local filter="$2"
+    if jq -Re "fromjson? // empty | select(${filter})" "${TT_OUT}" >/dev/null 2>&1; then
+        echo "  PASS: ${description}"
+    else
+        echo "  FAIL: ${description} (jq filter: ${filter})"
+        FAILURES=$((FAILURES + 1))
+    fi
+}
+
 assert_absent() {
     local description="$1"
     local pattern="$2"
@@ -454,13 +465,13 @@ check_no_leftover_processes
 
 echo
 echo "=== assertions ==="
-assert_contains "GET / paired with 200"   "\[${PY_PID}\].*GET[[:space:]]+/[[:space:]].*200"
-assert_contains "HEAD / paired with 200"  "\[${PY_PID}\].*HEAD[[:space:]]+/[[:space:]].*200"
-assert_contains "POST / captured"         "\[${PY_PID}\].*POST[[:space:]]+/"
-assert_contains "abandoned: peer closed"  "ABANDONED.*peer closed"
-assert_contains "sendfile: GET /file paired with 200" "\[${FILE_PID}\].*GET[[:space:]]+/file[[:space:]].*200"
-assert_contains "writev: GET / paired with 200" "\[${WRITEV_PID}\].*GET[[:space:]]+/[[:space:]].*200"
-assert_contains "TLS: GET / paired with 200 (decrypted via SSL uprobe)" "\[${TLS_PY_PID}\].*GET[[:space:]]+/[[:space:]].*200"
+assert_jsonl "GET / paired with 200"   ".pid==${PY_PID} and .method==\"GET\" and .path==\"/\" and .status==200"
+assert_jsonl "HEAD / paired with 200"  ".pid==${PY_PID} and .method==\"HEAD\" and .path==\"/\" and .status==200"
+assert_jsonl "POST / captured"         ".pid==${PY_PID} and .method==\"POST\" and .path==\"/\""
+assert_jsonl "abandoned: peer closed"  ".abandoned==true and .abandonReason==\"peer closed\""
+assert_jsonl "sendfile: GET /file paired with 200" ".pid==${FILE_PID} and .method==\"GET\" and .path==\"/file\" and .status==200"
+assert_jsonl "writev: GET / paired with 200" ".pid==${WRITEV_PID} and .method==\"GET\" and .path==\"/\" and .status==200"
+assert_jsonl "TLS: GET / paired with 200 (decrypted via SSL uprobe)" ".pid==${TLS_PY_PID} and .method==\"GET\" and .path==\"/\" and .status==200"
 
 # The sendfile payload-capture kprobe (#68) attaches on arm64 and amd64 (#112);
 # on any other GOARCH, internal/loader/load.go logs a "skipping" line instead of

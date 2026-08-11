@@ -5,7 +5,7 @@ weight: 7
 
 # Configuration
 
-Session settings (`output`, `verbose`, and process filters) live in a TOML
+Session settings (`output` and process filters) live in a TOML
 config file, not CLI flags. `tinytap config init && tinytap` just works.
 See `config init` in [CLI surface](#cli-surface) below.
 
@@ -29,7 +29,6 @@ defaults below apply.
 
 ```toml
 output = "auto"   # auto | stdout | tui
-verbose = false
 
 [filter]
 pid  = []         # []uint32 — schema only, not yet enforced by the BPF program

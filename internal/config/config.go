@@ -15,8 +15,7 @@ var encodeTOML = func(w io.Writer, v any) error {
 }
 
 type Config struct {
-	Output  string `toml:"output"`
-	Verbose bool   `toml:"verbose"`
+	Output string `toml:"output"`
 }
 
 func defaultConfig() Config {

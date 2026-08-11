@@ -56,14 +56,14 @@ var (
 	isTerminalFn                                           = term.IsTerminal
 	getSizeFn                                              = term.GetSize
 	newTUISink    func(w, h int) tuiSink                   = defaultNewTUISink
-	newStdoutSink func(verbose bool) output.Sink           = defaultNewStdoutSink
-	doRunStdout   func(ringbufCloser, bool)                = runStdout
+	newStdoutSink func() output.Sink                       = defaultNewStdoutSink
+	doRunStdout   func(ringbufCloser)                      = runStdout
 	doRunTUI      func(ringbufCloser, int, int)            = runTUI
 	loadConfig    func(path string) (config.Config, error) = config.Load
 )
 
-func defaultNewTUISink(w, h int) tuiSink            { return tui.New(w, h) }
-func defaultNewStdoutSink(verbose bool) output.Sink { return stdout.New(verbose) }
+func defaultNewTUISink(w, h int) tuiSink { return tui.New(w, h) }
+func defaultNewStdoutSink() output.Sink  { return stdout.New() }
 
 func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "config" {
@@ -105,7 +105,7 @@ func run() error {
 	if decision == outputTUI {
 		doRunTUI(tt.reader(), w, h)
 	} else {
-		doRunStdout(tt.reader(), conf.Verbose)
+		doRunStdout(tt.reader())
 	}
 	return nil
 }
@@ -119,8 +119,8 @@ func closeOnInterrupt(rd io.Closer, stop <-chan os.Signal) {
 	}()
 }
 
-func runStdout(rd ringbufCloser, verbose bool) {
-	sink := newSSLWatcher(newStdoutSink(verbose))
+func runStdout(rd ringbufCloser) {
+	sink := newSSLWatcher(newStdoutSink())
 	defer closeSink(sink)
 	log.Printf("tinytap running (version %s) — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.", version)
 	stop := make(chan os.Signal, 1)

@@ -2,6 +2,8 @@ package stdout
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -12,27 +14,20 @@ import (
 )
 
 func TestNewDefaultsToStdout(t *testing.T) {
-	s := New(false)
+	s := New()
 	if s.w != os.Stdout {
 		t.Error("New should write to os.Stdout by default")
-	}
-	if s.verbose {
-		t.Error("New(false) should set verbose=false")
-	}
-	s2 := New(true)
-	if !s2.verbose {
-		t.Error("New(true) should set verbose=true")
 	}
 }
 
 func TestOnEventNoOp(t *testing.T) {
 	s := &Sink{w: &bytes.Buffer{}}
-	s.OnEvent(&events.Event{}) // must not panic
+	s.OnEvent(&events.Event{})
 }
 
 func TestOnMessageNoOp(t *testing.T) {
 	s := &Sink{w: &bytes.Buffer{}}
-	s.OnMessage(http.Message{}) // must not panic
+	s.OnMessage(http.Message{})
 }
 
 func pairedEvent() http.PairedEvent {
@@ -47,39 +42,25 @@ func pairedEvent() http.PairedEvent {
 	}
 }
 
-func TestOnPairedNonVerbose(t *testing.T) {
+func TestOnPairedWritesOneJSONLine(t *testing.T) {
 	var buf bytes.Buffer
 	s := &Sink{w: &buf}
-	pe := pairedEvent()
-	s.OnPaired(pe)
+	s.OnPaired(pairedEvent())
 	out := buf.String()
 
-	for _, want := range []string{"GET", "/api", "200"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("non-verbose output missing %q:\n%s", want, out)
-		}
+	if !strings.HasSuffix(out, "\n") {
+		t.Fatalf("output must end with a newline: %q", out)
 	}
-	if strings.Contains(out, "    > ") || strings.Contains(out, "    < ") {
-		t.Errorf("non-verbose output should not contain detail lines:\n%s", out)
+	if strings.Count(out, "\n") != 1 {
+		t.Fatalf("output must be exactly one line: %q", out)
 	}
-}
 
-func TestOnPairedVerbose(t *testing.T) {
-	var buf bytes.Buffer
-	s := &Sink{w: &buf, verbose: true}
-	pe := pairedEvent()
-	s.OnPaired(pe)
-	out := buf.String()
-
-	for _, want := range []string{"GET", "/api", "200"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("verbose output missing %q:\n%s", want, out)
-		}
+	var decoded http.PairedEvent
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	for _, want := range http.RenderPairedDetail(pe) {
-		if !strings.Contains(out, want) {
-			t.Errorf("verbose output missing detail line %q:\n%s", want, out)
-		}
+	if decoded.Method != "GET" || decoded.Path != "/api" || decoded.Status != 200 {
+		t.Errorf("decoded event missing expected fields: %+v", decoded)
 	}
 }
 
@@ -94,19 +75,32 @@ func TestOnPairedAbandoned(t *testing.T) {
 		AbandonReason: http.AbandonReasonClosed,
 	}
 	s.OnPaired(pe)
-	out := buf.String()
-	for _, want := range []string{"GET", "/slow", "peer closed"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("abandoned output missing %q:\n%s", want, out)
-		}
+
+	var decoded http.PairedEvent
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if strings.Contains(out, "200") {
-		t.Errorf("abandoned output should not contain status code:\n%s", out)
+	if !decoded.Abandoned || decoded.AbandonReason != http.AbandonReasonClosed {
+		t.Errorf("decoded event missing abandoned fields: %+v", decoded)
+	}
+}
+
+func TestOnPairedEncodeError(t *testing.T) {
+	orig := encodeJSONL
+	defer func() { encodeJSONL = orig }()
+	encodeJSONL = func(http.PairedEvent) ([]byte, error) { return nil, errors.New("boom") }
+
+	var buf bytes.Buffer
+	s := &Sink{w: &buf}
+	s.OnPaired(pairedEvent())
+
+	if buf.Len() != 0 {
+		t.Errorf("OnPaired should write nothing on encode error, got %q", buf.String())
 	}
 }
 
 func TestCloseReturnsNil(t *testing.T) {
-	if err := New(false).Close(); err != nil {
+	if err := New().Close(); err != nil {
 		t.Errorf("Close() = %v, want nil", err)
 	}
 }
