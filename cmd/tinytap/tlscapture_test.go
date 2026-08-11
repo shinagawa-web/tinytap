@@ -11,10 +11,6 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
 )
 
-// marshalSSLEvent builds a wire-format ssl_event byte slice matching the C
-// struct's explicit layout (bpf/tinytap_uprobe.bpf.c), including the 4-byte
-// alignment pad between payload_len and comm that events.SSLEvent has no Go
-// field for — mirrors internal/events' own (unexported) makeSSLRaw helper.
 func marshalSSLEvent(t *testing.T, e events.SSLEvent) []byte {
 	t.Helper()
 	const wireSize = 56 + events.MaxSSLPayload
@@ -31,8 +27,6 @@ func marshalSSLEvent(t *testing.T, e events.SSLEvent) []byte {
 	return raw
 }
 
-// sslWriteEvent builds an SSLOpWrite event carrying payload as its
-// plaintext, with Len/PayloadLen both set to len(payload) (no truncation).
 func sslWriteEvent(pid, tid uint32, ssl uint64, payload []byte) events.SSLEvent {
 	e := events.SSLEvent{Pid: pid, Tid: tid, SSL: ssl, Op: events.SSLOpWrite}
 	n := copy(e.Payload[:], payload)
@@ -47,7 +41,6 @@ func sslReadEvent(pid, tid uint32, ssl uint64, payload []byte) events.SSLEvent {
 	return e
 }
 
-// fakeSSLFdLookup implements sslFdLookup with a static (pid, ssl) -> fd map.
 type fakeSSLFdLookup map[[2]uint64]int32
 
 func (f fakeSSLFdLookup) Lookup(pid uint32, ssl uint64) (int32, bool) {
@@ -61,8 +54,6 @@ func (f fakeSSLFdLookup) Delete(pid uint32, ssl uint64) {
 
 func lookupKey(pid uint32, ssl uint64) [2]uint64 { return [2]uint64{uint64(pid), ssl} }
 
-// newTLSTestPipeline builds a fresh Parser/Pairer pair, the same shape
-// sslWatcher.maybeAttach constructs for each pid's captureTLS goroutine.
 func newTLSTestPipeline() (*http.Parser, *http.Pairer) {
 	return http.NewParser(), http.NewPairer()
 }
@@ -87,10 +78,6 @@ func TestCaptureTLS_MalformedBytes(t *testing.T) {
 	}
 }
 
-// TestCaptureTLS_WriteThenReadPairsWithResolvedFd is the concrete end-to-end
-// proof that fd-resolvable TLS traffic (nginx, Python — see #167) reassembles
-// and pairs through the existing HTTP parser/pairer exactly like plaintext
-// traffic does, once tls.FromSSL bridges the two event shapes (#148).
 func TestCaptureTLS_WriteThenReadPairsWithResolvedFd(t *testing.T) {
 	const pid, ssl, fd = uint32(1), uint64(0xabc), int32(3)
 	req := []byte("GET / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
@@ -118,12 +105,6 @@ func TestCaptureTLS_WriteThenReadPairsWithResolvedFd(t *testing.T) {
 	}
 }
 
-// TestCaptureTLS_FdLessTrafficParsedAndPaired confirms fd-less payload
-// events (curl, which never calls SSL_set_fd — #167) reach Parser.FeedSSL's
-// SSL*-keyed stream (#179) instead of being dropped: a request and response
-// on the same SSL* still pair correctly with no fd ever resolved. No raw
-// events reach the sink for this path (unlike the fd-resolvable path,
-// there's no tls.FromSSL translation to an events.Event to report).
 func TestCaptureTLS_FdLessTrafficParsedAndPaired(t *testing.T) {
 	const pid, ssl = uint32(1), uint64(0xdef)
 	req := []byte("GET / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
@@ -136,7 +117,7 @@ func TestCaptureTLS_FdLessTrafficParsedAndPaired(t *testing.T) {
 	}
 	sink := &fakeSink{}
 	parser, pairer := newTLSTestPipeline()
-	captureTLS(rd, fakeSSLFdLookup{}, sink, parser, pairer) // empty map: Lookup always misses
+	captureTLS(rd, fakeSSLFdLookup{}, sink, parser, pairer)
 
 	if sink.eventCount != 0 {
 		t.Errorf("want 0 raw events for the fd-less path, got %d", sink.eventCount)
@@ -149,10 +130,6 @@ func TestCaptureTLS_FdLessTrafficParsedAndPaired(t *testing.T) {
 	}
 }
 
-// TestCaptureTLS_SSLFreeEvictsPendingRequestWhenFdResolved confirms SSL_free
-// (#173) promptly evicts a pending request as ABANDONED via the ordinary
-// fd-keyed Close/Pairer.Close path when the connection's fd is resolvable —
-// mirroring capture's own close(2)-driven eviction for plaintext traffic.
 func TestCaptureTLS_SSLFreeEvictsPendingRequestWhenFdResolved(t *testing.T) {
 	const pid, ssl, fd = uint32(5), uint64(0x111), int32(9)
 	req := []byte("GET /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
@@ -181,11 +158,6 @@ func TestCaptureTLS_SSLFreeEvictsPendingRequestWhenFdResolved(t *testing.T) {
 	}
 }
 
-// TestCaptureTLS_SSLFreeEvictsSSLFallbackWhenFdLess confirms SSL_free (#173)
-// evicts a pending fd-less request as ABANDONED end to end: the request
-// itself arrives through the real ringbuf → Parser.FeedSSL → Pairer.Push
-// path (#179), never resolves an fd, and SSL_free evicts it via
-// Parser.CloseSSL + Pairer.CloseSSL — no manual pairer/parser seeding.
 func TestCaptureTLS_SSLFreeEvictsSSLFallbackWhenFdLess(t *testing.T) {
 	const pid, ssl = uint32(6), uint64(0x222)
 	req := []byte("GET /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
@@ -199,7 +171,7 @@ func TestCaptureTLS_SSLFreeEvictsSSLFallbackWhenFdLess(t *testing.T) {
 	}
 	sink := &abandonedSink{}
 	parser, pairer := newTLSTestPipeline()
-	captureTLS(rd, fakeSSLFdLookup{}, sink, parser, pairer) // empty map: fd never resolves
+	captureTLS(rd, fakeSSLFdLookup{}, sink, parser, pairer)
 
 	if len(sink.paired) != 1 {
 		t.Fatalf("want 1 paired (abandoned) event, got %d", len(sink.paired))
@@ -229,10 +201,6 @@ func TestCaptureTLS_SSLFreeDeletesFdMapEntry(t *testing.T) {
 	}
 }
 
-// TestCaptureTLS_SweepEmitsAbandoned mirrors capture_test.go's
-// TestCapture_SweepEmitsAbandoned: a pending fd-resolved request is evicted
-// by the periodic sweeper (not Close/CloseSSL) once it outlives timeout,
-// covering captureTLSWithOptions' own sweep goroutine.
 func TestCaptureTLS_SweepEmitsAbandoned(t *testing.T) {
 	const pid, ssl, fd = uint32(9), uint64(0x333), int32(4)
 	req := []byte("GET /hang HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
@@ -241,7 +209,7 @@ func TestCaptureTLS_SweepEmitsAbandoned(t *testing.T) {
 		records: []ringbuf.Record{
 			{RawSample: marshalSSLEvent(t, sslWriteEvent(pid, pid, ssl, req))},
 		},
-		delay: 20 * time.Millisecond, // keep captureTLS alive long enough for sweep
+		delay: 20 * time.Millisecond,
 	}
 	sink := &abandonedSink{}
 	parser, pairer := newTLSTestPipeline()
@@ -262,8 +230,6 @@ func TestCaptureTLS_SweepEmitsAbandoned(t *testing.T) {
 }
 
 func TestCaptureTLS_TruncatedSSLOpIsDropped(t *testing.T) {
-	// An SSL op value outside SSLOpWrite/SSLOpRead/SSLOpFree (e.g. a decode
-	// mismatch) must not panic and must produce no output.
 	const pid, ssl = uint32(1), uint64(1)
 	e := events.SSLEvent{Pid: pid, Tid: pid, SSL: ssl, Op: 99}
 	rd := &fakeReader{records: []ringbuf.Record{{RawSample: marshalSSLEvent(t, e)}}}
