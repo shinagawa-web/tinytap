@@ -66,8 +66,8 @@ useful when piping into `grep`/`jq`, running over SSH, or in CI:
 2026-08-01T12:47:57.005+09:00  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
 ```
 
-Columns: timestamp, `process[pid]`, method, path, then either the response
-(`status`, response size, latency) or `ABANDONED` with a reason —
+Each line has a timestamp, `process[pid]`, method, and path, then either the
+response (`status`, response size, latency) or `ABANDONED` with a reason —
 `peer closed` (the connection closed before a response arrived) or
 `timeout` (no response showed up before `tinytap` gave up waiting).
 

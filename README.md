@@ -142,19 +142,19 @@ Full documentation is available at
 - [Use Cases](https://shinagawa-web.github.io/tinytap/docs/use-cases/)
 - [Usage](https://shinagawa-web.github.io/tinytap/docs/usage/)
 - [Where tinytap Runs](https://shinagawa-web.github.io/tinytap/docs/where-it-runs/)
+
 - [Running Without Full Root](https://shinagawa-web.github.io/tinytap/docs/running-without-root/)
 - [How It Works](https://shinagawa-web.github.io/tinytap/docs/how-it-works/)
-
 - [Configuration](https://shinagawa-web.github.io/tinytap/docs/configuration/)
 - [Server Compatibility](https://shinagawa-web.github.io/tinytap/docs/server-compatibility/)
+
 - [TLS Compatibility](https://shinagawa-web.github.io/tinytap/docs/tls-compatibility/)
 - [Installing & Verifying Releases](https://shinagawa-web.github.io/tinytap/docs/installing-and-verifying/)
-
 - [Troubleshooting](https://shinagawa-web.github.io/tinytap/docs/troubleshooting/)
 - [Event Schema](https://shinagawa-web.github.io/tinytap/docs/event-schema/)
+
 - [Terminology](https://shinagawa-web.github.io/tinytap/docs/terminology/)
 - [Current Limitations](https://shinagawa-web.github.io/tinytap/docs/limitations/)
-
 - [Roadmap](https://shinagawa-web.github.io/tinytap/docs/roadmap/)
 
 ## Toolchain
