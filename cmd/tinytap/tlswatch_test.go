@@ -61,6 +61,8 @@ type fakeProbe struct {
 
 func (f *fakeProbe) Lookup(uint32, uint64) (int32, bool) { return f.lookupFd, f.lookupOK }
 
+func (f *fakeProbe) Delete(uint32, uint64) {}
+
 func (f *fakeProbe) DropCounts() drops.Counts { return f.dropCounts }
 
 func (f *fakeProbe) Close() error {

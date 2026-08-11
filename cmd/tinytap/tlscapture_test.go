@@ -55,6 +55,10 @@ func (f fakeSSLFdLookup) Lookup(pid uint32, ssl uint64) (int32, bool) {
 	return fd, ok
 }
 
+func (f fakeSSLFdLookup) Delete(pid uint32, ssl uint64) {
+	delete(f, [2]uint64{uint64(pid), ssl})
+}
+
 func lookupKey(pid uint32, ssl uint64) [2]uint64 { return [2]uint64{uint64(pid), ssl} }
 
 // newTLSTestPipeline builds a fresh Parser/Pairer pair, the same shape
@@ -207,6 +211,21 @@ func TestCaptureTLS_SSLFreeEvictsSSLFallbackWhenFdLess(t *testing.T) {
 	}
 	if pe.Path != "/slow" {
 		t.Errorf("Path = %q, want /slow", pe.Path)
+	}
+}
+
+func TestCaptureTLS_SSLFreeDeletesFdMapEntry(t *testing.T) {
+	const pid, ssl, fd = uint32(7), uint64(0x333), int32(3)
+
+	freeEvent := events.SSLEvent{Pid: pid, Tid: pid, SSL: ssl, Op: events.SSLOpFree}
+	rd := &fakeReader{records: []ringbuf.Record{{RawSample: marshalSSLEvent(t, freeEvent)}}}
+	fdProbe := fakeSSLFdLookup{lookupKey(pid, ssl): fd}
+	sink := &fakeSink{}
+	parser, pairer := newTLSTestPipeline()
+	captureTLS(rd, fdProbe, sink, parser, pairer)
+
+	if _, ok := fdProbe.Lookup(pid, ssl); ok {
+		t.Error("fd map entry still present after SSL_free")
 	}
 }
 
