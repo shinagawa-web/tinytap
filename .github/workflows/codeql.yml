@@ -36,15 +36,6 @@ jobs:
       - name: Set up BPF toolchain and regenerate bindings
         uses: ./.github/actions/setup-bpf-toolchain
 
-      # build-mode: manual + an explicit `go build` below, instead of
-      # autobuild. Autobuild runs `make` when it finds a Makefile, and this
-      # repo's default `make` target depends on bpf2go (clang-17) — already
-      # installed above by setup-bpf-toolchain, but autobuild's own
-      # unconfigured `make` invocation would also re-run `go generate`
-      # redundantly and isn't worth relying on; an explicit `go build`
-      # below is simpler and CodeQL still extracts tinytap's own code from
-      # it (autobuild falling back to only stdlib packages was the
-      # original problem this build-mode avoids).
       - name: Initialize CodeQL
         uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:

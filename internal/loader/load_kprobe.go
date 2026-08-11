@@ -22,6 +22,7 @@ func (tt *Tinytap) tryAttachKprobe() {
 	err = kprobeSpec.LoadAndAssign(kprobeObjs, &ebpf.CollectionOptions{
 		MapReplacements: map[string]*ebpf.Map{
 			"sendfile_sample_map": tt.objs.SendfileSampleMap,
+			"drop_counters":       tt.objs.DropCounters,
 		},
 	})
 	if err != nil {

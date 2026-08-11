@@ -22,15 +22,6 @@ inputs:
 runs:
   using: composite
   steps:
-    # Keyed on everything that affects bpf2go's output: the C sources
-    # themselves, the go:generate directives that invoke it (gen.go, whose
-    # flags bpf2go's output also depends on), go.mod/go.sum (pin bpf2go's
-    # own version via the cilium/ebpf module — both, not just go.sum: a
-    # go.mod version bump doesn't always change go.sum, e.g. if the new
-    # version's checksums are already present from elsewhere in the module
-    # graph), and the toolchain versions below (hardcoded into the key so
-    # bumping either pin busts the cache instead of serving stale output
-    # built by a different compiler).
     - name: Cache bpf2go bindings
       id: cache-bpf
       if: inputs.use-cache == 'true'
@@ -47,35 +38,15 @@ runs:
           bpf2go-clang17-libbpf1.6.2-${{ runner.os }}-${{
           hashFiles('bpf/**', 'internal/loader/bpf/gen.go', 'internal/loader/bpf/fixture/gen.go', 'internal/loader/bpf/fixture/fixture.bpf.c', 'go.mod', 'go.sum') }}
 
-    # Pinned so bpf2go's output doesn't drift with whatever clang the
-    # runner image happens to ship — see #207. ubuntu-22.04's default
-    # apt-get clang-14 was tried first and rejected: it emits a
-    # bpf_probe_read_user call the verifier refuses to load
-    # ("R2 unbounded memory access"), so this installs from the official
-    # LLVM apt repo instead of the distro package.
-    # apt.llvm.org/llvm.sh is fetched and executed as root, so its
-    # contents are verified against a known-good hash before running.
-    # If upstream legitimately updates the script, this check will start
-    # failing — recompute the hash with `curl -fsSL https://apt.llvm.org/llvm.sh | sha256sum`
-    # and update it here.
-    # Downloaded to $RUNNER_TEMP, not the repo working directory: a leftover
-    # untracked llvm.sh in the checkout fails goreleaser's built-in
-    # git-cleanliness check in release.yml ("git is in a dirty state"),
-    # discovered the hard way when v0.6.5's first tag attempt failed for
-    # exactly this reason (#260 follow-up).
     - name: Install clang 17
       if: inputs.use-cache != 'true' || steps.cache-bpf.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        wget -O "${RUNNER_TEMP}/llvm.sh" https://apt.llvm.org/llvm.sh
-        echo "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36  ${RUNNER_TEMP}/llvm.sh" | sha256sum -c -
+        wget -O "${RUNNER_TEMP}/llvm.sh" https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/ae7b37f390adb291d9df96867729fdbfca377f7b/llvm.sh
+        echo "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae  ${RUNNER_TEMP}/llvm.sh" | sha256sum -c -
         chmod +x "${RUNNER_TEMP}/llvm.sh"
         sudo "${RUNNER_TEMP}/llvm.sh" 17
 
-    # ubuntu-22.04's apt libbpf-dev is 0.5.0, which predates the
-    # BPF_UPROBE macro bpf/tinytap_uprobe.bpf.c uses (added in a later
-    # libbpf release) — build a pinned, known-good libbpf from source and
-    # install its headers over /usr/include/bpf instead.
     - name: Install libbpf 1.6.2 headers
       if: inputs.use-cache != 'true' || steps.cache-bpf.outputs.cache-hit != 'true'
       shell: bash

@@ -8,7 +8,7 @@ COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: all generate build run run-raw lint govulncheck test-unit check-coverage test-e2e test-integration install install-hooks release-check clean
+.PHONY: all generate build run run-raw lint check-style govulncheck test-unit check-coverage test-e2e test-integration install install-hooks release-check clean
 
 all: generate build
 
@@ -28,6 +28,9 @@ run-raw: build
 
 lint:
 	$(GOLINT) run
+
+check-style:
+	bash scripts/check-style.sh
 
 # #159: scans go.mod's dependency surface (and this module's own code paths
 # into it) for known CVEs. `go run pkg@version` fetches govulncheck without

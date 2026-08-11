@@ -17,8 +17,8 @@
 # #268; distro-packaged node from apt/apk dynamically links libssl.so
 # instead and doesn't exercise this fallback at all), openssl. tinytap runs
 # unprivileged via setcap, including cap_sys_admin since this is a TLS
-# uprobe attach (see docs/capabilities.md); sudo is only used for that
-# one-off setcap call.
+# uprobe attach (see the docs site's Running Without Full Root page); sudo
+# is only used for that one-off setcap call.
 # Usage: bash scripts/test-e2e-tls-node.sh
 
 set -euo pipefail
@@ -28,8 +28,8 @@ TLS_PORT="${TLS_PORT:-18085}"
 # (e.g. /tmp is nosuid on this dev VM) — TT_BIN must live somewhere else, so
 # it's built into the repo root instead (gitignored, like the plain `tinytap`
 # build artifact). Kept to 15 chars: pkill -x below matches against
-# /proc/<pid>/comm, which the kernel truncates to 15 — see the pkill gotcha
-# in docs/tls-compat.md.
+# /proc/<pid>/comm, which the kernel truncates to 15 — a longer binary name
+# would silently never match, hanging the script's own cleanup.
 TT_BIN="${PWD}/tinytap-nod-e2e"
 TT_CFG=/tmp/tinytap-node-e2e-config.toml
 TT_OUT=/tmp/tinytap-node-e2e.log
