@@ -131,7 +131,7 @@ func TestDefaultNewTUISink(t *testing.T) {
 }
 
 func TestDefaultNewStdoutSink(t *testing.T) {
-	s := defaultNewStdoutSink(false)
+	s := defaultNewStdoutSink()
 	if s == nil {
 		t.Error("want non-nil stdout sink")
 	}
@@ -296,7 +296,7 @@ func TestRun_TeardownError(t *testing.T) {
 	defer func() { loadBPF = oldLoad }()
 
 	oldRun := doRunStdout
-	doRunStdout = func(bpfSession, bool) {}
+	doRunStdout = func(bpfSession) {}
 	defer func() { doRunStdout = oldRun }()
 
 	if err := run(); err != nil {
@@ -319,7 +319,7 @@ func TestRun_RoutesToStdout(t *testing.T) {
 
 	called := false
 	oldRun := doRunStdout
-	doRunStdout = func(bpfSession, bool) { called = true }
+	doRunStdout = func(bpfSession) { called = true }
 	defer func() { doRunStdout = oldRun }()
 
 	if err := run(); err != nil {
@@ -396,20 +396,10 @@ func TestRunStdout_Completes(t *testing.T) {
 	rd := newFakeRC()
 
 	oldSink := newStdoutSink
-	newStdoutSink = func(bool) output.Sink { return &fakeSink{} }
+	newStdoutSink = func() output.Sink { return &fakeSink{} }
 	defer func() { newStdoutSink = oldSink }()
 
-	runStdout(&fakeBPF{rd: rd}, false)
-}
-
-func TestRunStdout_Verbose(t *testing.T) {
-	rd := newFakeRC()
-
-	oldSink := newStdoutSink
-	newStdoutSink = func(bool) output.Sink { return &fakeSink{} }
-	defer func() { newStdoutSink = oldSink }()
-
-	runStdout(&fakeBPF{rd: rd}, true)
+	runStdout(&fakeBPF{rd: rd})
 }
 
 // blockingRingbufCloser blocks Read() until Close() is called, like the real
@@ -467,13 +457,13 @@ func testRunStdoutRealSignal(t *testing.T, sig syscall.Signal) {
 	rd := newBlockingRC()
 
 	oldSink := newStdoutSink
-	newStdoutSink = func(bool) output.Sink { return &fakeSink{} }
+	newStdoutSink = func() output.Sink { return &fakeSink{} }
 	defer func() { newStdoutSink = oldSink }()
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runStdout(&fakeBPF{rd: rd}, false)
+		runStdout(&fakeBPF{rd: rd})
 	}()
 
 	// Wait for runStdout to reach capture's Read() call — signal.Notify runs

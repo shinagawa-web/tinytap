@@ -28,14 +28,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-assert_contains() {
-    local desc="$1" file="$2" pattern="$3"
-    if grep -qE "${pattern}" "${file}" 2>/dev/null; then
+assert_jsonl() {
+    local desc="$1" file="$2" filter="$3"
+    if [[ -n "$(jq -R "fromjson? // empty | select(${filter})" "${file}" 2>/dev/null)" ]]; then
         echo "  PASS: ${desc}"
     else
         echo "  FAIL: ${desc}"
-        echo "        pattern : ${pattern}"
-        echo "        in file : ${file}"
+        echo "        jq filter : ${filter}"
+        echo "        in file   : ${file}"
         FAILURES=$((FAILURES + 1))
     fi
 }
@@ -127,8 +127,8 @@ echo
 echo "=== assertions ==="
 
 # 1. HTTP exchange captured
-assert_contains "GET /file captured with 200" \
-    "${TT_OUT}" "GET[[:space:]]*/file[[:space:]].*200"
+assert_jsonl "GET /file captured with 200" \
+    "${TT_OUT}" '.method=="GET" and .path=="/file" and .status==200'
 
 # 2. kprobe loaded (no warning in stderr)
 assert_absent "no 'sendfile payload capture disabled' warning" \

@@ -98,6 +98,17 @@ assert_contains() {
     fi
 }
 
+assert_jsonl() {
+    local description="$1"
+    local filter="$2"
+    if [[ -n "$(jq -R "fromjson? // empty | select(${filter})" "${TT_OUT}" 2>/dev/null)" ]]; then
+        echo "  PASS: ${description}"
+    else
+        echo "  FAIL: ${description} (jq filter: ${filter})"
+        FAILURES=$((FAILURES + 1))
+    fi
+}
+
 check_no_leftover_processes() {
     local leftover=0
     if pgrep -x tinytap-nod-e2e >/dev/null 2>&1; then
@@ -163,8 +174,8 @@ echo
 echo "=== assertions ==="
 assert_contains "uprobes attached via node's own executable (exe-fallback, not a mapped libssl.so)" \
     "SSL_write/SSL_read/SSL_free uprobes attached for pid ${NODE_PID} \(.*/node\)\$"
-assert_contains "TLS: GET / paired with 200 (decrypted via SSL uprobe, Node.js target)" \
-    "\[${NODE_PID}\].*GET[[:space:]]+/[[:space:]].*200"
+assert_jsonl "TLS: GET / paired with 200 (decrypted via SSL uprobe, Node.js target)" \
+    ".pid==${NODE_PID} and .method==\"GET\" and .path==\"/\" and .status==200"
 
 echo
 if [[ "${FAILURES}" -eq 0 ]]; then

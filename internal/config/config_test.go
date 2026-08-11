@@ -154,16 +154,13 @@ func TestLoad_NoFileFound_ReturnsDefaults(t *testing.T) {
 	if cfg.Output != "auto" {
 		t.Errorf("Output = %q, want auto", cfg.Output)
 	}
-	if cfg.Verbose {
-		t.Error("Verbose = true, want false")
-	}
 }
 
 func TestLoad_CwdFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	write(t, filepath.Join(dir, "tinytap.toml"), "output = \"stdout\"\nverbose = true\n")
+	write(t, filepath.Join(dir, "tinytap.toml"), "output = \"stdout\"\n")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -171,9 +168,6 @@ func TestLoad_CwdFile(t *testing.T) {
 	}
 	if cfg.Output != "stdout" {
 		t.Errorf("Output = %q, want stdout", cfg.Output)
-	}
-	if !cfg.Verbose {
-		t.Error("Verbose = false, want true")
 	}
 }
 
@@ -252,9 +246,6 @@ func TestInit_WritesLoadableDefaultFile(t *testing.T) {
 	if cfg.Output != "auto" {
 		t.Errorf("Output = %q, want auto", cfg.Output)
 	}
-	if cfg.Verbose {
-		t.Error("Verbose = true, want false")
-	}
 }
 
 func TestInit_WrittenFileListsDefaultKeys(t *testing.T) {
@@ -269,7 +260,7 @@ func TestInit_WrittenFileListsDefaultKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(data)
-	for _, want := range []string{"output = \"auto\"", "verbose = false"} {
+	for _, want := range []string{"output = \"auto\""} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Init() output = %q, want it to contain %q", got, want)
 		}

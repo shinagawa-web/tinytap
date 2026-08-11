@@ -18,7 +18,7 @@ TT_LOG=/tmp/tinytap-demo.log
 TT_RAW=/tmp/tinytap-demo-raw.log
 TT_CFG=/tmp/tinytap-demo-config.toml
 PY_LOG=/tmp/tinytap-demo-py.log
-GREP_RE='(python3|curl)[^][]*\[[0-9]+\]'
+JQ_FILTER='(.comm | startswith("python3")) or (.comm | startswith("curl"))'
 
 PY_PID=""
 TT_PID=""
@@ -90,7 +90,7 @@ sleep 1
 cleanup
 trap - EXIT
 
-grep -E "${GREP_RE}" "${TT_RAW}" > "${TT_LOG}" || true
+jq -R "fromjson? // empty | select(${JQ_FILTER})" "${TT_RAW}" > "${TT_LOG}" || true
 
 echo
 echo "=== captured events (filtered to comm=python3/curl) ==="

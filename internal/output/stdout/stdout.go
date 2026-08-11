@@ -3,20 +3,21 @@ package stdout
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
 )
 
+var encodeJSONL = http.EncodeJSONL
+
 type Sink struct {
-	w       io.Writer
-	verbose bool
-	anchor  http.TimeAnchor
+	w io.Writer
 }
 
-func New(verbose bool) *Sink {
-	return &Sink{w: os.Stdout, verbose: verbose, anchor: http.NewTimeAnchor()}
+func New() *Sink {
+	return &Sink{w: os.Stdout}
 }
 
 func (s *Sink) OnEvent(_ *events.Event) {}
@@ -24,16 +25,12 @@ func (s *Sink) OnEvent(_ *events.Event) {}
 func (s *Sink) OnMessage(_ http.Message) {}
 
 func (s *Sink) OnPaired(pe http.PairedEvent) {
-	if pe.Abandoned {
-		_, _ = fmt.Fprintln(s.w, http.RenderAbandoned(pe, s.anchor.WallTime(pe.ReqTsNs)))
+	b, err := encodeJSONL(pe)
+	if err != nil {
+		log.Printf("tinytap: encode jsonl: %v", err)
 		return
 	}
-	_, _ = fmt.Fprintln(s.w, http.RenderPaired(pe, s.anchor.WallTime(pe.ReqTsNs)))
-	if s.verbose {
-		for _, line := range http.RenderPairedDetail(pe) {
-			_, _ = fmt.Fprintln(s.w, line)
-		}
-	}
+	_, _ = fmt.Fprintln(s.w, string(b))
 }
 
 func (s *Sink) Close() error { return nil }

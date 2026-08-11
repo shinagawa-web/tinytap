@@ -24,12 +24,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-assert_contains() {
-    local desc="$1" pattern="$2"
-    if grep -qE "${pattern}" "${TT_OUT}" 2>/dev/null; then
+assert_jsonl() {
+    local desc="$1" filter="$2"
+    if [[ -n "$(jq -R "fromjson? // empty | select(${filter})" "${TT_OUT}" 2>/dev/null)" ]]; then
         echo "  PASS: ${desc}"
     else
-        echo "  FAIL: ${desc} (pattern: ${pattern})"
+        echo "  FAIL: ${desc} (jq filter: ${filter})"
         FAILURES=$((FAILURES + 1))
     fi
 }
@@ -120,9 +120,9 @@ trap - EXIT
 # ── Assertions ────────────────────────────────────────────────────────────────
 echo
 echo "=== assertions ==="
-assert_contains "GET /hello captured"  "GET[[:space:]]*/hello[[:space:]].*200"
-assert_contains "GET /medium captured" "GET[[:space:]]*/medium[[:space:]].*200"
-assert_contains "GET /file captured"   "GET[[:space:]]*/file[[:space:]].*200"
+assert_jsonl "GET /hello captured"  '.method=="GET" and .path=="/hello" and .status==200'
+assert_jsonl "GET /medium captured" '.method=="GET" and .path=="/medium" and .status==200'
+assert_jsonl "GET /file captured"   '.method=="GET" and .path=="/file" and .status==200'
 
 echo
 echo "=== raw output (last 30 lines) ==="

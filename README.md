@@ -44,7 +44,7 @@ With no config file, that opens the TUI shown at the top of this README:
 `j`/`k` to scroll, `Enter` for the detail panel, `q` or `Ctrl-C` to quit,
 as long as your terminal is at least 120x24. In a smaller or non-interactive
 terminal it prints guidance and exits instead of silently streaming; see
-[Configuration](#configuration) to switch to the line-oriented `stdout` mode.
+[Configuration](#configuration) to switch to the JSONL `stdout` mode.
 
 Didn't work? Run `tinytap doctor` first for a read-only preflight report
 (kernel version, capabilities, libssl execute bit, etc.); see
@@ -76,25 +76,24 @@ on the docs site for the full container story and kernel requirements.
 `tinytap` attaches eBPF probes to a process's socket syscalls
 (`accept4`/`read`/`write`/`close`/`recvfrom`/`sendto`/`recvmsg`/`sendmsg`),
 parses the payload bytes as HTTP/1.1, pairs each request with its response,
-and renders the exchange live, either in the terminal TUI above or as a line-oriented stream:
+and renders the exchange live, either in the terminal TUI above or as JSONL
+(one JSON object per exchange) on stdout:
 
 ```text
-12:47:57.005  python3[27122]  GET   /                        200    1304B     0.3ms
-12:47:57.005  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
+{"reqTsNs":1754887677005000000,"latencyNs":300000,"pid":27122,"comm":"python3","method":"GET","path":"/","status":200,"resBytes":1304,"abandoned":false,...}
 ```
 
 `output = "auto"` (the default) picks the TUI when stdout/stdin are an
 interactive terminal of at least 120x24; otherwise it prints guidance and
-exits rather than silently streaming; the line stream is opt-in via
+exits rather than silently streaming; the JSONL stream is opt-in via
 `output = "stdout"`. `output = "tui"` forces the TUI (and exits the same way
-if the terminal can't host it); `verbose = true` hangs the full
-request/response headers under each stdout line. `--version` prints the
-build's version, commit, and date, and exits without needing root.
+if the terminal can't host it). `--version` prints the build's version,
+commit, and date, and exits without needing root.
 
 ## Configuration
 
-Session settings (`output`, `verbose`) live in a TOML config file, not CLI
-flags. `tinytap config init` writes one, fully populated with defaults, so
+Session settings (`output`) live in a TOML config file, not CLI flags.
+`tinytap config init` writes one, fully populated with defaults, so
 `tinytap config init && tinytap` just works:
 
 ```bash
@@ -110,7 +109,6 @@ defaults below apply.
 
 ```toml
 output = "auto"   # auto | stdout | tui
-verbose = false
 ```
 
 The only CLI surface is one-shot actions, not session settings: `--config

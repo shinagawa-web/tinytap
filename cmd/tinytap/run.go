@@ -58,14 +58,14 @@ var (
 	isTerminalFn                                           = term.IsTerminal
 	getSizeFn                                              = term.GetSize
 	newTUISink    func(w, h int) tuiSink                   = defaultNewTUISink
-	newStdoutSink func(verbose bool) output.Sink           = defaultNewStdoutSink
-	doRunStdout   func(bpfSession, bool)                   = runStdout
+	newStdoutSink func() output.Sink                       = defaultNewStdoutSink
+	doRunStdout   func(bpfSession)                         = runStdout
 	doRunTUI      func(bpfSession, int, int)               = runTUI
 	loadConfig    func(path string) (config.Config, error) = config.Load
 )
 
-func defaultNewTUISink(w, h int) tuiSink            { return tui.New(w, h) }
-func defaultNewStdoutSink(verbose bool) output.Sink { return stdout.New(verbose) }
+func defaultNewTUISink(w, h int) tuiSink { return tui.New(w, h) }
+func defaultNewStdoutSink() output.Sink  { return stdout.New() }
 
 func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "config" {
@@ -107,7 +107,7 @@ func run() error {
 	if decision == outputTUI {
 		doRunTUI(tt, w, h)
 	} else {
-		doRunStdout(tt, conf.Verbose)
+		doRunStdout(tt)
 	}
 	return nil
 }
@@ -121,9 +121,9 @@ func closeOnInterrupt(rd io.Closer, stop <-chan os.Signal) {
 	}()
 }
 
-func runStdout(sess bpfSession, verbose bool) {
+func runStdout(sess bpfSession) {
 	rd := sess.reader()
-	sink := newSSLWatcher(newStdoutSink(verbose))
+	sink := newSSLWatcher(newStdoutSink())
 	defer closeSink(sink)
 	log.Printf("tinytap running (version %s) — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.", version)
 	stop := make(chan os.Signal, 1)

@@ -6,8 +6,8 @@ weight: 3
 # Usage
 
 [Quick Start]({{< relref "quick-start" >}}) gets `tinytap` running. This page
-covers what to do once it's up: reading the TUI, reading the `stdout` line
-format, and when to reach for `verbose` or `doctor`.
+covers what to do once it's up: reading the TUI, reading the `stdout` JSONL
+format, and when to reach for `doctor`.
 
 ## TUI
 
@@ -60,28 +60,43 @@ top/bottom; `Esc`, `d`, or `Enter` closes it.
 
 ## `stdout` mode
 
-`output = "stdout"` prints one line per exchange instead of drawing the TUI,
-useful when piping into `grep`/`jq`, running over SSH, or in CI:
+`output = "stdout"` prints one JSON object per exchange (JSONL) instead of
+drawing the TUI, useful when piping into `jq`, running over SSH, or in CI.
+Full request/response headers are always included, with no separate verbose
+toggle; `reqBody`/`resBody`/`abandonReason`/`ssl` are omitted when empty
+rather than sent as zero values:
 
-```text
-2026-08-01T12:47:57.005+09:00  python3[27122]  GET   /                        200    1304B     0.3ms
-2026-08-01T12:47:57.005+09:00  curl[1234]       GET   /api                     ABANDONED     12.3ms  (peer closed)
+```json
+{
+  "reqTsNs": 1754887677005000000,
+  "latencyNs": 300000,
+  "pid": 27122,
+  "fd": 6,
+  "comm": "python3",
+  "method": "GET",
+  "path": "/api",
+  "reqVersion": "HTTP/1.1",
+  "status": 200,
+  "reason": "OK",
+  "resVersion": "HTTP/1.1",
+  "resBytes": 1304,
+  "reqBytes": 0,
+  "reqHeaders": [{"name": "Host", "value": "localhost:8000"}],
+  "resHeaders": [{"name": "Content-Type", "value": "application/json"}],
+  "abandoned": false,
+  "reqBodyTruncated": false,
+  "resBody": "eyJvayI6dHJ1ZX0=",
+  "resBodyTruncated": false,
+  "sslFallback": false
+}
 ```
 
-Each line has a timestamp, `process[pid]`, method, and path, then either the
-response (`status`, response size, latency) or `ABANDONED` with a reason:
-`peer closed` (the connection closed before a response arrived) or
-`timeout` (no response showed up before `tinytap` gave up waiting).
-
-`verbose = true` hangs the full request and response, every header, `>` for
-outgoing (the request), `<` for incoming (the response), under each line:
-
-```text
-    > GET /api HTTP/1.1
-    > Host: localhost:8000
-    < HTTP/1.1 200 OK
-    < Content-Type: application/json
-```
+An abandoned exchange (the connection closed, or `tinytap` gave up waiting)
+sets `abandoned` and `abandonReason` (`peer closed` or `timed out`);
+`status`/`resBytes` stay at their zero value since no response arrived.
+`reqBody`/`resBody` are base64 (JSON has no raw byte type); pipe through
+`jq -r '.resBody | @base64d'` to decode one, or filter the whole stream by
+field, e.g. `tinytap --config … | jq 'select(.abandoned)'`.
 
 ## `doctor`
 
