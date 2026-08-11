@@ -24,7 +24,7 @@ Results from manual testing on real VMs. Every cell here is a real run, not an i
 
 | Distro | Kernel | Arch | BTF | Loads | Plaintext | TLS | sendfile payload | Min caps (plain) | Min caps (TLS) | Tested by |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Ubuntu 25.10 (dev VM) | 6.17.x | arm64 | ✓ | ✓ | ✓ | ✓ | ✓ | `cap_dac_read_search,cap_perfmon,cap_bpf` | + `cap_sys_admin` | #157 |
+| Ubuntu 25.10 (dev VM) | 6.17.0-41-generic | arm64 | ✓ | ✓ | ✓ | ✓ | ✓ | `cap_dac_read_search,cap_perfmon,cap_bpf` | + `cap_sys_admin` | #157 |
 | Ubuntu (CI, amd64) | 7.0.0 | amd64 | ✓ | ✓ | ✓ | ✓ | ✓ | `cap_dac_read_search,cap_perfmon,cap_bpf` | + `cap_sys_admin` | #194 |
 | Fedora 43 | 6.17.1-300.fc43.aarch64 | arm64 | ✓ | ✓ | ✓ | ✓ | ✓ | `cap_dac_read_search,cap_perfmon,cap_bpf` | + `cap_sys_admin` | #213 |
 | Debian 12 | 6.1.0-49-cloud-arm64 | arm64 | ✓ | ✓ | ✓ | ✓ | ✗ | `cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin` | same | #213 |
@@ -63,7 +63,7 @@ The binary under test was built on the Ubuntu 25.10 dev VM (the canonical build 
 attach uprobe SSL_set_fd: creating perf_uprobe PMU: token ...: opening perf event: permission denied
 ```
 
-This is identical to the Ubuntu error. The requirement is standard kernel behavior — `perf_event_open` against the dynamic uprobe PMU requires `CAP_SYS_ADMIN` regardless of distro.
+This is identical to the Ubuntu error. The requirement is not Ubuntu-specific — `perf_event_open` against the dynamic uprobe PMU requires `CAP_SYS_ADMIN` on upstream 6.x kernels. AlmaLinux 9's RHEL 5.14 backport is the only tested exception where TLS uprobe attaches without it.
 
 ### sendfile tracepoint names
 

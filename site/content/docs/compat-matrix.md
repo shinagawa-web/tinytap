@@ -12,7 +12,7 @@ Every row in the table below is a real test run. Untested combinations are not l
 
 | Distro | Kernel | Plaintext | TLS | Notes |
 |---|---|---|---|---|
-| Ubuntu 25.10 | 6.17.x | ✓ | ✓ | |
+| Ubuntu 25.10 | 6.17.0-41-generic | ✓ | ✓ | |
 | Ubuntu 24.04 | 6.8.0 | ✓ | ✓ | |
 | Ubuntu 22.04 | 5.15.0 | ✓ | ✓ | sendfile body not captured (`BPF_PROG_TYPE_TRACING` not available in this kernel config) |
 | Fedora 43 | 6.17.1 | ✓ | ✓ | |
