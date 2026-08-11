@@ -12,14 +12,6 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/loader"
 )
 
-// TestReportDrops_RealRingbufDrop forces a genuine ring buffer overflow on
-// the real BPF object (same technique as internal/loader's
-// TestLoaderDropCounts_RingbufReserveFailure: flood a pipe write with
-// nothing draining the ring) and asserts that reportDrops — wired to the
-// same tinytapSession the CLI builds in bpf.go — prints the summary line.
-// #303's unit tests only ever exercise reportDrops against a fakeBPF with a
-// hand-set Counts value, so this is the only place the real
-// dropCounts→Summary→log.Print wiring gets checked end to end.
 func TestReportDrops_RealRingbufDrop(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("requires root / CAP_BPF")
