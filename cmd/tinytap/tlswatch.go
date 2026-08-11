@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/loader"
 	"github.com/shinagawa-web/tinytap/internal/output"
@@ -14,14 +15,20 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/tls"
 )
 
+type dropCounter interface {
+	DropCounts() drops.Counts
+}
+
 type sslProbe interface {
 	Close() error
 	Lookup(pid uint32, ssl uint64) (int32, bool)
+	DropCounts() drops.Counts
 }
 
 type payloadProbe interface {
 	Close() error
 	reader() ringbufReader
+	DropCounts() drops.Counts
 }
 
 type payloadProbeAdapter struct {
@@ -40,6 +47,7 @@ type sslWatcher struct {
 	seen          map[uint32]bool
 	probes        map[uint32]sslProbe
 	payloadProbes map[uint32]payloadProbe
+	closedDrops   drops.Counts
 
 	find          func(pid uint32) (tls.Discovery, error)
 	attach        func(pid uint32, path string) (sslProbe, error)
@@ -140,6 +148,7 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 
 		w.mu.Lock()
 		if w.closed {
+			w.harvestLocked(probe)
 			w.mu.Unlock()
 			_ = probe.Close()
 			return
@@ -156,6 +165,7 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 
 		w.mu.Lock()
 		if w.closed {
+			w.harvestLocked(pp)
 			w.mu.Unlock()
 			_ = pp.Close()
 			return
@@ -178,6 +188,32 @@ func (w *sslWatcher) findWithRetry(pid uint32) (tls.Discovery, error) {
 	}
 }
 
+// harvestLocked folds a probe's drop counters into closedDrops before the
+// probe is closed — a closed probe's maps are gone, so this is the last
+// chance to read them. Caller must hold w.mu.
+func (w *sslWatcher) harvestLocked(p dropCounter) {
+	w.closedDrops = w.closedDrops.Add(p.DropCounts())
+}
+
+// dropCounts totals drops across every live probe plus those already
+// harvested from closed ones. Each attached pid loads its own copy of the
+// uprobe object, so every probe carries its own drop_counters map and the
+// per-probe reads must be summed here. Holds w.mu across a map lookup
+// syscall per probe: call this at shutdown or on a coarse timer, never
+// per event.
+func (w *sslWatcher) dropCounts() drops.Counts {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	total := w.closedDrops
+	for _, p := range w.probes {
+		total = total.Add(p.DropCounts())
+	}
+	for _, p := range w.payloadProbes {
+		total = total.Add(p.DropCounts())
+	}
+	return total
+}
+
 func (w *sslWatcher) Close() error {
 	w.mu.Lock()
 	w.closed = true
@@ -185,6 +221,12 @@ func (w *sslWatcher) Close() error {
 	w.probes = nil
 	payloadProbes := w.payloadProbes
 	w.payloadProbes = nil
+	for _, p := range probes {
+		w.harvestLocked(p)
+	}
+	for _, p := range payloadProbes {
+		w.harvestLocked(p)
+	}
 	w.mu.Unlock()
 
 	var errs []error

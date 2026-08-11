@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/loader"
 )
 
@@ -25,6 +26,9 @@ func TestSSLFdProbeStub_LookupAndClose(t *testing.T) {
 	if fd, ok := p.Lookup(123, 0xdeadbeef); ok || fd != 0 {
 		t.Errorf("Lookup = %d, %v; want 0, false", fd, ok)
 	}
+	if got := p.DropCounts(); got != (drops.Counts{}) {
+		t.Errorf("DropCounts() = %+v, want zero value", got)
+	}
 	if err := p.Close(); err != nil {
 		t.Errorf("Close() = %v, want nil", err)
 	}
@@ -43,6 +47,9 @@ func TestAttachSSLReadWrite_UnsupportedArch(t *testing.T) {
 func TestSSLPayloadProbeStub_Close(t *testing.T) {
 	var p *loader.SSLPayloadProbe
 
+	if got := p.DropCounts(); got != (drops.Counts{}) {
+		t.Errorf("DropCounts() = %+v, want zero value", got)
+	}
 	if err := p.Close(); err != nil {
 		t.Errorf("Close() = %v, want nil", err)
 	}

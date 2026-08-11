@@ -8,6 +8,8 @@
 #endif
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <linux/errno.h>
+#include "drops.h"
 
 struct ssl_fd_key {
     __u32 pid;
@@ -31,7 +33,8 @@ int BPF_UPROBE(handle_ssl_set_fd, void *ssl, int fd)
         .ssl = (__u64)(unsigned long)ssl,
     };
     __s32 fd32 = fd;
-    bpf_map_update_elem(&ssl_fd_map, &key, &fd32, BPF_ANY);
+    if (bpf_map_update_elem(&ssl_fd_map, &key, &fd32, BPF_ANY) == -E2BIG)
+        count_drop(DROP_MAP_FULL);
     return 0;
 }
 
@@ -90,8 +93,10 @@ static __always_inline void submit_ssl_event(__u32 op, __u64 ssl, __u32 len,
                                               const void *user_buf, __u32 user_len)
 {
     struct ssl_event *e = bpf_ringbuf_reserve(&ssl_events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        count_drop(DROP_RINGBUF);
         return;
+    }
 
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     e->ts_ns       = bpf_ktime_get_ns();
@@ -142,7 +147,8 @@ int BPF_UPROBE(handle_ssl_read, void *ssl, void *buf, int num)
         .ssl = (__u64)(unsigned long)ssl,
         .buf = (__u64)(unsigned long)buf,
     };
-    bpf_map_update_elem(&ssl_read_pending_map, &tid, &p, BPF_ANY);
+    if (bpf_map_update_elem(&ssl_read_pending_map, &tid, &p, BPF_ANY) == -E2BIG)
+        count_drop(DROP_MAP_FULL);
     return 0;
 }
 
@@ -173,7 +179,8 @@ int BPF_UPROBE(handle_ssl_read_ex, void *ssl, void *buf, __u64 num, __u64 *readb
         .buf           = (__u64)(unsigned long)buf,
         .readbytes_ptr = (__u64)(unsigned long)readbytes,
     };
-    bpf_map_update_elem(&ssl_read_ex_pending_map, &tid, &p, BPF_ANY);
+    if (bpf_map_update_elem(&ssl_read_ex_pending_map, &tid, &p, BPF_ANY) == -E2BIG)
+        count_drop(DROP_MAP_FULL);
     return 0;
 }
 
