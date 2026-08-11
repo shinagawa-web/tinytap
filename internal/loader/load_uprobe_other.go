@@ -20,6 +20,8 @@ func AttachSSLSetFd(pid uint32, libsslPath string) (*SSLFdProbe, error) {
 
 func (p *SSLFdProbe) Lookup(pid uint32, ssl uint64) (int32, bool) { return 0, false }
 
+func (p *SSLFdProbe) Delete(pid uint32, ssl uint64) {}
+
 func (p *SSLFdProbe) DropCounts() drops.Counts { return drops.Counts{} }
 
 func (p *SSLFdProbe) Close() error { return nil }
