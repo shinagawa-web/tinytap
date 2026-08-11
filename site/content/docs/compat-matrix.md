@@ -13,13 +13,12 @@ Results from manual testing on real VMs (#213). Every cell is a real run — unt
 |---|---|---|---|---|---|---|---|---|---|
 | Ubuntu 25.10 | 6.17.x | arm64 | ✓ | ✓ | ✓ | ✓ | ✓ | base-3 | + `cap_sys_admin` |
 | Ubuntu 24.04 | — | amd64 | — | — | — | — | — | — | — |
-| Ubuntu 22.04 (CI) | 6.8.0-azure | amd64 | ✓ | ✓ | ✓ | ✓ | ✓ | base-3 | + `cap_sys_admin` |
-| Ubuntu (amd64 dev VM) | 7.0.0 | amd64 | ✓ | ✓ | ✓ | ✓ | ✓ | base-3 | + `cap_sys_admin` |
+| Ubuntu 22.04 | 6.8.0-azure (CI) | amd64 | ✓ | ✓ | ✓ | ✓ | ✓ | base-3 | + `cap_sys_admin` |
+| Ubuntu 20.04 (GA) | 5.4.0 | arm64 | ✓ | ✗ | ✗ | ✗ | ✗ | — | — |
 | Fedora 43 | 6.17.1 | arm64 | ✓ | ✓ | ✓ | ✓ | ✓ | base-3 | + `cap_sys_admin` |
 | Debian 12 | 6.1.0 | arm64 | ✓ | ✓ | ✓ | ✓ | ✗ | base-3 + `cap_sys_admin` | same |
 | AlmaLinux 9 | 5.14.0 (RHEL) | arm64 | ✓ | ✓ | ✓ | ✓ | ✗ | base-3 | same |
 | Alpine 3.23 | 6.18.22-virt | arm64 | ✓ | ✓ | ✓ | ✓ | ✗ | base-3 | + `cap_sys_admin` |
-| Ubuntu 20.04 (GA) | 5.4.0 | arm64 | ✓ | ✗ | ✗ | ✗ | ✗ | — | — |
 | WSL2 | — | amd64 | — | — | — | — | — | — | — |
 
 **base-3** = `cap_dac_read_search,cap_perfmon,cap_bpf`
