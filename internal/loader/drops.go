@@ -1,6 +1,10 @@
 package loader
 
-import "github.com/shinagawa-web/tinytap/internal/drops"
+import (
+	"log"
+
+	"github.com/shinagawa-web/tinytap/internal/drops"
+)
 
 const (
 	dropSlotRingbuf = 0
@@ -21,6 +25,7 @@ func readDrops(m dropLookuper) drops.Counts {
 func sumDropSlot(m dropLookuper, slot uint32) uint64 {
 	var vals []uint64
 	if err := m.Lookup(&slot, &vals); err != nil {
+		log.Printf("tinytap: read drop_counters slot %d: %v", slot, err)
 		return 0
 	}
 	var total uint64

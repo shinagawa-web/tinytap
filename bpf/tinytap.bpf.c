@@ -1,6 +1,7 @@
 //go:build ignore
 
 #include <linux/bpf.h>
+#include <linux/errno.h>
 #include <bpf/bpf_helpers.h>
 #include "drops.h"
 
@@ -422,7 +423,7 @@ static __always_inline void stash_incoming(__u32 syscall, __s32 fd,
         .fd      = fd,
         .buf     = (__u64)(unsigned long)buf,
     };
-    if (bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY) < 0)
+    if (bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY) == -E2BIG)
         count_drop(DROP_MAP_FULL);
 }
 
@@ -443,7 +444,7 @@ static __always_inline void stash_incoming_iov(__u32 syscall, __s32 fd,
         .buf     = (__u64)(unsigned long)iov_ptr,
         .iovcnt  = iovcnt,
     };
-    if (bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY) < 0)
+    if (bpf_map_update_elem(&incoming_pending_map, &tid, &p, BPF_ANY) == -E2BIG)
         count_drop(DROP_MAP_FULL);
 }
 

@@ -25,6 +25,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include <linux/errno.h>
 #include "drops.h"
 
 // Must match tinytap.bpf.c's MAX_PAYLOAD exactly (#36).
@@ -150,7 +151,7 @@ int BPF_PROG(handle_tcp_sendmsg_locked, struct sock *sk, struct msghdr *msg,
         return 0;
     s->payload_len = to_read;
 
-    if (bpf_map_update_elem(&sendfile_sample_map, &tid, s, BPF_ANY) < 0)
+    if (bpf_map_update_elem(&sendfile_sample_map, &tid, s, BPF_ANY) == -E2BIG)
         count_drop(DROP_MAP_FULL);
     return 0;
 }
