@@ -84,35 +84,17 @@ struct msghdr_user {
 
 #define MAX_IOV 8
 
-static __always_inline __u32 read_msghdr(const void *user_msghdr_ptr,
-                                         void **out_first_base,
-                                         __u32 *out_first_len)
+static __always_inline int read_msghdr_iov(const void *user_msghdr_ptr,
+                                           struct iovec_user **out_iov,
+                                           __u32 *out_iovlen)
 {
     struct msghdr_user msg;
     if (bpf_probe_read_user(&msg, sizeof(msg), user_msghdr_ptr) < 0)
-        return 0;
+        return -1;
 
-    __u32 total = 0;
-    void *first_base = NULL;
-    __u32 first_len = 0;
-
-    #pragma unroll
-    for (int i = 0; i < MAX_IOV; i++) {
-        if ((__u64)i >= msg.msg_iovlen)
-            break;
-        struct iovec_user iov;
-        if (bpf_probe_read_user(&iov, sizeof(iov), &msg.msg_iov[i]) < 0)
-            break;
-        if (i == 0) {
-            first_base = iov.iov_base;
-            first_len  = (__u32)iov.iov_len;
-        }
-        total += (__u32)iov.iov_len;
-    }
-
-    if (out_first_base) *out_first_base = first_base;
-    if (out_first_len)  *out_first_len  = first_len;
-    return total;
+    *out_iov    = msg.msg_iov;
+    *out_iovlen = (__u32)msg.msg_iovlen;
+    return 0;
 }
 
 #define IOV_ACTUAL_LEN_UNBOUNDED 0xFFFFFFFFU
@@ -338,16 +320,7 @@ static __always_inline void submit_from_pending(long ret)
     if (ret > 0) {
         __u32 bytes = (__u32)ret;
 
-        if (p->syscall == SYS_RECVMSG) {
-            void *first_base = NULL;
-            __u32 first_len = 0;
-            read_msghdr((const void *)(unsigned long)p->buf,
-                        &first_base, &first_len);
-            __u32 to_read = bytes;
-            if (to_read > first_len)
-                to_read = first_len;
-            submit_event(p->syscall, p->fd, bytes, first_base, to_read);
-        } else if (p->syscall == SYS_READV) {
+        if (p->syscall == SYS_RECVMSG || p->syscall == SYS_READV) {
             submit_event_iov(p->syscall, p->fd,
                              (const void *)(unsigned long)p->buf, p->iovcnt,
                              bytes);
@@ -416,20 +389,23 @@ int handle_sendto(struct sys_enter_ctx *ctx)
 SEC("tracepoint/syscalls/sys_enter_recvmsg")
 int handle_recvmsg(struct sys_enter_ctx *ctx)
 {
-    stash_incoming(SYS_RECVMSG, (__s32)ctx->args[0],
-                   (const void *)ctx->args[1]);
+    struct iovec_user *iov;
+    __u32 iovlen;
+    if (read_msghdr_iov((const void *)ctx->args[1], &iov, &iovlen) < 0)
+        return 0;
+    stash_incoming_iov(SYS_RECVMSG, (__s32)ctx->args[0], iov, iovlen);
     return 0;
 }
 
 SEC("tracepoint/syscalls/sys_enter_sendmsg")
 int handle_sendmsg(struct sys_enter_ctx *ctx)
 {
-    void *first_buf = NULL;
-    __u32 first_len = 0;
-    __u32 total = read_msghdr((const void *)ctx->args[1],
-                              &first_buf, &first_len);
-    submit_event(SYS_SENDMSG, (__s32)ctx->args[0], total,
-                 first_buf, first_len);
+    struct iovec_user *iov;
+    __u32 iovlen;
+    if (read_msghdr_iov((const void *)ctx->args[1], &iov, &iovlen) < 0)
+        return 0;
+    submit_event_iov(SYS_SENDMSG, (__s32)ctx->args[0], iov, iovlen,
+                     IOV_ACTUAL_LEN_UNBOUNDED);
     return 0;
 }
 
