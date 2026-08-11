@@ -7,10 +7,10 @@ weight: 15
 
 Released so far: `v0.1.0` (HTTP request/response visible), `v0.2.0`
 (Bubble Tea TUI), `v0.3.0` (filtering + test foundation), `v0.4.0` (server
-capture & compatibility — see [Server Compatibility]({{< relref "server-compatibility" >}})),
-`v0.5.0` (HTTPS support via libssl uprobes — see
+capture & compatibility, see [Server Compatibility]({{< relref "server-compatibility" >}})),
+`v0.5.0` (HTTPS support via libssl uprobes, see
 [TLS Compatibility]({{< relref "tls-compatibility" >}})), `v0.6.0`
-(production readiness). `v0.7.0` (real-hardware bring-up) is in progress —
+(production readiness). `v0.7.0` (real-hardware bring-up) is in progress;
 see [issue #198](https://github.com/shinagawa-web/tinytap/issues/198).
 
 Full roadmap (near-term steps and longer-term vision) lives in

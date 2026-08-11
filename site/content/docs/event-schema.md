@@ -7,8 +7,8 @@ weight: 12
 
 The kernel-to-userspace event format used by `tinytap`. The C struct lives
 in [`bpf/tinytap.bpf.c`](https://github.com/shinagawa-web/tinytap/blob/main/bpf/tinytap.bpf.c)
-and the Go struct in [`cmd/tinytap/main.go`](https://github.com/shinagawa-web/tinytap/blob/main/cmd/tinytap/main.go) —
-they must stay in sync, byte-for-byte. The ringbuf carries one of these per
+and the Go struct in [`cmd/tinytap/main.go`](https://github.com/shinagawa-web/tinytap/blob/main/cmd/tinytap/main.go).
+They must stay in sync, byte-for-byte. The ringbuf carries one of these per
 captured syscall.
 
 ## C side (kernel)
@@ -41,7 +41,7 @@ struct event {
 };
 ```
 
-That's 4144 bytes total, with no implicit padding — fields are ordered so
+That's 4144 bytes total, with no implicit padding: fields are ordered so
 the natural layout aligns to 8 bytes.
 
 ## Go side (userspace)
@@ -67,21 +67,21 @@ byte order (arm64 / x86_64 native).
 
 ## Field notes
 
-- **`ts_ns`** — kernel-side monotonic clock in nanoseconds. Not wall-clock. Use for relative ordering and latency calculation, not for absolute timestamps.
+- **`ts_ns`**: kernel-side monotonic clock in nanoseconds. Not wall-clock. Use for relative ordering and latency calculation, not for absolute timestamps.
 
-- **`pid` / `tid`** — `bpf_get_current_pid_tgid()` returns `(tgid << 32) | tid`. `pid` here is the tgid (= user-visible PID); `tid` is the thread id within that group. For single-threaded processes the two are equal.
+- **`pid` / `tid`**: `bpf_get_current_pid_tgid()` returns `(tgid << 32) | tid`. `pid` here is the tgid (= user-visible PID); `tid` is the thread id within that group. For single-threaded processes the two are equal.
 
-- **`fd`** — first syscall argument. For `accept4` this is the *listening* socket fd, not the new connection fd (the new fd is the syscall return value, only available at `sys_exit`).
+- **`fd`**: first syscall argument. For `accept4` this is the *listening* socket fd, not the new connection fd (the new fd is the syscall return value, only available at `sys_exit`).
 
-- **`bytes`** — captured at `sys_enter`, so this is the *requested* byte count (e.g. `read(fd, buf, 8192)` records 8192 even if only 80 bytes actually arrive).
+- **`bytes`**: captured at `sys_enter`, so this is the *requested* byte count (e.g. `read(fd, buf, 8192)` records 8192 even if only 80 bytes actually arrive).
 
-- **`syscall`** — enum value from above. The Go side has a parallel `syscallNames` map.
+- **`syscall`**: enum value from above. The Go side has a parallel `syscallNames` map.
 
-- **`payload_len`** — set to 0 for hooks that don't capture payload (accept4 / close / incoming syscalls at sys_enter). Otherwise `min(MAX_PAYLOAD, bytes)`.
+- **`payload_len`**: set to 0 for hooks that don't capture payload (accept4 / close / incoming syscalls at sys_enter). Otherwise `min(MAX_PAYLOAD, bytes)`.
 
-- **`comm`** — kernel's `task_struct.comm`, max 15 chars + NUL. **Not guaranteed NUL-terminated** when exactly 16 chars long; trim trailing NULs before printing.
+- **`comm`**: kernel's `task_struct.comm`, max 15 chars + NUL. **Not guaranteed NUL-terminated** when exactly 16 chars long; trim trailing NULs before printing.
 
-- **`payload`** — up to `MAX_PAYLOAD` (4096) bytes of the user buffer at `sys_enter`. Only populated for outgoing syscalls (`write` / `sendto` / `sendmsg`).
+- **`payload`**: up to `MAX_PAYLOAD` (4096) bytes of the user buffer at `sys_enter`. Only populated for outgoing syscalls (`write` / `sendto` / `sendmsg`).
 
 ## Layout (offsets)
 
@@ -102,7 +102,7 @@ byte order (arm64 / x86_64 native).
 
 A second, separate event format emitted by the SSL_write/SSL_read uprobe
 program over its own ringbuf (`ssl_events`). This program is a standalone
-capability — not wired into the main event ringbuf above, and it carries
+capability, not wired into the main event ringbuf above, and it carries
 no `fd` (SSL-to-fd correlation is a separate probe's job).
 
 ```c
@@ -127,13 +127,13 @@ struct ssl_event {
 
 That's 4152 bytes total.
 
-- **`op`** — `SSL_OP_WRITE` is captured at `SSL_write`/`SSL_write_ex` entry, where `(ssl, buf, num)` are already valid arguments. `SSL_OP_READ` is captured at `SSL_read`/`SSL_read_ex` *return* instead, since the plaintext buffer is only filled by the time the call returns.
+- **`op`**: `SSL_OP_WRITE` is captured at `SSL_write`/`SSL_write_ex` entry, where `(ssl, buf, num)` are already valid arguments. `SSL_OP_READ` is captured at `SSL_read`/`SSL_read_ex` *return* instead, since the plaintext buffer is only filled by the time the call returns.
 
-- **`len`** — for writes, the *requested* byte count. For reads, the *actual* byte count, since it's only known at return.
+- **`len`**: for writes, the *requested* byte count. For reads, the *actual* byte count, since it's only known at return.
 
-- **`_pad`** — no data; keeps `comm`/`payload` at offsets that are multiples of 8, explicit rather than left to compiler-inserted struct padding.
+- **`_pad`**: no data; keeps `comm`/`payload` at offsets that are multiples of 8, explicit rather than left to compiler-inserted struct padding.
 
-- **`payload`** — up to 4096 bytes of plaintext, same cap and truncation behavior as the main event's `payload`.
+- **`payload`**: up to 4096 bytes of plaintext, same cap and truncation behavior as the main event's `payload`.
 
 ### SSL event layout (offsets)
 
