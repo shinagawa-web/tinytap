@@ -76,30 +76,20 @@ declared, so the sample it captures in kernel space lands exactly where A's
 `bpf_ringbuf_reserve(&events, sizeof(*e), 0)` always reserves a full
 `sizeof(struct event)`, currently 4096 bytes of payload plus a small fixed
 header, even for a 12-byte response. Reserving only the sample's actual
-length instead looks like the obvious fix. It doesn't compile: the verifier
-requires the size argument to `bpf_ringbuf_reserve` to be a compile-time
-constant, not a value computed at runtime. Every event pays for the full
-4096 bytes whether it needs them or not, because the verifier leaves no
-other option.
+length instead looks like the obvious alternative, but it doesn't compile:
+the verifier requires the size argument to `bpf_ringbuf_reserve` to be a
+compile-time constant, not a value computed at runtime. Every event pays
+for the full 4096-plus bytes regardless of its actual size.
 
-That fixed cost is what makes ring size matter, and the history of how the
-current size got picked is worth walking through. `MAX_PAYLOAD` used to be
-256 bytes, which cut most JSON and HTML response bodies off partway
-through. Raising it to 4096 fixed the truncation, but also grew `struct
-event` from around 260 bytes to around 4160, roughly 14x. Since every
-reserve is fixed-size, the same ring now held about 14x fewer events before
-filling up, and events started getting dropped under load.
-
-The first fix tried was making the ring bigger. It barely moved the drop
-rate. The actual bottleneck was in user space: `events.Decode` used Go's
-`binary.Read`, which falls back to reflection for a `[4096]byte` struct
-field, and that reflection cost, not the ring's capacity, was what limited
-how fast the ring could be drained. Once `Decode` was rewritten to use
-hand-rolled `binary.LittleEndian` reads and `copy()` calls instead, which is
-what it still does today, draining got fast enough that ring size actually
-started to matter. Only then did enlarging the ring help. The `events`
-ring's current size, 8 MiB (`1 << 23` bytes), was set after that fix,
-against the new decode speed, not chosen as a round number up front.
+Because each event costs a fixed amount of ring space, ring size and
+`MAX_PAYLOAD` are directly coupled: a larger `MAX_PAYLOAD` shrinks how many
+events fit in a given ring before it fills up. Draining speed matters just
+as much as capacity. `events.Decode` reads each event with hand-rolled
+`binary.LittleEndian` calls and `copy()`, avoiding `encoding/binary`'s
+reflection-based path for the `[4096]byte` payload field, since reflection
+over a field that size is expensive enough to bottleneck how fast the ring
+can be drained. With that decode path, the ring's current size, 8 MiB
+(`1 << 23` bytes), is enough headroom to avoid drops under normal load.
 
 ## The 512-byte stack limit, and the scratch map that works around it
 
