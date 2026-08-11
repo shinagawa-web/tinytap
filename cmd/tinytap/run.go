@@ -131,6 +131,7 @@ func runStdout(sess bpfSession, verbose bool) {
 	defer signal.Stop(stop)
 	closeOnInterrupt(rd, stop)
 	capture(rd, sink)
+	reportDrops(sess, sink)
 }
 
 func runCapturePipeline(rd ringbufCloser, sink output.Sink, ui tuiRunner) error {
@@ -165,6 +166,7 @@ func runTUI(sess bpfSession, width, height int) {
 	if runErr != nil {
 		log.Printf("tui: %v", runErr)
 	}
+	reportDrops(sess, sink)
 }
 
 func isRoutineTLSAttach(line string) bool {
@@ -175,5 +177,11 @@ func isRoutineTLSAttach(line string) bool {
 func closeSink(sink output.Sink) {
 	if err := sink.Close(); err != nil {
 		log.Printf("sink close: %v", err)
+	}
+}
+
+func reportDrops(sess bpfSession, w *sslWatcher) {
+	if s := sess.dropCounts().Add(w.dropCounts()).Summary(); s != "" {
+		log.Print(s)
 	}
 }
