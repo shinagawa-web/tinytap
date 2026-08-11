@@ -31,6 +31,22 @@ flowchart LR
     L -.->|"uprobe reads the plaintext\nbefore encryption"| T["tinytap"]
 ```
 
+## Check what a third-party SDK or library actually sends
+
+Client libraries retry, add headers, or rewrite requests in ways their docs
+don't fully spell out. Rather than reading the library's source to guess,
+`tinytap` shows the literal bytes it puts on the wire: how many requests a
+"single" call actually issues, which header it sends for auth, whether a
+retry changes the request at all.
+
+```mermaid
+flowchart LR
+    Code["your code\nclient.get(url)"] --> SDK["SDK"]
+    SDK -->|"request #1"| Server
+    SDK -.->|"retry: request #2"| Server
+    T["tinytap"] -.->|"captures every request the SDK actually sends"| SDK
+```
+
 ## Diagnose a request that never got a response
 
 A client reports a hang or a failure with no clear cause, and you own the
@@ -76,22 +92,6 @@ sequenceDiagram
         Client--xServer: caller disconnects first
         Note over Server: ABANDONED (peer closed): Server never got to answer
     end
-```
-
-## Check what a third-party SDK or library actually sends
-
-Client libraries retry, add headers, or rewrite requests in ways their docs
-don't fully spell out. Rather than reading the library's source to guess,
-`tinytap` shows the literal bytes it puts on the wire: how many requests a
-"single" call actually issues, which header it sends for auth, whether a
-retry changes the request at all.
-
-```mermaid
-flowchart LR
-    Code["your code\nclient.get(url)"] --> SDK["SDK"]
-    SDK -->|"request #1"| Server
-    SDK -.->|"retry: request #2"| Server
-    T["tinytap"] -.->|"captures every request the SDK actually sends"| SDK
 ```
 
 ## Debug traffic across container boundaries without a sidecar
