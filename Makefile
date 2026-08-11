@@ -63,7 +63,7 @@ GOBIN   := $(shell go env GOROOT)/bin/go
 GOLINT  := $(shell go env GOPATH)/bin/golangci-lint
 
 test-integration:
-	sudo $(GOBIN) test -tags=privileged -v ./internal/loader/
+	sudo $(GOBIN) test -tags=privileged -v ./internal/loader/ ./cmd/tinytap/
 
 # Local dry run of the release pipeline (#196) — builds both arches and
 # packages archives under dist/ without publishing anything (--snapshot
