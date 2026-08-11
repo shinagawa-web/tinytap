@@ -62,8 +62,9 @@ top/bottom; `Esc`, `d`, or `Enter` closes it.
 
 `output = "stdout"` prints one JSON object per exchange (JSONL) instead of
 drawing the TUI, useful when piping into `jq`, running over SSH, or in CI.
-Every field is always present, full request/response headers and bodies
-included, with no separate verbose toggle:
+Full request/response headers are always included, with no separate verbose
+toggle; `reqBody`/`resBody`/`abandonReason`/`ssl` are omitted when empty
+rather than sent as zero values:
 
 ```json
 {
@@ -91,10 +92,11 @@ included, with no separate verbose toggle:
 ```
 
 An abandoned exchange (the connection closed, or `tinytap` gave up waiting)
-sets `abandoned` and `abandonReason` (`peer closed` or `timed out`) instead
-of `status`/`resBytes`. `reqBody`/`resBody` are base64 (JSON has no raw byte
-type); pipe through `jq -r '.resBody | @base64d'` to decode one, or filter
-the whole stream by field, e.g. `tinytap --config … | jq 'select(.abandoned)'`.
+sets `abandoned` and `abandonReason` (`peer closed` or `timed out`);
+`status`/`resBytes` stay at their zero value since no response arrived.
+`reqBody`/`resBody` are base64 (JSON has no raw byte type); pipe through
+`jq -r '.resBody | @base64d'` to decode one, or filter the whole stream by
+field, e.g. `tinytap --config … | jq 'select(.abandoned)'`.
 
 ## `doctor`
 
