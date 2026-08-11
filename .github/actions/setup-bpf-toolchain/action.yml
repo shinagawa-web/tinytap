@@ -53,11 +53,16 @@ runs:
     # bpf_probe_read_user call the verifier refuses to load
     # ("R2 unbounded memory access"), so this installs from the official
     # LLVM apt repo instead of the distro package.
-    # apt.llvm.org/llvm.sh is fetched and executed as root, so its
-    # contents are verified against a known-good hash before running.
-    # If upstream legitimately updates the script, this check will start
-    # failing — recompute the hash with `curl -fsSL https://apt.llvm.org/llvm.sh | sha256sum`
-    # and update it here.
+    # llvm.sh is fetched and executed as root, so it's pinned to a commit
+    # SHA of its actual source repo (apt.llvm.org/llvm.sh is a mutable
+    # mirror of https://github.com/opencollab/llvm-jenkins.debian.net/blob/master/llvm.sh
+    # that changes without notice — that mutability broke the v0.6.7
+    # release run when upstream updated it out from under the old hash
+    # pin, #285) rather than to a hash of the always-latest apt.llvm.org
+    # URL. Bump deliberately like any other SHA-pinned dependency in this
+    # repo: pick a new commit from that repo's history, then
+    # `curl -fsSL https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/<sha>/llvm.sh | sha256sum`
+    # and update both the URL and the hash below.
     # Downloaded to $RUNNER_TEMP, not the repo working directory: a leftover
     # untracked llvm.sh in the checkout fails goreleaser's built-in
     # git-cleanliness check in release.yml ("git is in a dirty state"),
@@ -67,8 +72,8 @@ runs:
       if: inputs.use-cache != 'true' || steps.cache-bpf.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        wget -O "${RUNNER_TEMP}/llvm.sh" https://apt.llvm.org/llvm.sh
-        echo "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36  ${RUNNER_TEMP}/llvm.sh" | sha256sum -c -
+        wget -O "${RUNNER_TEMP}/llvm.sh" https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/ae7b37f390adb291d9df96867729fdbfca377f7b/llvm.sh
+        echo "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae  ${RUNNER_TEMP}/llvm.sh" | sha256sum -c -
         chmod +x "${RUNNER_TEMP}/llvm.sh"
         sudo "${RUNNER_TEMP}/llvm.sh" 17
 
