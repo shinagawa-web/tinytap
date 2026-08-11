@@ -73,6 +73,11 @@ func (p *SSLFdProbe) Lookup(pid uint32, ssl uint64) (int32, bool) {
 	return fd, true
 }
 
+func (p *SSLFdProbe) Delete(pid uint32, ssl uint64) {
+	key := bpf.TinytapUprobeSslFdKey{Pid: pid, Ssl: ssl}
+	_ = p.objs.SslFdMap.Delete(&key)
+}
+
 func (p *SSLFdProbe) DropCounts() drops.Counts {
 	if p.objs.DropCounters == nil {
 		return drops.Counts{}

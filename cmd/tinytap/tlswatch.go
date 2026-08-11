@@ -22,6 +22,7 @@ type dropCounter interface {
 type sslProbe interface {
 	Close() error
 	Lookup(pid uint32, ssl uint64) (int32, bool)
+	Delete(pid uint32, ssl uint64)
 	DropCounts() drops.Counts
 }
 

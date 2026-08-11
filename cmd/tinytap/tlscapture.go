@@ -13,6 +13,7 @@ import (
 
 type sslFdLookup interface {
 	Lookup(pid uint32, ssl uint64) (int32, bool)
+	Delete(pid uint32, ssl uint64)
 }
 
 func captureTLS(rd ringbufReader, fdProbe sslFdLookup, sink output.Sink, parser *http.Parser, pairer *http.Pairer) {
@@ -60,6 +61,9 @@ func captureTLSWithOptions(rd ringbufReader, fdProbe sslFdLookup, sink output.Si
 		}
 
 		fd, ok := fdProbe.Lookup(e.Pid, e.SSL)
+		if e.Op == events.SSLOpFree {
+			fdProbe.Delete(e.Pid, e.SSL)
+		}
 
 		mu.Lock()
 		switch {
