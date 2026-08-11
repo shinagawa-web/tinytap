@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -13,6 +15,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 
 	"github.com/shinagawa-web/tinytap/internal/config"
+	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/output"
 	httpproto "github.com/shinagawa-web/tinytap/internal/protocols/http"
@@ -22,10 +25,14 @@ import (
 type fakeBPF struct {
 	rd       ringbufCloser
 	closeErr error
+	drops    drops.Counts
 }
 
-func (f *fakeBPF) reader() ringbufCloser { return f.rd }
-func (f *fakeBPF) Close() error          { return f.closeErr }
+func (f *fakeBPF) reader() ringbufCloser    { return f.rd }
+func (f *fakeBPF) Close() error             { return f.closeErr }
+func (f *fakeBPF) dropCounts() drops.Counts { return f.drops }
+
+var _ bpfSession = (*fakeBPF)(nil)
 
 // fakeRingbufCloser implements ringbufCloser — returns EOF immediately on Read.
 type fakeRingbufCloser struct {
@@ -96,6 +103,21 @@ func TestTinytapSession_CloseError(t *testing.T) {
 	s := &tinytapSession{rd: newFakeRC(), closer: &fakeSink{closeErr: errors.New("boom")}}
 	if err := s.Close(); err == nil {
 		t.Error("want error from closer")
+	}
+}
+
+func TestTinytapSession_DropCountsNil(t *testing.T) {
+	s := &tinytapSession{rd: newFakeRC(), closer: &fakeSink{}}
+	if got := s.dropCounts(); got != (drops.Counts{}) {
+		t.Errorf("dropCounts() = %+v, want zero value when no counter source is wired", got)
+	}
+}
+
+func TestTinytapSession_DropCounts(t *testing.T) {
+	want := drops.Counts{Ringbuf: 2, MapFull: 3}
+	s := &tinytapSession{rd: newFakeRC(), closer: &fakeSink{}, drops: func() drops.Counts { return want }}
+	if got := s.dropCounts(); got != want {
+		t.Errorf("dropCounts() = %+v, want %+v", got, want)
 	}
 }
 
@@ -274,7 +296,7 @@ func TestRun_TeardownError(t *testing.T) {
 	defer func() { loadBPF = oldLoad }()
 
 	oldRun := doRunStdout
-	doRunStdout = func(ringbufCloser) {}
+	doRunStdout = func(bpfSession) {}
 	defer func() { doRunStdout = oldRun }()
 
 	if err := run(); err != nil {
@@ -297,7 +319,7 @@ func TestRun_RoutesToStdout(t *testing.T) {
 
 	called := false
 	oldRun := doRunStdout
-	doRunStdout = func(ringbufCloser) { called = true }
+	doRunStdout = func(bpfSession) { called = true }
 	defer func() { doRunStdout = oldRun }()
 
 	if err := run(); err != nil {
@@ -331,7 +353,7 @@ func TestRun_RoutesToTUI(t *testing.T) {
 
 	called := false
 	oldRun := doRunTUI
-	doRunTUI = func(ringbufCloser, int, int) { called = true }
+	doRunTUI = func(bpfSession, int, int) { called = true }
 	defer func() { doRunTUI = oldRun }()
 
 	if err := run(); err != nil {
@@ -377,7 +399,7 @@ func TestRunStdout_Completes(t *testing.T) {
 	newStdoutSink = func() output.Sink { return &fakeSink{} }
 	defer func() { newStdoutSink = oldSink }()
 
-	runStdout(rd)
+	runStdout(&fakeBPF{rd: rd})
 }
 
 // blockingRingbufCloser blocks Read() until Close() is called, like the real
@@ -441,7 +463,7 @@ func testRunStdoutRealSignal(t *testing.T, sig syscall.Signal) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runStdout(rd)
+		runStdout(&fakeBPF{rd: rd})
 	}()
 
 	// Wait for runStdout to reach capture's Read() call — signal.Notify runs
@@ -505,7 +527,7 @@ func TestRunTUI_Completes(t *testing.T) {
 	newTUISink = func(int, int) tuiSink { return fakeTUI }
 	defer func() { newTUISink = oldNew }()
 
-	runTUI(rd, 120, 24)
+	runTUI(&fakeBPF{rd: rd}, 120, 24)
 }
 
 func TestRunTUI_LogsUIError(t *testing.T) {
@@ -516,7 +538,7 @@ func TestRunTUI_LogsUIError(t *testing.T) {
 	newTUISink = func(int, int) tuiSink { return fakeTUI }
 	defer func() { newTUISink = oldNew }()
 
-	runTUI(rd, 120, 24)
+	runTUI(&fakeBPF{rd: rd}, 120, 24)
 }
 
 // A stray log line during the TUI session (#216) — here, runCapturePipeline's
@@ -539,7 +561,7 @@ func TestRunTUI_RoutesLogIntoDiagBufferAndFlushesOnExit(t *testing.T) {
 	os.Stderr = w
 	defer func() { os.Stderr = oldStderr }()
 
-	runTUI(rd, 120, 24)
+	runTUI(&fakeBPF{rd: rd}, 120, 24)
 
 	if closeErr := w.Close(); closeErr != nil {
 		t.Fatalf("close pipe writer: %v", closeErr)
@@ -591,4 +613,42 @@ func TestCloseSink_NoError(t *testing.T) {
 
 func TestCloseSink_WithError(t *testing.T) {
 	closeSink(&fakeSink{closeErr: errors.New("close failed")})
+}
+
+// --- reportDrops ---
+
+func TestReportDrops_Zero(t *testing.T) {
+	var buf bytes.Buffer
+	oldOut := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOut)
+
+	sess := &fakeBPF{}
+	w := newSSLWatcher(&fakeSink{})
+
+	reportDrops(sess, w)
+
+	if buf.Len() != 0 {
+		t.Errorf("reportDrops logged %q, want nothing when nothing dropped", buf.String())
+	}
+}
+
+func TestReportDrops_NonZero(t *testing.T) {
+	var buf bytes.Buffer
+	oldOut := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOut)
+
+	sess := &fakeBPF{drops: drops.Counts{Ringbuf: 2, MapFull: 3}}
+	w := newSSLWatcher(&fakeSink{})
+
+	reportDrops(sess, w)
+
+	got := buf.String()
+	if !strings.Contains(got, "drops:") {
+		t.Errorf("reportDrops logged %q, want it to contain a drops summary", got)
+	}
+	if !strings.Contains(got, "ring buffer full: 2") || !strings.Contains(got, "state map full: 3") {
+		t.Errorf("reportDrops logged %q, want it to include the session's counts", got)
+	}
 }

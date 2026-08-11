@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/loader"
 )
 
@@ -30,5 +31,8 @@ func TestLoadBPF_Success(t *testing.T) {
 	}
 	if sess == nil {
 		t.Error("want non-nil session")
+	}
+	if got := sess.dropCounts(); got != (drops.Counts{}) {
+		t.Errorf("dropCounts() = %+v, want zero from a fresh loader object", got)
 	}
 }

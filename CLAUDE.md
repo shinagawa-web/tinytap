@@ -112,8 +112,6 @@ Recognized types and their label:
 | `build`    | `build`         |
 | `deps`, or `fix(deps)`/`chore(deps)` | `dependencies` |
 
-Append `!` before the colon (e.g. `feat(cli)!: ...`) for a breaking change — it adds the `breaking-change` label on top of the type label.
-
 The scope is the component, not the type — `cli:`, `license:`, `config:` read as scopes, so write `feat(cli): ...` / `chore(license): ...` instead. Existing merged history predates this convention and doesn't need retrofitting.
 
 ## Terminology

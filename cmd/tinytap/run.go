@@ -13,6 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/shinagawa-web/tinytap/internal/config"
+	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/output"
 	"github.com/shinagawa-web/tinytap/internal/output/stdout"
 	"github.com/shinagawa-web/tinytap/internal/output/tui"
@@ -37,6 +38,7 @@ func parseFlags(args []string) (appConfig, error) {
 type bpfSession interface {
 	Close() error
 	reader() ringbufCloser
+	dropCounts() drops.Counts
 }
 
 type tuiSink interface {
@@ -57,8 +59,8 @@ var (
 	getSizeFn                                              = term.GetSize
 	newTUISink    func(w, h int) tuiSink                   = defaultNewTUISink
 	newStdoutSink func() output.Sink                       = defaultNewStdoutSink
-	doRunStdout   func(ringbufCloser)                      = runStdout
-	doRunTUI      func(ringbufCloser, int, int)            = runTUI
+	doRunStdout   func(bpfSession)                         = runStdout
+	doRunTUI      func(bpfSession, int, int)               = runTUI
 	loadConfig    func(path string) (config.Config, error) = config.Load
 )
 
@@ -103,9 +105,9 @@ func run() error {
 	}()
 
 	if decision == outputTUI {
-		doRunTUI(tt.reader(), w, h)
+		doRunTUI(tt, w, h)
 	} else {
-		doRunStdout(tt.reader())
+		doRunStdout(tt)
 	}
 	return nil
 }
@@ -119,7 +121,8 @@ func closeOnInterrupt(rd io.Closer, stop <-chan os.Signal) {
 	}()
 }
 
-func runStdout(rd ringbufCloser) {
+func runStdout(sess bpfSession) {
+	rd := sess.reader()
 	sink := newSSLWatcher(newStdoutSink())
 	defer closeSink(sink)
 	log.Printf("tinytap running (version %s) — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.", version)
@@ -128,6 +131,7 @@ func runStdout(rd ringbufCloser) {
 	defer signal.Stop(stop)
 	closeOnInterrupt(rd, stop)
 	capture(rd, sink)
+	reportDrops(sess, sink)
 }
 
 func runCapturePipeline(rd ringbufCloser, sink output.Sink, ui tuiRunner) error {
@@ -145,7 +149,8 @@ func runCapturePipeline(rd ringbufCloser, sink output.Sink, ui tuiRunner) error 
 	return runErr
 }
 
-func runTUI(rd ringbufCloser, width, height int) {
+func runTUI(sess bpfSession, width, height int) {
+	rd := sess.reader()
 	tuiS := newTUISink(width, height)
 	sink := newSSLWatcher(tuiS)
 	defer closeSink(sink)
@@ -161,6 +166,7 @@ func runTUI(rd ringbufCloser, width, height int) {
 	if runErr != nil {
 		log.Printf("tui: %v", runErr)
 	}
+	reportDrops(sess, sink)
 }
 
 func isRoutineTLSAttach(line string) bool {
@@ -171,5 +177,11 @@ func isRoutineTLSAttach(line string) bool {
 func closeSink(sink output.Sink) {
 	if err := sink.Close(); err != nil {
 		log.Printf("sink close: %v", err)
+	}
+}
+
+func reportDrops(sess bpfSession, w *sslWatcher) {
+	if s := sess.dropCounts().Add(w.dropCounts()).Summary(); s != "" {
+		log.Print(s)
 	}
 }
