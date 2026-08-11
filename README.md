@@ -156,7 +156,6 @@ Full documentation is available at
 
 - [Terminology](https://shinagawa-web.github.io/tinytap/docs/terminology/)
 - [Current Limitations](https://shinagawa-web.github.io/tinytap/docs/limitations/)
-- [Roadmap](https://shinagawa-web.github.io/tinytap/docs/roadmap/)
 
 ## Toolchain
 
