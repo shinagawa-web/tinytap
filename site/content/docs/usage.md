@@ -16,6 +16,8 @@ interactive terminal of at least 120x24. See
 [Configuration]({{< relref "configuration" >}}) to force it with `output =
 "tui"` or opt out with `output = "stdout"`.
 
+<img src="/tui-demo.gif" width="800" alt="tinytap's TUI: the request table on top, and the detail panel below showing the full request and response, including headers and the decoded JSON body">
+
 ### Request table
 
 Every captured exchange is a row: timestamp, `process[pid]`, method, path,
