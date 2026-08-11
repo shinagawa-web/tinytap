@@ -13,6 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/shinagawa-web/tinytap/internal/config"
+	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/output"
 	"github.com/shinagawa-web/tinytap/internal/output/stdout"
 	"github.com/shinagawa-web/tinytap/internal/output/tui"
@@ -37,6 +38,7 @@ func parseFlags(args []string) (appConfig, error) {
 type bpfSession interface {
 	Close() error
 	reader() ringbufCloser
+	dropCounts() drops.Counts
 }
 
 type tuiSink interface {
@@ -57,8 +59,8 @@ var (
 	getSizeFn                                              = term.GetSize
 	newTUISink    func(w, h int) tuiSink                   = defaultNewTUISink
 	newStdoutSink func(verbose bool) output.Sink           = defaultNewStdoutSink
-	doRunStdout   func(ringbufCloser, bool)                = runStdout
-	doRunTUI      func(ringbufCloser, int, int)            = runTUI
+	doRunStdout   func(bpfSession, bool)                   = runStdout
+	doRunTUI      func(bpfSession, int, int)               = runTUI
 	loadConfig    func(path string) (config.Config, error) = config.Load
 )
 
@@ -103,9 +105,9 @@ func run() error {
 	}()
 
 	if decision == outputTUI {
-		doRunTUI(tt.reader(), w, h)
+		doRunTUI(tt, w, h)
 	} else {
-		doRunStdout(tt.reader(), conf.Verbose)
+		doRunStdout(tt, conf.Verbose)
 	}
 	return nil
 }
@@ -119,7 +121,8 @@ func closeOnInterrupt(rd io.Closer, stop <-chan os.Signal) {
 	}()
 }
 
-func runStdout(rd ringbufCloser, verbose bool) {
+func runStdout(sess bpfSession, verbose bool) {
+	rd := sess.reader()
 	sink := newSSLWatcher(newStdoutSink(verbose))
 	defer closeSink(sink)
 	log.Printf("tinytap running (version %s) — watching accept4/read/write/close/recvfrom/sendto/recvmsg/sendmsg. Press Ctrl-C to stop.", version)
@@ -145,7 +148,8 @@ func runCapturePipeline(rd ringbufCloser, sink output.Sink, ui tuiRunner) error 
 	return runErr
 }
 
-func runTUI(rd ringbufCloser, width, height int) {
+func runTUI(sess bpfSession, width, height int) {
+	rd := sess.reader()
 	tuiS := newTUISink(width, height)
 	sink := newSSLWatcher(tuiS)
 	defer closeSink(sink)
