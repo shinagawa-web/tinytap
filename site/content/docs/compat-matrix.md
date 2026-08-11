@@ -66,7 +66,3 @@ this holds.
 use a static build (`CGO_ENABLED=0 go build -ldflags='-extldflags -static'`).
 Alpine's `virt` kernel config omits `BPF_PROG_TYPE_TRACING`, so
 `fentry/tcp_sendmsg_locked` (the sendfile payload kprobe) is unavailable.
-
-**TLS on Debian 12:** `libssl.so.3` ships without the execute permission
-bit. Run `sudo chmod +x /usr/lib/aarch64-linux-gnu/libssl.so.3` before
-starting tinytap. See [Troubleshooting]({{< relref "troubleshooting" >}}).

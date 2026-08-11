@@ -92,7 +92,3 @@ AlmaLinux 9 (kernel 5.14.0 RHEL backport) is the only tested distro where TLS up
 `CGO_ENABLED=0` static binary built on the Ubuntu dev VM runs on Alpine 3.23 (musl libc) without modification. The glibc dynamic binary fails because `/lib/ld-linux-aarch64.so.1` is absent — only `/lib/ld-musl-aarch64.so.1` is available. The static build (`go build -ldflags='-extldflags -static'`) resolves this.
 
 `fentry/tcp_sendmsg_locked` also fails on Alpine 3.23 (kernel 6.18.22-virt) with `create raw tracepoint: not supported` — the Alpine `virt` kernel does not have `BPF_PROG_TYPE_TRACING` fentry enabled.
-
-### Debian 12: libssl execute bit
-
-`/usr/lib/aarch64-linux-gnu/libssl.so.3` ships without the execute permission bit on Debian 12. tinytap's uprobe attach fails until `sudo chmod +x <path>` is run. This is the same issue documented for Ubuntu in `docs/capabilities.md`.
