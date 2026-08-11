@@ -11,6 +11,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 
+	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
 )
 
@@ -70,6 +71,13 @@ func (p *SSLFdProbe) Lookup(pid uint32, ssl uint64) (int32, bool) {
 		return 0, false
 	}
 	return fd, true
+}
+
+func (p *SSLFdProbe) DropCounts() drops.Counts {
+	if p.objs.DropCounters == nil {
+		return drops.Counts{}
+	}
+	return readDrops(p.objs.DropCounters)
 }
 
 func (p *SSLFdProbe) Close() error {
@@ -151,6 +159,13 @@ func AttachSSLReadWrite(pid uint32, libsslPath string) (*SSLPayloadProbe, error)
 	p.Reader = rd
 
 	return p, nil
+}
+
+func (p *SSLPayloadProbe) DropCounts() drops.Counts {
+	if p.objs.DropCounters == nil {
+		return drops.Counts{}
+	}
+	return readDrops(p.objs.DropCounters)
 }
 
 func (p *SSLPayloadProbe) Close() error {

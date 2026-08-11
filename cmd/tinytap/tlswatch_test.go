@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/loader"
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
@@ -51,13 +52,16 @@ func (s *syncBuffer) String() string {
 // concurrently with Close() writing it from sslWatcher's background
 // goroutine — a plain bool would race under -race.
 type fakeProbe struct {
-	closeErr error
-	closed   atomic.Bool
-	lookupFd int32
-	lookupOK bool
+	closeErr   error
+	closed     atomic.Bool
+	lookupFd   int32
+	lookupOK   bool
+	dropCounts drops.Counts
 }
 
 func (f *fakeProbe) Lookup(uint32, uint64) (int32, bool) { return f.lookupFd, f.lookupOK }
+
+func (f *fakeProbe) DropCounts() drops.Counts { return f.dropCounts }
 
 func (f *fakeProbe) Close() error {
 	f.closed.Store(true)
@@ -251,7 +255,7 @@ func TestSSLWatcher_OnEvent_UnexpectedFindError(t *testing.T) {
 func TestSSLWatcher_OnEvent_ClosedDuringAttach(t *testing.T) {
 	attaching := make(chan struct{})
 	release := make(chan struct{})
-	fp := &fakeProbe{}
+	fp := &fakeProbe{dropCounts: drops.Counts{Ringbuf: 3, MapFull: 5}}
 	w := newSSLWatcher(&fakeSink{})
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
@@ -276,6 +280,9 @@ func TestSSLWatcher_OnEvent_ClosedDuringAttach(t *testing.T) {
 	}
 	if !fp.closed.Load() {
 		t.Error("probe attached after Close() was never closed (leaked)")
+	}
+	if got, want := w.dropCounts(), (drops.Counts{Ringbuf: 3, MapFull: 5}); got != want {
+		t.Errorf("dropCounts() = %+v, want %+v (racing probe's counts must be folded into closedDrops)", got, want)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -314,10 +321,13 @@ func TestSSLWatcher_OnEvent_SymbolError(t *testing.T) {
 // exits right away without needing explicit teardown in tests that don't
 // care about its behavior).
 type fakePayloadProbe struct {
-	closeErr error
-	closed   atomic.Bool
-	rd       ringbufReader
+	closeErr   error
+	closed     atomic.Bool
+	rd         ringbufReader
+	dropCounts drops.Counts
 }
+
+func (f *fakePayloadProbe) DropCounts() drops.Counts { return f.dropCounts }
 
 func (f *fakePayloadProbe) Close() error {
 	f.closed.Store(true)
@@ -462,6 +472,47 @@ func TestSSLWatcher_Close_NoProbes(t *testing.T) {
 	}
 }
 
+func TestSSLWatcher_DropCounts_Empty(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	if got := w.dropCounts(); got != (drops.Counts{}) {
+		t.Errorf("dropCounts() = %+v, want zero value for a watcher with no probes", got)
+	}
+}
+
+func TestSSLWatcher_DropCounts_SumsLiveProbes(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	w.probes[1] = &fakeProbe{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
+	w.probes[2] = &fakeProbe{dropCounts: drops.Counts{MapFull: 4}}
+	w.payloadProbes[1] = &fakePayloadProbe{dropCounts: drops.Counts{Ringbuf: 8}}
+
+	got := w.dropCounts()
+	want := drops.Counts{Ringbuf: 9, MapFull: 6}
+	if got != want {
+		t.Errorf("dropCounts() = %+v, want %+v (sum across every live probe)", got, want)
+	}
+}
+
+func TestSSLWatcher_DropCounts_RetainedAfterClose(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	w.probes[1] = &fakeProbe{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
+	w.probes[2] = &fakeProbe{dropCounts: drops.Counts{MapFull: 4}}
+	w.payloadProbes[1] = &fakePayloadProbe{dropCounts: drops.Counts{Ringbuf: 8}}
+	want := drops.Counts{Ringbuf: 9, MapFull: 6}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+
+	if got := w.dropCounts(); got != want {
+		t.Errorf("dropCounts() after Close() = %+v, want %+v (counts must survive probe teardown)", got, want)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.probes != nil || w.payloadProbes != nil {
+		t.Errorf("probes=%v payloadProbes=%v, want both nil after Close()", w.probes, w.payloadProbes)
+	}
+}
+
 // tuiFake implements both output.Sink (via embedding fakeSink) and the
 // Run()/Quit() pair sslWatcher forwards to when present.
 type tuiFake struct {
@@ -578,8 +629,8 @@ func TestPayloadProbeAdapter_Reader(t *testing.T) {
 func TestSSLWatcher_OnEvent_ClosedDuringPayloadAttach(t *testing.T) {
 	attaching := make(chan struct{})
 	release := make(chan struct{})
-	fp := &fakeProbe{}
-	pp := &fakePayloadProbe{}
+	fp := &fakeProbe{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
+	pp := &fakePayloadProbe{dropCounts: drops.Counts{Ringbuf: 4, MapFull: 8}}
 	w := newSSLWatcher(&fakeSink{})
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
@@ -608,6 +659,9 @@ func TestSSLWatcher_OnEvent_ClosedDuringPayloadAttach(t *testing.T) {
 	}
 	if !fp.closed.Load() {
 		t.Error("fd probe (stored before Close()) must still be closed by Close()")
+	}
+	if got, want := w.dropCounts(), (drops.Counts{Ringbuf: 5, MapFull: 10}); got != want {
+		t.Errorf("dropCounts() = %+v, want %+v (both the Close()-drained fd probe and the racing payload probe must be folded in)", got, want)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
