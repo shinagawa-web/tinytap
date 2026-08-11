@@ -92,7 +92,7 @@ func TestSocketProbeSampleSendmsgRecvmsgSecondIovec(t *testing.T) {
 		t.Fatalf("client recv SyscallConn: %v", err)
 	}
 	if err := clientRecvRC.Read(func(fd uintptr) bool {
-		_, _, _, _, recvErr = unix.RecvmsgBuffers(int(fd), [][]byte{recvBuf1, recvBuf2}, nil, 0)
+		_, _, _, _, recvErr = unix.RecvmsgBuffers(int(fd), [][]byte{recvBuf1, recvBuf2}, nil, unix.MSG_WAITALL)
 		return recvErr != unix.EAGAIN
 	}); err != nil {
 		t.Fatalf("Read control: %v", err)
