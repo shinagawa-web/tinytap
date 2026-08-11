@@ -5,9 +5,7 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 3 * * *' # Once a day. Short (60s) libFuzzer run via ClusterFuzzLite — not required for
-                         # Scorecard's Fuzzing check (that only checks for .clusterfuzzlite/Dockerfile's
-                         # presence, not that this workflow ever runs), just a cheap extra exploration pass.
+    - cron: '0 3 * * *'
 
 jobs:
   BatchFuzzing:

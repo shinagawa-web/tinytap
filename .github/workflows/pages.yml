@@ -33,8 +33,6 @@ jobs:
           hugo-version: '0.164.0'
           extended: true
 
-      # Not vendored or a submodule (matches gomarklint's docs/ setup) — cloned
-      # fresh at build time, same as a local preview clone (see site/.gitignore).
       - name: Clone hugo-book theme
         run: git clone --branch v13 --depth 1 https://github.com/alex-shpak/hugo-book site/themes/hugo-book
 

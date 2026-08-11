@@ -22,15 +22,6 @@ inputs:
 runs:
   using: composite
   steps:
-    # Keyed on everything that affects bpf2go's output: the C sources
-    # themselves, the go:generate directives that invoke it (gen.go, whose
-    # flags bpf2go's output also depends on), go.mod/go.sum (pin bpf2go's
-    # own version via the cilium/ebpf module — both, not just go.sum: a
-    # go.mod version bump doesn't always change go.sum, e.g. if the new
-    # version's checksums are already present from elsewhere in the module
-    # graph), and the toolchain versions below (hardcoded into the key so
-    # bumping either pin busts the cache instead of serving stale output
-    # built by a different compiler).
     - name: Cache bpf2go bindings
       id: cache-bpf
       if: inputs.use-cache == 'true'
@@ -47,27 +38,6 @@ runs:
           bpf2go-clang17-libbpf1.6.2-${{ runner.os }}-${{
           hashFiles('bpf/**', 'internal/loader/bpf/gen.go', 'internal/loader/bpf/fixture/gen.go', 'internal/loader/bpf/fixture/fixture.bpf.c', 'go.mod', 'go.sum') }}
 
-    # Pinned so bpf2go's output doesn't drift with whatever clang the
-    # runner image happens to ship — see #207. ubuntu-22.04's default
-    # apt-get clang-14 was tried first and rejected: it emits a
-    # bpf_probe_read_user call the verifier refuses to load
-    # ("R2 unbounded memory access"), so this installs from the official
-    # LLVM apt repo instead of the distro package.
-    # llvm.sh is fetched and executed as root, so it's pinned to a commit
-    # SHA of its actual source repo (apt.llvm.org/llvm.sh is a mutable
-    # mirror of https://github.com/opencollab/llvm-jenkins.debian.net/blob/master/llvm.sh
-    # that changes without notice — that mutability broke the v0.6.7
-    # release run when upstream updated it out from under the old hash
-    # pin, #285) rather than to a hash of the always-latest apt.llvm.org
-    # URL. Bump deliberately like any other SHA-pinned dependency in this
-    # repo: pick a new commit from that repo's history, then
-    # `curl -fsSL https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/<sha>/llvm.sh | sha256sum`
-    # and update both the URL and the hash below.
-    # Downloaded to $RUNNER_TEMP, not the repo working directory: a leftover
-    # untracked llvm.sh in the checkout fails goreleaser's built-in
-    # git-cleanliness check in release.yml ("git is in a dirty state"),
-    # discovered the hard way when v0.6.5's first tag attempt failed for
-    # exactly this reason (#260 follow-up).
     - name: Install clang 17
       if: inputs.use-cache != 'true' || steps.cache-bpf.outputs.cache-hit != 'true'
       shell: bash
@@ -77,10 +47,6 @@ runs:
         chmod +x "${RUNNER_TEMP}/llvm.sh"
         sudo "${RUNNER_TEMP}/llvm.sh" 17
 
-    # ubuntu-22.04's apt libbpf-dev is 0.5.0, which predates the
-    # BPF_UPROBE macro bpf/tinytap_uprobe.bpf.c uses (added in a later
-    # libbpf release) — build a pinned, known-good libbpf from source and
-    # install its headers over /usr/include/bpf instead.
     - name: Install libbpf 1.6.2 headers
       if: inputs.use-cache != 'true' || steps.cache-bpf.outputs.cache-hit != 'true'
       shell: bash
