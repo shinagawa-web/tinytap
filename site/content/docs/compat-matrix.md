@@ -11,21 +11,17 @@ untested, not inferred from the kernel version.
 
 ## Tested matrix
 
-| Distro | Kernel | Arch | Loads | Plaintext | TLS | sendfile payload | Min caps (plain) | Min caps (TLS) |
-|---|---|---|---|---|---|---|---|---|
-| Ubuntu 25.10 | 6.17.x | arm64 | ✓ | ✓ | ✓ | ✓ | base-3 | + `cap_sys_admin` |
-| Ubuntu 24.04 | — | amd64 | — | — | — | — | — | — |
-| Ubuntu 22.04 | 6.8.0-azure (CI) | amd64 | ✓ | ✓ | ✓ | ✓ | base-3 | + `cap_sys_admin` |
-| Ubuntu 20.04 (GA kernel) | 5.4.0 | arm64 | ✗ | ✗ | ✗ | ✗ | — | — |
-| Fedora 43 | 6.17.1 | arm64 | ✓ | ✓ | ✓ | ✓ | base-3 | + `cap_sys_admin` |
-| Debian 12 | 6.1.0 | arm64 | ✓ | ✓ | ✓ | ✗ | base-3 + `cap_sys_admin` | same |
-| AlmaLinux 9 | 5.14.0 (RHEL) | arm64 | ✓ | ✓ | ✓ | ✗ | base-3 | same |
-| Alpine 3.23 | 6.18.22-virt | arm64 | ✓ | ✓ | ✓ | ✗ | base-3 | + `cap_sys_admin` |
-| WSL2 | — | amd64 | — | — | — | — | — | — |
+| Distro | Kernel | Arch | Plaintext | TLS | Notes |
+|---|---|---|---|---|---|
+| Ubuntu 25.10 | 6.17.x | arm64 | ✓ | ✓ | |
+| Ubuntu 22.04 | 6.8.0-azure (CI) | amd64 | ✓ | ✓ | |
+| Fedora 43 | 6.17.1 | arm64 | ✓ | ✓ | |
+| Debian 12 | 6.1.0 | arm64 | ✓ | ✓ | sendfile body not captured; `cap_sys_admin` required even for plaintext |
+| AlmaLinux 9 | 5.14.0 (RHEL) | arm64 | ✓ | ✓ | sendfile body not captured |
+| Alpine 3.23 | 6.18.22-virt | arm64 | ✓ | ✓ | sendfile body not captured; static binary required |
+| Ubuntu 20.04 (GA kernel) | 5.4.0 | arm64 | ✗ | ✗ | kernel 5.8+ required |
 
-**base-3** = `cap_dac_read_search,cap_perfmon,cap_bpf`
-
-**sendfile payload ✗** means `GET /file.bin → 200 0/52000B`: the request is captured with correct status and size, but body bytes are 0. Only static file serving via `sendfile(2)` is affected — all other capture paths work normally. See [Server Compatibility]({{< relref "server-compatibility" >}}).
+**sendfile body not captured** means `GET /file.bin → 200 0/52000B`: status and size are correct but body bytes are 0. Only static file serving via `sendfile(2)` is affected — all other capture paths work normally. See [Server Compatibility]({{< relref "server-compatibility" >}}).
 
 ## Kernel floor: 5.8
 
