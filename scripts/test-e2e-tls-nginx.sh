@@ -85,13 +85,13 @@ wait_for_new_tls_attach() {
     return 1
 }
 
-assert_contains() {
+assert_jsonl() {
     local description="$1"
-    local pattern="$2"
-    if grep -qE "${pattern}" "${TT_OUT}"; then
+    local filter="$2"
+    if [[ -n "$(jq -R "fromjson? // empty | select(${filter})" "${TT_OUT}" 2>/dev/null)" ]]; then
         echo "  PASS: ${description}"
     else
-        echo "  FAIL: ${description} (pattern: ${pattern})"
+        echo "  FAIL: ${description} (jq filter: ${filter})"
         FAILURES=$((FAILURES + 1))
     fi
 }
@@ -164,8 +164,8 @@ run_scenario() {
     pkill -INT -x tinytap-ngx-e2e 2>/dev/null || true
     wait 2>/dev/null || true
 
-    assert_contains "${label}: GET / paired with 200 (decrypted via SSL uprobe)" \
-        "nginx.*GET[[:space:]]+/[[:space:]].*200"
+    assert_jsonl "${label}: GET / paired with 200 (decrypted via SSL uprobe)" \
+        "(.comm | test(\"nginx\")) and .method==\"GET\" and .path==\"/\" and .status==200"
 
     (cd "${DIR}" && sudo docker compose down -v --timeout 1 >/dev/null 2>&1) || true
 }

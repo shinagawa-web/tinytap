@@ -152,7 +152,7 @@ assert_contains() {
 assert_jsonl() {
     local description="$1"
     local filter="$2"
-    if jq -Re "fromjson? // empty | select(${filter})" "${TT_OUT}" >/dev/null 2>&1; then
+    if [[ -n "$(jq -R "fromjson? // empty | select(${filter})" "${TT_OUT}" 2>/dev/null)" ]]; then
         echo "  PASS: ${description}"
     else
         echo "  FAIL: ${description} (jq filter: ${filter})"
