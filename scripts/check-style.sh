@@ -11,13 +11,7 @@
 #   ❌ 行頭ラベル・箇条書き先頭以外の文中太字           → 要修正（exit 1）
 #   ❌ 箇条書き5項目以上の連続                         → 要修正（exit 1）
 #
-# 判定（日本語記事 draft/** のみ）:
-#   ❌ 行頭の「ラベル：説明」形式（向いている場面：など） → 要修正（exit 1）
-#   ❌ 「〜することができ」冗長表現                     → 要修正（exit 1）
-#   ❌ 「活用する」                                    → 要修正（exit 1）
-#   ❌ 見出しのですます調                              → 要修正（exit 1）
-#
-# 判定（英語記事 devto/** のみ、tinytapではREADME.md・site/content/**が該当）:
+# 判定（英語記事 README.md・site/content/**）:
 #   ❌ leverage / utilize                              → 要修正（exit 1）
 #   ❌ seamlessly                                     → 要修正（exit 1）
 #   ❌ can be used to                                 → 要修正（exit 1）
@@ -35,7 +29,7 @@ files=()
 if [ "$#" -gt 0 ]; then
   for f in "$@"; do
     case "$f" in
-      draft/*.md|README.md|site/content/*.md) files+=("$f") ;;
+      README.md|site/content/*.md) files+=("$f") ;;
     esac
   done
 else
@@ -77,78 +71,6 @@ for file in "${files[@]:-}"; do
       if (line !~ /^\*\*/) print NR
     }
   ' "$file")
-
-  # --- 日本語記事（draft/**）のみ ---
-  case "$file" in draft/*)
-
-  # 3) 行頭の「ラベル：説明」形式（要修正）
-  #    「向いている場面：xxx」のような機械的ラベルを検出する。
-  #    ・コードブロック・frontmatter・見出し・表・リストは除外
-  #    ・「：」前にスペース・括弧・句読点があれば文中の語句説明なのでスキップ
-  while IFS= read -r ln; do
-    [ -n "$ln" ] || continue
-    echo "❌ $file:$ln  行頭ラベル形式（「ラベル：説明」）は使わない。前後の文に溶け込ませる"
-    hard_fail=1
-  done < <(awk '
-    /^```/ { fence = !fence; next }
-    fence { next }
-    NR==1 && $0=="---" { fm=1; next }
-    fm==1 && $0=="---" { fm=2; next }
-    fm==1 { next }
-    /^[#|*>]/ { next }
-    /^[-]/ { next }
-    /^[0-9]+\. / { next }
-    {
-      pos = index($0, "：")
-      if (pos == 0) next
-      label = substr($0, 1, pos - 1)
-      if (label ~ /[ \t（）、。・]/) next
-      if (length(label) == 0) next
-      print NR
-    }
-  ' "$file")
-
-  # 4) 「〜することができ」冗長表現（要修正）
-  while IFS= read -r ln; do
-    [ -n "$ln" ] || continue
-    echo "❌ $file:$ln  「〜することができ」は「〜できる」に書き換える"
-    hard_fail=1
-  done < <(awk '
-    /^```/ { fence = !fence; next }
-    fence { next }
-    NR==1 && $0=="---" { fm=1; next }
-    fm==1 && $0=="---" { fm=2; next }
-    fm==1 { next }
-    /することができ/ { print NR }
-  ' "$file")
-
-  # 5) 「活用する」（要修正）
-  while IFS= read -r ln; do
-    [ -n "$ln" ] || continue
-    echo "❌ $file:$ln  「活用する」は具体的な動詞に置き換える"
-    hard_fail=1
-  done < <(awk '
-    /^```/ { fence = !fence; next }
-    fence { next }
-    NR==1 && $0=="---" { fm=1; next }
-    fm==1 && $0=="---" { fm=2; next }
-    fm==1 { next }
-    /活用する/ { print NR }
-  ' "$file")
-
-  # 6) 見出しのですます調（要修正）
-  while IFS= read -r ln; do
-    [ -n "$ln" ] || continue
-    echo "❌ $file:$ln  見出しにですます調は使わない"
-    hard_fail=1
-  done < <(awk '
-    /^```/ { fence = !fence; next }
-    fence { next }
-    /^#+ .*(ます|です)。?$/ { print NR }
-  ' "$file")
-
-  esac
-  # --- /日本語記事ここまで ---
 
   # 7) 箇条書き5項目以上の連続（要修正）
   while IFS= read -r ln; do
