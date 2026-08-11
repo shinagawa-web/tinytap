@@ -1,6 +1,6 @@
 ---
 title: Server Compatibility
-weight: 9
+weight: 8
 ---
 
 # Server Compatibility

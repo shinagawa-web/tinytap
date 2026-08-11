@@ -1,6 +1,6 @@
 ---
 title: Platform Support
-weight: 11
+weight: 10
 ---
 
 # Platform Support
