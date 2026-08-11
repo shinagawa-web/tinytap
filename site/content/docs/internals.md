@@ -104,16 +104,23 @@ buffer bigger.
 
 ## The 512-byte stack limit, and the scratch map that works around it
 
-eBPF programs get a 512-byte stack, a hard verifier limit, not a tunable.
-`struct sendfile_sample` (a `payload_len` plus a 4096-byte payload) doesn't
-fit in a local variable, for the same reason `struct event` couldn't grow
-past 256 bytes of payload as a stack local either, except A's `struct event`
-is never a stack local to begin with: `submit_event` and friends only ever
-touch it through the pointer `bpf_ringbuf_reserve` returns, which lives in
-the ring, not on the stack. B's `tinytap_kprobe.bpf.c` has no equivalent
-ring to reserve into for its intermediate result, so it needs an actual
-place to stage the read before it can hand the sample off to A's
-`sendfile_sample_map`:
+A local variable inside an eBPF program lives on the program's stack, and
+that stack is capped at 512 bytes by the verifier (see [How It
+Works]({{< relref "how-it-works" >}})'s constraints table), a hard limit
+that isn't a tunable. `struct sendfile_sample` holds up to 4096 bytes of
+captured body. Declared as an ordinary local (`struct sendfile_sample s;`),
+it blows the 512-byte stack on its own before the program does anything
+else, and gets rejected at load time.
+
+Object A's `struct event` carries the same 4096-byte payload and never hits
+this limit, but only because it never becomes a stack local in the first
+place. `submit_event` writes directly into the buffer `bpf_ringbuf_reserve`
+hands back, which lives in the ring buffer, not on the stack. Object B
+(`tinytap_kprobe.bpf.c`, the `sendfile` path) can't reuse that trick, since
+it has no ring buffer of its own to reserve into for this intermediate
+value, so it needs an actual place to hold the bytes it reads off the page
+cache before it can hand them to A. That place is a map used purely as
+scratch space, not for key-based lookups:
 
 ```c
 struct {
@@ -124,16 +131,20 @@ struct {
 } sendfile_scratch_map SEC(".maps");
 ```
 
-A single-element per-CPU array map, used as heap space eBPF doesn't
-otherwise have. `BPF_MAP_TYPE_PERCPU_ARRAY` gives every CPU its own copy of
-that one element; `bpf_map_lookup_elem(&sendfile_scratch_map, &zero)`
-returns the current CPU's copy. Because eBPF programs run with preemption
-disabled, two invocations never contend for the same CPU's slot at once, so
-one element per CPU is enough, no locking needed. The kprobe program reads
-the sendfile body off the page cache into that scratch slot, then copies it
-into `sendfile_sample_map` (shared with object A via `MapReplacements`),
-keyed by `tid` so `tinytap.bpf.c`'s `sys_exit_sendfile64` handler can pick
-it up.
+A map's value storage sits outside the 512-byte stack entirely, so putting
+the struct there sidesteps the limit the same way object A's ring buffer
+pointer does. `BPF_MAP_TYPE_PERCPU_ARRAY` gives every CPU its own private
+copy of that single element; `bpf_map_lookup_elem(&sendfile_scratch_map,
+&zero)` returns whichever copy belongs to the CPU the program happens to be
+running on. eBPF programs run with preemption disabled, so two invocations
+can never be mid-flight on the same CPU at the same time, and one slot per
+CPU is therefore enough, with no locking required.
+
+The bytes travel from the page cache into `sendfile_scratch_map` (B's
+private scratch slot, one per CPU), get copied from there into
+`sendfile_sample_map` (shared with object A via `MapReplacements`), and are
+picked up by `tinytap.bpf.c`'s `sys_exit_sendfile64` handler, keyed by
+`tid`.
 
 ## TLS: reading plaintext through a uprobe
 
