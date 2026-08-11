@@ -33,13 +33,29 @@ flowchart LR
 
 ## Diagnose a request that never got a response
 
-A request hangs or the app reports a failure with no clear cause. In
-`tinytap`'s output that shows up as `ABANDONED` instead of a status code,
-with a reason: `peer closed` (the connection closed before a response
-arrived) or `timeout` (no response showed up before `tinytap` gave up
-waiting). That distinction — connection dropped vs. server just never
-answered — is usually the first thing you want to know, and it's visible
-without adding any logging to the app or the server.
+A request hangs, or the app reports a failure with no clear cause.
+`peer closed` and `timeout` are two different bugs wearing the same
+symptom, and telling them apart is what actually narrows down where to
+look next.
+
+`peer closed` means something on the other end actively closed the
+connection before answering — a crashed or restarting server, a load
+balancer or proxy hitting its own idle timeout, a reset somewhere upstream.
+`tinytap` also reports how long the connection stayed open before it
+closed, which you can match against a specific timeout setting in the
+chain — a connection that closes after 5 seconds points somewhere far more
+precise than one that runs the full 30.
+
+`timeout` means the connection stayed open the whole time and nothing ever
+came back — that points at the server itself: stuck processing,
+deadlocked, or waiting on a downstream call that never returns. `tinytap`
+gives up waiting after 30 seconds either way, so a `timeout` line's latency
+caps out around there; it tells you the server hadn't answered within that
+window, not how long it would eventually have taken.
+
+Either way, the line also carries the exact request that went
+unanswered — method, path, every header — without adding a single log
+line to the app or the server.
 
 ```mermaid
 sequenceDiagram
@@ -50,10 +66,10 @@ sequenceDiagram
         Server-->>App: response (status code)
     else peer closed
         Server--xApp: connection closes, no response
-        Note over App: tinytap: ABANDONED (peer closed)
+        Note over App: ABANDONED (peer closed) — look at the server\nprocess/LB/proxy for what closed it
     else timeout
         Note over App,Server: no response ever arrives
-        Note over App: tinytap: ABANDONED (timeout)
+        Note over App: ABANDONED (timeout) — look at the server\nfor why it never answered
     end
 ```
 
