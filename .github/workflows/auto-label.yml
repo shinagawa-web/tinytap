@@ -21,7 +21,7 @@ jobs:
             const title = context.payload.pull_request.title.toLowerCase();
             const labels = [];
 
-            const match = title.match(/^([a-z]+)(\(([^)]+)\))?:/);
+            const match = title.match(/^([a-z]+)(\(([^)]+)\))?(!)?:/);
             const type = match ? match[1] : null;
             const scope = match ? match[3] : null;
             const isDeps = scope === 'deps';
