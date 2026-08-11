@@ -1,6 +1,6 @@
 ---
 title: How It Works
-weight: 4
+weight: 6
 ---
 
 # How It Works
@@ -8,7 +8,7 @@ weight: 4
 `tinytap` attaches eBPF probes to a process's socket syscalls
 (`accept4`/`read`/`write`/`close`/`recvfrom`/`sendto`/`recvmsg`/`sendmsg`),
 parses the payload bytes as HTTP/1.1, pairs each request with its response,
-and renders the exchange live — either in the terminal TUI or as a line-oriented stream:
+and renders the exchange live, either in the terminal TUI or as a line-oriented stream:
 
 ```text
 12:47:57.005  python3[27122]  GET   /                        200    1304B     0.3ms
@@ -17,7 +17,7 @@ and renders the exchange live — either in the terminal TUI or as a line-orient
 
 `output = "auto"` (the default) picks the TUI when stdout/stdin are an
 interactive terminal of at least 120x24; otherwise it prints guidance and
-exits rather than silently streaming — the line stream is opt-in via
+exits rather than silently streaming; the line stream is opt-in via
 `output = "stdout"`. `output = "tui"` forces the TUI (and exits the same way
 if the terminal can't host it); `verbose = true` hangs the full
 request/response headers under each stdout line. `--version` prints the
@@ -29,7 +29,7 @@ If you're new to eBPF, here's the shape of how tinytap is built on it.
 
 eBPF is a sandboxed virtual machine that runs safely inside the Linux
 kernel. Traditionally, extending kernel behavior required writing a kernel
-module (`.ko`) — a bug there can crash the entire system. eBPF's kernel-side
+module (`.ko`), and a bug there can crash the entire system. eBPF's kernel-side
 verifier checks a program before loading it instead, so a bug in the eBPF
 program gets rejected rather than panicking the kernel.
 
@@ -66,7 +66,7 @@ int handle_write(struct trace_event_raw_sys_enter *ctx) {
 char LICENSE[] SEC("license") = "GPL";
 ```
 
-Data captured in the kernel needs to be passed to user space — eBPF
+Data captured in the kernel needs to be passed to user space. eBPF
 maps (in tinytap's case, a ring buffer) are the bridge, shared memory
 accessible from both sides.
 
@@ -92,7 +92,7 @@ tinytap_bpfel.o    ← compiled eBPF bytecode (ELF)
 tinytap_bpfel.go   ← embeds the .o file + generates loader functions
 ```
 
-The generated `*_bpfel.go`/`*_bpfeb.go` files are entirely auto-generated —
+The generated `*_bpfel.go`/`*_bpfeb.go` files are entirely auto-generated:
 never edited by hand, just regenerated after changing the C source (see
 [event schema]({{< relref "event-schema" >}}) for the exact struct layout
 carried across that boundary).

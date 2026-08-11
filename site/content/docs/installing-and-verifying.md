@@ -1,13 +1,13 @@
 ---
 title: Installing & Verifying Releases
-weight: 8
+weight: 10
 ---
 
 # Installing & Verifying Releases
 
 ## Installing a specific version or location
 
-Two env vars change the install script's behavior — set them on the `sh`
+Two env vars change the install script's behavior. Set them on the `sh`
 side of the pipe, not before `curl`, since a `VAR=val curl ... | sh` prefix
 only reaches `curl`, not the piped-in script:
 
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/shinagawa-web/tinytap/main/scripts/
 ## Verifying a release download
 
 The install script already verifies the downloaded archive's SHA-256
-checksum automatically — this section is for downloading a release archive
+checksum automatically. This section is for downloading a release archive
 by hand instead (from the
 [releases page](https://github.com/shinagawa-web/tinytap/releases) or in a
 script that intentionally avoids `curl | sh`) and confirming its full chain
@@ -27,13 +27,13 @@ of trust, including the cosign signature the install script doesn't check.
 
 Every tagged release publishes, alongside the `linux_amd64`/`linux_arm64` archives:
 
-- `checksums.txt` — SHA-256 of every archive and SBOM in the release
+- `checksums.txt`: SHA-256 of every archive and SBOM in the release
 
-- `checksums.txt.sigstore.json` — a keyless [cosign](https://docs.sigstore.dev/cosign/overview/) signature over `checksums.txt`, minted from the release workflow's own GitHub Actions OIDC identity (no private key is stored anywhere)
+- `checksums.txt.sigstore.json`: a keyless [cosign](https://docs.sigstore.dev/cosign/overview/) signature over `checksums.txt`, minted from the release workflow's own GitHub Actions OIDC identity (no private key is stored anywhere)
 
-- `<archive>.sbom.json` — an SBOM for each archive ([syft](https://github.com/anchore/syft), SPDX format)
+- `<archive>.sbom.json`: an SBOM for each archive ([syft](https://github.com/anchore/syft), SPDX format)
 
-- `multiple.intoto.jsonl` — SLSA build provenance, attesting which source commit and workflow run produced these artifacts
+- `multiple.intoto.jsonl`: SLSA build provenance, attesting which source commit and workflow run produced these artifacts
 
 To verify the full chain of trust manually instead of trusting the script:
 

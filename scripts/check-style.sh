@@ -25,6 +25,7 @@
 #   ❌ it's worth noting / it is important to note    → 要修正（exit 1）
 #   ❌ 行頭の英語ラベル（Note: / Best for: など）      → 要修正（exit 1）
 #   ❌ 見出し末尾のピリオド                            → 要修正（exit 1）
+#   ❌ emダッシュ（—）                                → 要修正（exit 1）
 #
 # CI（.github/workflows/style-check.yml）と pre-push フック（scripts/pre-push）の
 # 両方からこのスクリプトを呼ぶ。ロジックはここ一箇所に集約する。
@@ -276,6 +277,20 @@ for file in "${files[@]:-}"; do
     /^```/ { fence = !fence; next }
     fence { next }
     /^#+ .*\.$/ { print NR }
+  ' "$file")
+
+  # 15) emダッシュ（要修正）
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    echo "❌ $file:$ln  emダッシュ（—）は使わない。文を分けるか句読点で書き換える"
+    hard_fail=1
+  done < <(awk '
+    /^```/ { fence = !fence; next }
+    fence { next }
+    NR==1 && $0=="---" { fm=1; next }
+    fm==1 && $0=="---" { fm=2; next }
+    fm==1 { next }
+    /—/ { print NR }
   ' "$file")
 
   esac

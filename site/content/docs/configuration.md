@@ -1,13 +1,13 @@
 ---
 title: Configuration
-weight: 5
+weight: 7
 ---
 
 # Configuration
 
 Session settings (`output`, `verbose`, and process filters) live in a TOML
-config file, not CLI flags. `tinytap config init && tinytap` just works —
-see `config init` in [CLI surface](#cli-surface) below.
+config file, not CLI flags. `tinytap config init && tinytap` just works.
+See `config init` in [CLI surface](#cli-surface) below.
 
 ## CLI surface
 
@@ -24,7 +24,7 @@ The only CLI surface is one-shot actions, not session settings:
 
 Search order when `--config <path>` isn't given:
 `./tinytap.toml`, then `$XDG_CONFIG_HOME/tinytap/config.toml` (falling back
-to `~/.config/tinytap/config.toml`) — finding neither is not an error, the
+to `~/.config/tinytap/config.toml`). Finding neither is not an error, and the
 defaults below apply.
 
 ```toml
