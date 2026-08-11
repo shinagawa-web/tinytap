@@ -75,32 +75,31 @@ declared, so the sample it captures in kernel space lands exactly where A's
 
 `bpf_ringbuf_reserve(&events, sizeof(*e), 0)` always reserves a full
 `sizeof(struct event)`, currently 4096 bytes of payload plus a small fixed
-header, even for a 12-byte response. That looks wasteful, and the obvious
-fix looks like reserving only the sample's actual length. That fix doesn't
-compile, because the verifier requires the size argument to
-`bpf_ringbuf_reserve` to be a compile-time constant, not a runtime-computed
-value. A shorter per-event reserve isn't an option the verifier will accept.
+header, even for a 12-byte response. Reserving only the sample's actual
+length instead looks like the obvious fix. It doesn't compile: the verifier
+requires the size argument to `bpf_ringbuf_reserve` to be a compile-time
+constant, not a value computed at runtime. Every event pays for the full
+4096 bytes whether it needs them or not, because the verifier leaves no
+other option.
 
-Given that constraint, the real question becomes how big the ring needs to
-be, and the history here is a useful example of what actually gates
-throughput not always being where you'd guess. Raising `MAX_PAYLOAD` from
-256 to 4096, to stop cutting off JSON/HTML bodies, grew `struct event`
-roughly 14x, and with a fixed-size reserve, that shrinks how many events fit
-in a given ring size by the same factor. The first fix tried was making the
-ring bigger; it barely moved the drop rate under load. The actual
-bottleneck turned out to be in user space. `events.Decode` originally used
+That fixed cost is what makes ring size matter, and the history of how the
+current size got picked is worth walking through. `MAX_PAYLOAD` used to be
+256 bytes, which cut most JSON and HTML response bodies off partway
+through. Raising it to 4096 fixed the truncation, but also grew `struct
+event` from around 260 bytes to around 4160, roughly 14x. Since every
+reserve is fixed-size, the same ring now held about 14x fewer events before
+filling up, and events started getting dropped under load.
+
+The first fix tried was making the ring bigger. It barely moved the drop
+rate. The actual bottleneck was in user space: `events.Decode` used Go's
 `binary.Read`, which falls back to reflection for a `[4096]byte` struct
-field, and that reflection cost, not ring capacity, was what limited how
-fast the ring could be drained. Once `Decode` was rewritten as hand-rolled
-`binary.LittleEndian` reads and `copy()` calls, which is what it still does
-today, ring size started to matter, and `events`'s current 8 MiB
-(`1 << 23` bytes) was sized against that fixed decode cost, not picked as a
-round number up front.
-
-The lesson generalizes: a ring buffer dropping events reads like "not
-enough capacity," but the actual cause is at least as often "the consumer
-can't drain fast enough," and only one of those is fixed by making the
-buffer bigger.
+field, and that reflection cost, not the ring's capacity, was what limited
+how fast the ring could be drained. Once `Decode` was rewritten to use
+hand-rolled `binary.LittleEndian` reads and `copy()` calls instead, which is
+what it still does today, draining got fast enough that ring size actually
+started to matter. Only then did enlarging the ring help. The `events`
+ring's current size, 8 MiB (`1 << 23` bytes), was set after that fix,
+against the new decode speed, not chosen as a round number up front.
 
 ## The 512-byte stack limit, and the scratch map that works around it
 
