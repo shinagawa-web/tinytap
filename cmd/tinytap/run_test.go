@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -621,4 +623,42 @@ func TestCloseSink_NoError(t *testing.T) {
 
 func TestCloseSink_WithError(t *testing.T) {
 	closeSink(&fakeSink{closeErr: errors.New("close failed")})
+}
+
+// --- reportDrops ---
+
+func TestReportDrops_Zero(t *testing.T) {
+	var buf bytes.Buffer
+	oldOut := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOut)
+
+	sess := &fakeBPF{}
+	w := newSSLWatcher(&fakeSink{})
+
+	reportDrops(sess, w)
+
+	if buf.Len() != 0 {
+		t.Errorf("reportDrops logged %q, want nothing when nothing dropped", buf.String())
+	}
+}
+
+func TestReportDrops_NonZero(t *testing.T) {
+	var buf bytes.Buffer
+	oldOut := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldOut)
+
+	sess := &fakeBPF{drops: drops.Counts{Ringbuf: 2, MapFull: 3}}
+	w := newSSLWatcher(&fakeSink{})
+
+	reportDrops(sess, w)
+
+	got := buf.String()
+	if !strings.Contains(got, "drops:") {
+		t.Errorf("reportDrops logged %q, want it to contain a drops summary", got)
+	}
+	if !strings.Contains(got, "ring buffer full: 2") || !strings.Contains(got, "state map full: 3") {
+		t.Errorf("reportDrops logged %q, want it to include the session's counts", got)
+	}
 }
