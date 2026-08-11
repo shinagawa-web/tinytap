@@ -1,0 +1,100 @@
+//go:build privileged
+
+package loader
+
+import (
+	"os"
+	"runtime"
+	"syscall"
+	"testing"
+
+	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
+)
+
+// TestLoaderDropCounts_RingbufReserveFailure actually overflows the events
+// ring (nothing drains it) and confirms DROP_RINGBUF is counted, rather than
+// only asserting the counter reads zero on a fresh load.
+func TestLoaderDropCounts_RingbufReserveFailure(t *testing.T) {
+	tt, err := Load(0) // own_pid=0: no real process has this pid, so this test's own syscalls aren't filtered out.
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer tt.Close()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	const maxWrites = 6000 // 8 MiB ring / ~4.1 KiB per event is ~2000; this is generous headroom.
+	buf := []byte("x")
+	for i := 0; i < maxWrites; i++ {
+		if _, err := w.Write(buf); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		if tt.DropCounts().Ringbuf > 0 {
+			return
+		}
+	}
+	t.Fatalf("Ringbuf drop count still 0 after %d writes with nothing draining the ring", maxWrites)
+}
+
+// TestLoaderDropCounts_MapFullFailure fills incoming_pending_map to its
+// max_entries cap directly, then triggers one real read syscall and confirms
+// DROP_MAP_FULL is counted, rather than only asserting the counter reads
+// zero on a fresh load.
+func TestLoaderDropCounts_MapFullFailure(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	realTid := uint32(syscall.Gettid())
+
+	tt, err := Load(0)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer tt.Close()
+
+	// Prefilled keys sit far above any real Linux pid/tid (default pid_max
+	// tops out well under this), so they can't collide with realTid.
+	const (
+		maxEntries = 10240
+		keyBase    = 1_000_000_000
+	)
+	var val bpf.TinytapIncomingPending
+	for i := uint32(0); i < maxEntries; i++ {
+		key := keyBase + i
+		if key == realTid {
+			t.Fatalf("synthetic key %d unexpectedly collided with the real tid", key)
+		}
+		if err := tt.objs.IncomingPendingMap.Put(&key, &val); err != nil {
+			t.Fatalf("prefill map at key %d: %v", key, err)
+		}
+	}
+	defer func() {
+		for i := uint32(0); i < maxEntries; i++ {
+			key := keyBase + i
+			_ = tt.objs.IncomingPendingMap.Delete(&key)
+		}
+	}()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if _, err := w.Write([]byte("x")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	buf := make([]byte, 1)
+	if _, err := r.Read(buf); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	if got := tt.DropCounts().MapFull; got == 0 {
+		t.Fatalf("MapFull drop count = 0, want > 0 after triggering stash_incoming against a full map")
+	}
+}
