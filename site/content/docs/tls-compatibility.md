@@ -27,23 +27,6 @@ TLS-terminating process is running natively or inside a Docker container.
 A container's process is an ordinary host process under a different PID
 namespace, with no container-aware code needed on tinytap's side.
 
-## Node.js: capturing a statically-linked OpenSSL
-
-Every other row above has the traced process load OpenSSL as a separate
-`libssl.so*` mapping, which tinytap locates by scanning the process's
-memory maps. Node.js doesn't fit that shape: its official, NodeSource, and
-nvm builds statically bundle OpenSSL, so a Node.js process never has a
-`libssl.so*` mapping at all. Those same builds ship unstripped, though,
-exporting `SSL_read`/`SSL_write`/`SSL_set_fd`/`SSL_free` from the `node`
-binary itself, so tinytap falls back to the process's own executable once
-the library scan comes up empty, and attaches there instead.
-
-Distro-packaged Node.js (Debian/Ubuntu/Alpine's own `nodejs`/`node`
-packages via `apt`/`apk`) dynamically links the system `libssl.so`
-instead, so those installs already work via the normal path above and
-never need the fallback.
-
-One practical gotcha worth knowing up front: Debian/Ubuntu ships
-`libssl.so.3` without the execute bit by default, which the uprobe attach
-requires. See [Current Limitations]({{< relref "limitations" >}}) and
-[Troubleshooting]({{< relref "troubleshooting" >}}) for the fix.
+See [Current Limitations]({{< relref "limitations" >}}) for how the
+Node.js fallback and the Debian/Ubuntu `libssl.so.3` execute-bit gotcha
+work, and [Troubleshooting]({{< relref "troubleshooting" >}}) for the fix.
