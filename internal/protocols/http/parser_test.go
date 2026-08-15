@@ -1847,7 +1847,7 @@ func TestHeaderTruncationResynchronisesResponseStream(t *testing.T) {
 	const pid, fd = uint32(9), int32(3)
 	headers := []byte("HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nX-Long: " +
 		strings.Repeat("x", 1200) + "\r\nContent-Length: 0\r\n\r\n")
-	truncated := headers[:1024] // simulates a 1024-byte per-iovec sample budget
+	truncated := headers[:1024] // truncate mid-block to simulate headers exceeding the iov[0] sample budget
 
 	p := NewParser()
 	got1 := p.Feed(makeEvent(events.SyscallWritev, pid, fd, uint32(len(headers)), truncated))
