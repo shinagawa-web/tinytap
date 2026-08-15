@@ -68,8 +68,7 @@ verify a release download? See the
 AlmaLinux 9, and Alpine 3.23 all pass. Two exceptions worth knowing:
 
 - **Ubuntu 20.04**: the GA kernel (5.4.0) is too old and fails at startup. The HWE kernel (5.15+) works.
-- **RHEL-family distros** (AlmaLinux 9, Rocky Linux 9): they report kernel versions like "5.14" but backport
-  the required BPF features, so they work despite the low version number.
+- **RHEL-family distros** (AlmaLinux 9, Rocky Linux 9): they report kernel versions like "5.14" but backport the required BPF features, so they work despite the low version number.
 
 The full tested matrix (distro, kernel, plaintext/TLS/sendfile status, capability requirements) is on the
 [Platform Support](https://shinagawa-web.github.io/tinytap/docs/compat-matrix/) page.
