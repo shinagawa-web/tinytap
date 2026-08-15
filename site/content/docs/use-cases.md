@@ -122,7 +122,7 @@ flowchart TB
 A third-party service (GitHub, Stripe, PagerDuty) posts a webhook to your
 server and something is off: an event that should have triggered a handler
 didn't, or the payload looks different from what the docs describe. You need
-to see exactly what arrived: the path, every header, the raw body.
+to see exactly what arrived: the path, every header, the body.
 
 The usual move is to add a log statement, redeploy, and then reproduce the
 event. Reproducing a webhook event often means manually triggering the
@@ -130,10 +130,12 @@ upstream action (merging a PR, making a test payment) and waiting. `tinytap`
 attaches to the already-running server process and shows the incoming request
 the moment it arrives, with no code change and no restart required.
 
-Because `tinytap` reads at the socket syscall level, it sees the payload as
-the server's process reads it, before any middleware, body parser, or
-framework layer touches it. That makes it useful precisely when you're not
-sure whether the problem is in what arrived or in how your code handled it.
+`tinytap` captures the payload before any middleware, body parser, or
+framework layer touches it: plaintext connections via socket syscalls, and
+TLS connections via libssl uprobes (see
+[TLS Compatibility]({{< relref "tls-compatibility" >}}) for which stacks that
+covers). That makes it useful precisely when you're not sure whether the
+problem is in what arrived or in how your code handled it.
 
 ```mermaid
 sequenceDiagram
