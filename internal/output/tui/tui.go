@@ -34,4 +34,6 @@ func (s *Sink) Quit() { s.prog.Quit() }
 
 func (s *Sink) SendDiag(line string) { s.prog.Send(diagMsg(line)) }
 
+func (s *Sink) SendDrops(n uint64) { s.prog.Send(dropsMsg(n)) }
+
 func (s *Sink) Close() error { return nil }

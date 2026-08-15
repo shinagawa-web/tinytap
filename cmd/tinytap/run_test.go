@@ -26,11 +26,18 @@ type fakeBPF struct {
 	rd       ringbufCloser
 	closeErr error
 	drops    drops.Counts
+	dropsFn  func() drops.Counts
 }
 
-func (f *fakeBPF) reader() ringbufCloser    { return f.rd }
-func (f *fakeBPF) Close() error             { return f.closeErr }
-func (f *fakeBPF) dropCounts() drops.Counts { return f.drops }
+func (f *fakeBPF) reader() ringbufCloser { return f.rd }
+func (f *fakeBPF) Close() error          { return f.closeErr }
+
+func (f *fakeBPF) dropCounts() drops.Counts {
+	if f.dropsFn != nil {
+		return f.dropsFn()
+	}
+	return f.drops
+}
 
 var _ bpfSession = (*fakeBPF)(nil)
 
@@ -69,6 +76,7 @@ type fakeTUISink struct {
 	runErr error
 	quit   bool
 	diags  []string
+	drops  []uint64
 }
 
 func (f *fakeTUISink) OnEvent(*events.Event)          {}
@@ -78,6 +86,7 @@ func (f *fakeTUISink) Close() error                   { return nil }
 func (f *fakeTUISink) Run() error                     { return f.runErr }
 func (f *fakeTUISink) Quit()                          { f.quit = true }
 func (f *fakeTUISink) SendDiag(line string)           { f.diags = append(f.diags, line) }
+func (f *fakeTUISink) SendDrops(n uint64)             { f.drops = append(f.drops, n) }
 
 var _ output.Sink = (*fakeTUISink)(nil)
 var _ tuiSink = (*fakeTUISink)(nil)
@@ -650,5 +659,84 @@ func TestReportDrops_NonZero(t *testing.T) {
 	}
 	if !strings.Contains(got, "ring buffer full: 2") || !strings.Contains(got, "state map full: 3") {
 		t.Errorf("reportDrops logged %q, want it to include the session's counts", got)
+	}
+}
+
+// --- pollDrops ---
+
+func TestPollDrops_SendsOnChange(t *testing.T) {
+	var mu sync.Mutex
+	var total uint64
+	sess := &fakeBPF{dropsFn: func() drops.Counts {
+		mu.Lock()
+		defer mu.Unlock()
+		return drops.Counts{Ringbuf: total}
+	}}
+	w := newSSLWatcher(&fakeSink{})
+
+	sent := make(chan uint64, 10)
+	stop := pollDrops(sess, w, func(n uint64) { sent <- n }, time.Millisecond)
+	defer stop()
+
+	select {
+	case n := <-sent:
+		t.Fatalf("want no send while the count stays at zero, got %d", n)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	mu.Lock()
+	total = 7
+	mu.Unlock()
+
+	select {
+	case n := <-sent:
+		if n != 7 {
+			t.Errorf("send = %d, want 7", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for send after the count changed")
+	}
+}
+
+func TestPollDrops_SuppressesWhenUnchanged(t *testing.T) {
+	sess := &fakeBPF{drops: drops.Counts{Ringbuf: 3}}
+	w := newSSLWatcher(&fakeSink{})
+
+	sent := make(chan uint64, 10)
+	stop := pollDrops(sess, w, func(n uint64) { sent <- n }, time.Millisecond)
+
+	select {
+	case n := <-sent:
+		if n != 3 {
+			t.Errorf("send = %d, want 3", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for the initial send")
+	}
+
+	time.Sleep(20 * time.Millisecond) // let several ticks pass with an unchanged count
+	stop()
+
+	select {
+	case n := <-sent:
+		t.Errorf("want no further sends once the count stops changing, got %d", n)
+	default:
+	}
+}
+
+func TestPollDrops_StopJoinsCleanly(t *testing.T) {
+	sess := &fakeBPF{}
+	w := newSSLWatcher(&fakeSink{})
+	stop := pollDrops(sess, w, func(uint64) {}, time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop did not return promptly")
 	}
 }

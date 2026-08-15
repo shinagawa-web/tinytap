@@ -60,6 +60,23 @@ func TestSinkRunAndQuit(t *testing.T) {
 	}
 }
 
+// SendDrops posts a dropsMsg to the running program without panicking.
+func TestSinkSendDrops(t *testing.T) {
+	s := testSink(strings.NewReader(""))
+	done := make(chan error, 1)
+	go func() { done <- s.Run() }()
+	s.SendDrops(7)
+	s.Quit()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not exit after SendDrops+Quit")
+	}
+}
+
 // OnPaired posts a rowMsg to the running program without panicking.
 func TestSinkOnPaired(t *testing.T) {
 	s := testSink(strings.NewReader(""))

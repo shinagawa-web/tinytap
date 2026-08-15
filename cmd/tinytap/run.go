@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/term"
 
@@ -18,6 +20,8 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/output/stdout"
 	"github.com/shinagawa-web/tinytap/internal/output/tui"
 )
+
+const dropsPollInterval = time.Second
 
 type appConfig struct {
 	configPath  string
@@ -46,6 +50,7 @@ type tuiSink interface {
 	Run() error
 	Quit()
 	SendDiag(line string)
+	SendDrops(n uint64)
 }
 
 type tuiRunner interface {
@@ -159,7 +164,9 @@ func runTUI(sess bpfSession, width, height int) {
 	prev := log.Writer()
 	log.SetOutput(diag)
 
+	stopDrops := pollDrops(sess, sink, tuiS.SendDrops, dropsPollInterval)
 	runErr := runCapturePipeline(rd, sink, sink)
+	stopDrops()
 
 	log.SetOutput(prev)
 	diag.Flush(os.Stderr)
@@ -167,6 +174,36 @@ func runTUI(sess bpfSession, width, height int) {
 		log.Printf("tui: %v", runErr)
 	}
 	reportDrops(sess, sink)
+}
+
+// pollDrops polls sess and w's combined drop count on a ticker, calling send
+// only when the total has changed since the last tick. It returns a stop
+// func that halts the ticker and waits for its goroutine to exit.
+func pollDrops(sess bpfSession, w *sslWatcher, send func(uint64), interval time.Duration) func() {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		var last uint64
+		for {
+			select {
+			case <-ticker.C:
+				if total := sess.dropCounts().Add(w.dropCounts()).Total(); total != last {
+					last = total
+					send(total)
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		wg.Wait()
+	}
 }
 
 func isRoutineTLSAttach(line string) bool {
