@@ -137,12 +137,11 @@ sure whether the problem is in what arrived or in how your code handled it.
 
 ```mermaid
 sequenceDiagram
-    participant GH["GitHub"]
-    participant Server["Your server"]
-    participant T["tinytap"]
+    participant GH as GitHub
+    participant Server as Your server
     Note over Server: tinytap attaches here
-    GH->>Server: POST /webhooks/github\n(push event payload)
-    T-.)Server: captures the incoming request\nas the process reads it
+    GH->>Server: POST /webhooks/github (push event)
+    Note over Server: tinytap captures the incoming request as the process reads it
 ```
 
 ## Spot-check traffic without touching the app
