@@ -119,8 +119,8 @@ address `SSL_set_fd` resolved to), which doesn't exist as a kernel-known
 attach point ahead of time. Registering it calls `perf_event_open` against
 the kernel's dynamic `uprobe` PMU, creating a brand-new trace point, not
 attaching to an existing one. That's the same class of operation as writing
-to the legacy `uprobe_events`/`kprobe_events` control files, and the kernel
-gates it on `CAP_SYS_ADMIN` rather than `CAP_PERFMON`.
+to the legacy `uprobe_events`/`kprobe_events` control files. In practice, this path
+requires `cap_sys_admin` on all mainline kernels tested; see the Known gaps section below.
 
 In practice, TLS capture needs `cap_sys_admin` for tinytap's entire
 runtime whenever it's in use. `cap_sys_admin` is broad enough that this
@@ -154,4 +154,4 @@ in-process drop conditioned on that flag would become viable.
 
 - **x86_64**: confirmed: the documented capability set holds; the only arch-specific difference from arm64 is the `sendfile` kprobe's extra `cap_syslog` requirement.
 
-- **Whether `cap_sys_admin` can be narrowed further for TLS** wasn't investigated beyond confirming it's sufficient.
+- **Whether `cap_sys_admin` can be narrowed further for TLS**: cross-distro testing in #195 and #213 confirmed the requirement on Fedora 43 (6.17.1) and Alpine 3.23 (6.18), in addition to Ubuntu. The requirement is not Ubuntu-specific. AlmaLinux 9 (RHEL 5.14 backport) is the only tested exception: TLS uprobe attaches there without `cap_sys_admin`. Upstream kernel source shows `perfmon_capable()` (which accepts `cap_perfmon` or `cap_sys_admin`) on the relevant code paths, with no explicit `cap_sys_admin`-only gate visible; the discrepancy between source and empirical behavior on mainline kernels is unexplained. Narrowing below `cap_sys_admin` on current mainline kernels appears unlikely without a different attach mechanism.
