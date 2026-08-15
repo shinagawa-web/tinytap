@@ -37,7 +37,16 @@ on what each project treats as its core use case:
 
 - **`sendfile`**: Go `net/http`, Caddy, nginx static with `sendfile on`. Static files are handed to the kernel via `sendfile(2)` once the body exceeds a small threshold. This is invisible to tinytap except where a kprobe (supported on both amd64 and arm64) samples a prefix: the one gap in this whole table that isn't just a matter of raising the sample cap. The Go `net/http` and Caddy rows above were only exercised on arm64 hardware so far. That's a testing-coverage gap, not an architecture limitation (the kprobe itself supports amd64 too).
 
-- **`writev`**: Node.js, nginx with `sendfile off` or as a reverse proxy, Axum/hyper. Headers and body (or several body chunks) travel as separate iovecs in one syscall. How *much* is visible is governed by a per-iovec sampling budget rather than the flat cap, and varies with how many iovecs/writev calls the body is split across.
+- **`writev`**: Node.js, nginx with `sendfile off` or as a reverse proxy, Axum/hyper. Headers and body (or several body chunks) travel as separate iovecs in one syscall. How *much* is visible is governed by a per-iovec sampling budget (2048 / 1024 / 1024 / 0 B across iovec[0..3], summing to MAX\_PAYLOAD):
+
+  | iovec | nginx (sendfile off / proxy) | Node.js chunked | budget |
+  |---|---|---|---|
+  | [0] | headers | headers + chunk-size line | 2048 B |
+  | [1] | body | `"\r\n"` | 1024 B |
+  | [2] | (none) | body | 1024 B |
+  | [3] | (none) | `"\r\n"` | 0 B (dropped, harmless) |
+
+  iovec[0] receives the largest share because response headers always land there; 2048 B keeps them intact even when they grow large (many `Set-Cookie` fields, long auth tokens). If any iovec exceeds its budget, all later iovecs are dropped entirely. The truncation is not just a cap on that segment but a gate that closes the rest of the loop.
 
 A few points that generalize across rows:
 

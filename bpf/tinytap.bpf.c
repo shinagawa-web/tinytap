@@ -102,10 +102,9 @@ static __always_inline int read_msghdr_iov(const void *user_msghdr_ptr,
 static __always_inline __u32 iov_sample_budget(int i)
 {
     switch (i) {
-    case 0:  return 1024;
+    case 0:  return 2048;
     case 1:  return 1024;
     case 2:  return 1024;
-    case 3:  return 1024;
     default: return 0;
     }
 }
