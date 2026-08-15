@@ -64,11 +64,20 @@ verify a release download? See the
 | Mac (Intel or Apple Silicon) | Inside a Linux VM: Docker Desktop's VM, OrbStack, Lima, UTM, Multipass, etc. |
 | Windows | Inside WSL2 (which is a real Linux kernel). |
 
+**Which Linux distributions are supported?** Ubuntu 22.04+, Fedora 43, Debian 12,
+AlmaLinux 9, and Alpine 3.23 all pass. Two exceptions worth knowing:
+
+- **Ubuntu 20.04**: the GA kernel (5.4.0) is too old and fails at startup. The HWE kernel (5.15+) works.
+- **RHEL-family distros** (AlmaLinux 9, Rocky Linux 9): they report kernel versions like "5.14" but backport the required BPF features, so they work despite the low version number.
+
+The full tested matrix (distro, kernel, plaintext/TLS/sendfile status, capability requirements) is on the
+[Platform Support](https://shinagawa-web.github.io/tinytap/docs/compat-matrix/) page.
+
 Containers need no special handling either, since eBPF sees every process on the
 host kernel, containerized or not, so tinytap doesn't need to run inside a
 container or as a sidecar. See
 [Where tinytap Runs](https://shinagawa-web.github.io/tinytap/docs/where-it-runs/)
-on the docs site for the full container story and kernel requirements.
+on the docs site for the full container story.
 
 ## What it does today
 
@@ -162,7 +171,7 @@ Full documentation is available at
 | Build | `bpf2go` (part of cilium/ebpf) | Generates Go bindings from C code |
 | Compiler | `clang` 17+ | Standard for eBPF, supports BTF. `clang-14` compiles cleanly but the emitted `bpf_probe_read_user` call fails the kernel verifier (`R2 unbounded memory access`), so CI pins 17 (#207); 15/16 untested |
 | Go | 1.24+ | |
-| Kernel | Linux 5.8+ | Required for `BPF_MAP_TYPE_RINGBUF`, tinytap's event transport |
+| Kernel | Linux 5.8+ | Required for `BPF_MAP_TYPE_RINGBUF`, tinytap's event transport. See [Platform Support](https://shinagawa-web.github.io/tinytap/docs/compat-matrix/) for tested distros |
 | Architecture | amd64 + arm64 | Need arm64 for Apple Silicon Lima VM |
 | Release builds | [GoReleaser](https://goreleaser.com/) v2 | Cross-compiles linux/amd64 + linux/arm64 on tag push (`.goreleaser.yml`). The release workflow regenerates the bpf2go artifacts from source first (#260), then it's a plain `go build`; GoReleaser itself needs no clang/libbpf step |
 
