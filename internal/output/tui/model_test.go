@@ -1707,6 +1707,39 @@ func TestDiagIndicatorAbsentWithNoDiagLines(t *testing.T) {
 	}
 }
 
+// A dropsMsg sets the model's drops field.
+func TestDropsMsgSetsField(t *testing.T) {
+	m := newModel(80, 24)
+	next, _ := m.Update(dropsMsg(7))
+	m = next.(model)
+	if m.drops != 7 {
+		t.Errorf("drops = %d, want 7", m.drops)
+	}
+}
+
+// dropIndicator is empty at zero and shows the count once drops occur.
+func TestDropIndicator(t *testing.T) {
+	m := newModel(80, 24)
+	if got := m.dropIndicator(); got != "" {
+		t.Errorf("dropIndicator() = %q, want empty at zero drops", got)
+	}
+	next, _ := m.Update(dropsMsg(3))
+	m = next.(model)
+	if got := m.dropIndicator(); !strings.Contains(got, "⚠ 3 dropped") {
+		t.Errorf("dropIndicator() = %q, want it to mention the drop count", got)
+	}
+}
+
+// The zero-drop footer must stay byte-identical to the pre-#293 output —
+// this is the regression guard for the hard "no drops, no extra output"
+// constraint from #210.
+func TestFooterZeroDropsByteIdentical(t *testing.T) {
+	want := " ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ /: filter │ q: quit"
+	if got := withRows(5).footer(); got != want {
+		t.Errorf("footer() = %q, want %q", got, want)
+	}
+}
+
 // The diagnostics panel's View shows the captured line and a count in its header.
 func TestDiagPanelRendersLines(t *testing.T) {
 	m := newModel(80, 24)

@@ -100,6 +100,8 @@ type rowMsg row
 
 type diagMsg string
 
+type dropsMsg uint64
+
 type model struct {
 	rows         []row
 	width        int
@@ -119,6 +121,8 @@ type model struct {
 	diagLines  []string
 	diagOpen   bool
 	diagOffset int
+
+	drops uint64
 }
 
 func newModel(width, height int) model {
@@ -286,6 +290,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.diagOpen {
 			m.diagOffset = m.maxDiagOffset()
 		}
+	case dropsMsg:
+		m.drops = uint64(msg)
 	}
 	m.clampScroll()
 	m.clampDetailOffset()
@@ -491,18 +497,26 @@ func (m model) footer() string {
 	if m.hexMode {
 		mode = "text"
 	}
+	drop := m.dropIndicator()
 	diag := m.diagIndicator()
 	switch {
 	case m.detailOpen && m.panelFocus:
-		return fmt.Sprintf(" ↑↓/jk: scroll │ g/G: top/bottom │ Tab: table │ b: %s body │ Esc: back │ q: quit%s", mode, diag)
+		return fmt.Sprintf(" ↑↓/jk: scroll │ g/G: top/bottom │ Tab: table │ b: %s body │ Esc: back │ q: quit%s%s", mode, drop, diag)
 	case m.detailOpen:
-		return fmt.Sprintf(" ↑↓/jk: navigate │ Tab: inspect │ b: %s body │ Enter/Esc: close │ q: quit%s", mode, diag)
+		return fmt.Sprintf(" ↑↓/jk: navigate │ Tab: inspect │ b: %s body │ Enter/Esc: close │ q: quit%s%s", mode, drop, diag)
 	default:
 		if m.filterTerm != "" {
-			return fmt.Sprintf(" [/%s] ↑↓/jk: navigate │ Enter: detail │ /: edit │ Esc: clear │ q: quit%s", m.filterTerm, diag)
+			return fmt.Sprintf(" [/%s] ↑↓/jk: navigate │ Enter: detail │ /: edit │ Esc: clear │ q: quit%s%s", m.filterTerm, drop, diag)
 		}
-		return fmt.Sprintf(" ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ /: filter │ q: quit%s", diag)
+		return fmt.Sprintf(" ↑↓/jk: navigate │ Enter: detail │ g/G: top/bottom │ /: filter │ q: quit%s%s", drop, diag)
 	}
+}
+
+func (m model) dropIndicator() string {
+	if m.drops > 0 {
+		return " │ " + dropStyle.Render(fmt.Sprintf("⚠ %d dropped", m.drops))
+	}
+	return ""
 }
 
 func (m model) diagIndicator() string {
@@ -759,6 +773,8 @@ func headerLine(pathWidth int) string {
 var selectedStyle = lipgloss.NewStyle().Reverse(true)
 
 var slowLatencyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+
+var dropStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 
 var sslFallbackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
 
