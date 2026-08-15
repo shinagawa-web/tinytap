@@ -740,3 +740,12 @@ func TestPollDrops_StopJoinsCleanly(t *testing.T) {
 		t.Fatal("stop did not return promptly")
 	}
 }
+
+// A second call to stop must not panic on a double-close of the done channel.
+func TestPollDrops_StopIsIdempotent(t *testing.T) {
+	sess := &fakeBPF{}
+	w := newSSLWatcher(&fakeSink{})
+	stop := pollDrops(sess, w, func(uint64) {}, time.Millisecond)
+	stop()
+	stop()
+}

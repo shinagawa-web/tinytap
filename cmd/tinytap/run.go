@@ -178,10 +178,12 @@ func runTUI(sess bpfSession, width, height int) {
 
 // pollDrops polls sess and w's combined drop count on a ticker, calling send
 // only when the total has changed since the last tick. It returns a stop
-// func that halts the ticker and waits for its goroutine to exit.
+// func that halts the ticker and waits for its goroutine to exit; the stop
+// func is idempotent and safe to call more than once.
 func pollDrops(sess bpfSession, w *sslWatcher, send func(uint64), interval time.Duration) func() {
 	done := make(chan struct{})
 	var wg sync.WaitGroup
+	var stopOnce sync.Once
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -201,7 +203,7 @@ func pollDrops(sess bpfSession, w *sslWatcher, send func(uint64), interval time.
 		}
 	}()
 	return func() {
-		close(done)
+		stopOnce.Do(func() { close(done) })
 		wg.Wait()
 	}
 }
