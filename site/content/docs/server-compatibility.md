@@ -43,10 +43,10 @@ on what each project treats as its core use case:
   |---|---|---|---|
   | [0] | headers | headers + chunk-size line | 2048 B |
   | [1] | body | `"\r\n"` | 1024 B |
-  | [2] | — | body | 1024 B |
-  | [3] | — | `"\r\n"` | 0 B (dropped, harmless) |
+  | [2] | (none) | body | 1024 B |
+  | [3] | (none) | `"\r\n"` | 0 B (dropped, harmless) |
 
-  iovec[0] receives the largest share because response headers always land there; 2048 B keeps them intact even when they grow large (many `Set-Cookie` fields, long auth tokens). If any iovec exceeds its budget, all later iovecs are dropped entirely — the truncation is not just a cap on that segment but a gate that closes the rest of the loop.
+  iovec[0] receives the largest share because response headers always land there; 2048 B keeps them intact even when they grow large (many `Set-Cookie` fields, long auth tokens). If any iovec exceeds its budget, all later iovecs are dropped entirely. The truncation is not just a cap on that segment but a gate that closes the rest of the loop.
 
 A few points that generalize across rows:
 
