@@ -117,6 +117,35 @@ flowchart TB
     App2 -.->|"socket syscalls"| Tinytap
 ```
 
+## Inspect an incoming webhook payload without adding logging
+
+A third-party service (GitHub, Stripe, PagerDuty) posts a webhook to your
+server and something is off: an event that should have triggered a handler
+didn't, or the payload looks different from what the docs describe. You need
+to see exactly what arrived: the path, every header, the body.
+
+The usual move is to add a log statement, redeploy, and then reproduce the
+event. Reproducing a webhook event often means manually triggering the
+upstream action (merging a PR, making a test payment) and waiting. `tinytap`
+attaches to the already-running server process and shows the incoming request
+the moment it arrives, with no code change and no restart required.
+
+`tinytap` captures the payload before any middleware, body parser, or
+framework layer touches it: plaintext connections via socket syscalls, and
+TLS connections via libssl uprobes (see
+[TLS Compatibility]({{< relref "tls-compatibility" >}}) for which stacks that
+covers). That makes it useful precisely when you're not sure whether the
+problem is in what arrived or in how your code handled it.
+
+```mermaid
+sequenceDiagram
+    participant GH as GitHub
+    participant Server as Your server
+    Note over Server: tinytap attaches here
+    GH->>Server: POST /webhooks/github (push event)
+    Note over Server: tinytap captures the incoming request as the process reads it
+```
+
 ## Spot-check traffic without touching the app
 
 Sometimes you just want to confirm "did that request actually go out, and
