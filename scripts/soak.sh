@@ -294,14 +294,21 @@ FIRST=$(awk 'NR==2{print}' "${TSV_OUT}")
 LAST=$(awk 'END{print}' "${TSV_OUT}")
 FAILURES=0
 
-# check_growth <label> <tsv-field> <threshold> — for gauges (RSS, fds, map
-# entries): fails if last - first > threshold.
+# Last row where tinytap was alive (rss_kb > 0). After the process exits,
+# BPF maps are removed and subsequent readings return 0 — so all checks that
+# depend on live process state must use this row, not LAST.
+LAST_ALIVE=$(awk -F'\t' 'NR>1 && $2+0>0 {row=$0} END{print row}' "${TSV_OUT}")
+LAST_ALIVE_EL=$(echo "${LAST_ALIVE}" | cut -f1)
+
+# check_growth <label> <field> <threshold> [first_row] [last_row]
 check_growth() {
     local label=$1 field=$2 threshold=$3
+    local first_row=${4:-${FIRST}}
+    local last_row=${5:-${LAST}}
     local first_val last_val
-    first_val=$(echo "${FIRST}" | cut -f"${field}")
-    last_val=$(echo "${LAST}" | cut -f"${field}")
-    if [[ "${first_val}" == "N/A" || "${last_val}" == "N/A" ]]; then
+    first_val=$(echo "${first_row}" | cut -f"${field}")
+    last_val=$(echo "${last_row}" | cut -f"${field}")
+    if [[ "${first_val}" == "N/A" || "${last_val}" == "N/A" || -z "${first_val}" || -z "${last_val}" ]]; then
         echo "  SKIP ${label}: N/A"
         return
     fi
@@ -314,29 +321,47 @@ check_growth() {
     fi
 }
 
-check_growth "RSS (KB)"        2  10000
-check_growth "fd count"        4  20
-check_growth "incoming_pendin" 5  20
+# Tinytap liveness: did it survive the full run?
+if [[ -z "${LAST_ALIVE}" ]]; then
+    echo "  FAIL tinytap-soak: died before first sample"
+    FAILURES=$(( FAILURES + 1 ))
+elif [[ "${LAST_ALIVE_EL:-0}" -lt "${DURATION}" ]]; then
+    echo "  WARN tinytap-soak: exited at elapsed=${LAST_ALIVE_EL}s (expected ${DURATION}s)"
+    FAILURES=$(( FAILURES + 1 ))
+else
+    echo "  OK   tinytap-soak: alive throughout"
+fi
 
-# drop_counters are cumulative totals — check absolute final value, not delta.
-for field_label in "6:drop_ringbuf" "7:drop_map_full"; do
-    local_field=${field_label%%:*}
-    local_label=${field_label##*:}
-    final_val=$(echo "${LAST}" | cut -f"${local_field}")
-    if [[ "${final_val}" == "N/A" ]]; then
-        echo "  SKIP ${local_label}: N/A"
-    elif [[ "${final_val}" -gt 0 ]]; then
-        echo "  WARN ${local_label}: ${final_val} total drops"
-        FAILURES=$(( FAILURES + 1 ))
-    else
-        echo "  OK   ${local_label}: 0"
-    fi
-done
+# Gauge metrics: compare first vs last-alive sample (comparing against a
+# post-death '0' would always look like a decrease, not a leak).
+if [[ -n "${LAST_ALIVE}" ]]; then
+    check_growth "RSS (KB)"        2  10000 "${FIRST}" "${LAST_ALIVE}"
+    check_growth "fd count"        4  20    "${FIRST}" "${LAST_ALIVE}"
+    check_growth "incoming_pendin" 5  20    "${FIRST}" "${LAST_ALIVE}"
+fi
+
+# drop_counters: check the MAXIMUM observed across all samples.
+# After tinytap exits, the BPF maps are removed and reads return 0, so the
+# final-value check would silently pass even after massive drops mid-run.
+MAX_DROP_RB=$(awk -F'\t' 'NR>1 && $6~/^[0-9]+$/ {if ($6+0>max) max=$6+0} END{print max+0}' "${TSV_OUT}")
+MAX_DROP_MF=$(awk -F'\t' 'NR>1 && $7~/^[0-9]+$/ {if ($7+0>max) max=$7+0} END{print max+0}' "${TSV_OUT}")
+if [[ "${MAX_DROP_RB:-0}" -gt 0 ]]; then
+    echo "  WARN drop_ringbuf: max ${MAX_DROP_RB} during run"
+    FAILURES=$(( FAILURES + 1 ))
+else
+    echo "  OK   drop_ringbuf: 0"
+fi
+if [[ "${MAX_DROP_MF:-0}" -gt 0 ]]; then
+    echo "  WARN drop_map_full: max ${MAX_DROP_MF} during run"
+    FAILURES=$(( FAILURES + 1 ))
+else
+    echo "  OK   drop_map_full: 0"
+fi
 
 # pair/request ratio: pairs should track requests closely.
 FINAL_PAIRS=$(echo "${LAST}" | cut -f8)
 FINAL_REQS=$(echo "${LAST}" | cut -f9)
-if [[ "${FINAL_REQS}" -gt 0 ]]; then
+if [[ "${FINAL_REQS:-0}" -gt 0 ]]; then
     RATIO=$(( FINAL_PAIRS * 100 / FINAL_REQS ))
     if [[ "${RATIO}" -lt 90 ]]; then
         echo "  WARN pair/req ratio: ${FINAL_PAIRS}/${FINAL_REQS} (${RATIO}%) — below 90%"
