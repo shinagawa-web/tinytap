@@ -122,8 +122,12 @@ proc_cpu_ticks() {
     echo $(( f[13] + f[14] ))
 }
 
-echo "==> make generate (regenerates BPF bindings — requires clang-17 + libbpf)"
-make generate
+if ls internal/loader/bpf/tinytap_bpfel.go 2>/dev/null | grep -q .; then
+    echo "==> skipping make generate (bindings already present)"
+else
+    echo "==> make generate (regenerates BPF bindings — requires clang-17 + libbpf)"
+    make generate
+fi
 
 echo "==> building tinytap"
 go build -o "${TT_BIN}" ./cmd/tinytap/
