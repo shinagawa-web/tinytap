@@ -18,17 +18,20 @@
 #   DURATION=900 bash scripts/soak.sh   # 15 min — real soak
 #
 # Env vars:
-#   DURATION         seconds to run (default: 60)
-#   SAMPLE_INTERVAL  seconds between metric samples (default: 10)
-#   CHURN_WORKERS    parallel curl workers (default: 5)
-#   PORT             HTTP server port (default: 19080)
-#   TSV_OUT          path for TSV output (default: /tmp/tinytap-soak-metrics.tsv)
+#   DURATION            seconds to run (default: 60)
+#   SAMPLE_INTERVAL     seconds between metric samples (default: 10)
+#   CHURN_WORKERS       parallel curl workers (default: 5)
+#   SLEEP_BETWEEN_REQS  sleep in seconds between each curl (default: 0 = max speed)
+#                       e.g. SLEEP_BETWEEN_REQS=0.1 → ~10 req/sec/worker
+#   PORT                HTTP server port (default: 19080)
+#   TSV_OUT             path for TSV output (default: /tmp/tinytap-soak-metrics.tsv)
 
 set -euo pipefail
 
 DURATION="${DURATION:-60}"
 SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-10}"
 CHURN_WORKERS="${CHURN_WORKERS:-5}"
+SLEEP_BETWEEN_REQS="${SLEEP_BETWEEN_REQS:-0}"
 PORT="${PORT:-19080}"
 TSV_OUT="${TSV_OUT:-/tmp/tinytap-soak-metrics.tsv}"
 
@@ -184,10 +187,11 @@ echo "==> BPF map preflight"
 preflight_bpf_maps
 
 # ── Load generator ─────────────────────────────────────────────────────────────
-echo "==> starting ${CHURN_WORKERS} curl churn workers (--no-keepalive)"
+echo "==> starting ${CHURN_WORKERS} curl churn workers (--no-keepalive, sleep=${SLEEP_BETWEEN_REQS}s)"
 for _ in $(seq 1 "${CHURN_WORKERS}"); do
     (while true; do
         curl -fsS --no-keepalive "http://localhost:${PORT}/" -o /dev/null 2>/dev/null || true
+        [[ "${SLEEP_BETWEEN_REQS}" != "0" ]] && sleep "${SLEEP_BETWEEN_REQS}"
     done) &
     CHURN_PIDS+=($!)
 done
