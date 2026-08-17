@@ -1,30 +1,4 @@
 #!/usr/bin/env bash
-# Soak test — scenario: churn
-#
-# Runs tinytap against sustained HTTP connection churn (N parallel
-# curl --no-keepalive workers) and samples resource metrics at a fixed
-# interval. Designed to surface map, memory, and fd leaks that only appear
-# under long-running load.
-#
-# Prerequisites:
-#   - Run inside the Lima VM (eBPF requires Linux)
-#   - Run `make generate` before this script (generated BPF bindings are not
-#     committed; the build will fail without them)
-#   - bpftool must be installed:
-#       sudo apt-get install -y linux-tools-common linux-tools-$(uname -r)
-#
-# Usage:
-#   DURATION=60  bash scripts/soak.sh   # 60 s (default) — validation run
-#   DURATION=900 bash scripts/soak.sh   # 15 min — real soak
-#
-# Env vars:
-#   DURATION            seconds to run (default: 60)
-#   SAMPLE_INTERVAL     seconds between metric samples (default: 10)
-#   CHURN_WORKERS       parallel curl workers (default: 5)
-#   SLEEP_BETWEEN_REQS  sleep in seconds between each curl (default: 0 = max speed)
-#                       e.g. SLEEP_BETWEEN_REQS=0.1 → ~10 req/sec/worker
-#   PORT                HTTP server port (default: 19080)
-#   TSV_OUT             path for TSV output (default: /tmp/tinytap-soak-metrics.tsv)
 
 set -euo pipefail
 
@@ -35,8 +9,6 @@ SLEEP_BETWEEN_REQS="${SLEEP_BETWEEN_REQS:-0}"
 PORT="${PORT:-19080}"
 TSV_OUT="${TSV_OUT:-/tmp/tinytap-soak-metrics.tsv}"
 
-# setcap'd binaries drop capabilities on nosuid mounts (e.g. /tmp on the dev
-# VM) — build into the repo root instead, same as test-e2e.sh.
 TT_BIN="${PWD}/tinytap-soak"
 TT_CAPS="cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog"
 TT_CFG=/tmp/tinytap-soak-config.toml
@@ -92,9 +64,6 @@ preflight_bpf_maps() {
         echo "  WARNING: jq not found — BPF map columns will show N/A"
         return
     fi
-    # Expected names after kernel 15-char truncation:
-    #   incoming_pending_map  → incoming_pendin
-    #   drop_counters         → drop_counters  (13 chars, no truncation)
     local -a expected=("incoming_pendin" "drop_counters")
     local all_names
     all_names=$(sudo bpftool map show -j 2>/dev/null | jq -r '.[].name' 2>/dev/null || true)
@@ -139,8 +108,6 @@ read_drop_counters() {
     local dump
     dump=$(sudo bpftool map dump id "${id}" -j 2>/dev/null || echo "[]")
     local rb mf
-    # bpftool -j emits both raw bytes (values[].value is a byte array) and
-    # a decoded view (formatted.values[].value is an integer). Use formatted.
     rb=$(echo "${dump}" | jq '[.[0].formatted.values[].value] | add // 0' 2>/dev/null) || rb="N/A"
     mf=$(echo "${dump}" | jq '[.[1].formatted.values[].value] | add // 0' 2>/dev/null) || mf="N/A"
     echo "${rb} ${mf}"
@@ -210,7 +177,6 @@ do_sample() {
     cur_ticks=$(proc_cpu_ticks "${TT_PID}")
     cur_ts_ms=$(date +%s%3N)
     elapsed_ms=$(( cur_ts_ms - PREV_TS_MS ))
-    # Guard against negative result when the process exits (cur_ticks resets to 0).
     if [[ "${elapsed_ms}" -gt 0 && "${cur_ticks}" -ge "${PREV_TICKS}" ]]; then
         cpu_pct=$(( (cur_ticks - PREV_TICKS) * 100 * 1000 / elapsed_ms / CLK_TCK ))
     fi
@@ -224,8 +190,6 @@ do_sample() {
     local rss fds
     rss=$(awk '/VmRSS/{print $2}' /proc/"${TT_PID}"/status 2>/dev/null) || true
     rss=${rss:-0}
-    # setcap sets dumpable=0, making /proc/PID/fd inaccessible to non-root even for the
-    # same user. Use sudo to read the fd directory.
     fds=$(sudo ls /proc/"${TT_PID}"/fd 2>/dev/null | wc -l) || fds=0
 
     local incoming drop_rb drop_mf
@@ -233,7 +197,6 @@ do_sample() {
     read -r drop_rb drop_mf <<< "$(read_drop_counters)"
 
     local pairs reqs
-    # || true so grep's exit 1 (no matches) doesn't trip set -e.
     pairs=$(grep -c '^{' "${TT_OUT}" 2>/dev/null) || true
     pairs=${pairs:-0}
     reqs=$(grep -cE '"GET|"POST|"HEAD' "${PY_LOG}" 2>/dev/null) || true
@@ -341,8 +304,6 @@ if [[ -n "${LAST_ALIVE}" ]]; then
     check_growth "incoming_pendin" 5  20    "${FIRST}" "${LAST_ALIVE}"
 fi
 
-# Use max across all samples: BPF maps are removed when tinytap exits, so
-# the final-value would silently read 0 even after massive drops mid-run.
 MAX_DROP_RB=$(awk -F'\t' 'NR>1 && $6~/^[0-9]+$/ {if ($6+0>max) max=$6+0} END{print max+0}' "${TSV_OUT}")
 MAX_DROP_MF=$(awk -F'\t' 'NR>1 && $7~/^[0-9]+$/ {if ($7+0>max) max=$7+0} END{print max+0}' "${TSV_OUT}")
 if [[ "${MAX_DROP_RB:-0}" -gt 0 ]]; then
