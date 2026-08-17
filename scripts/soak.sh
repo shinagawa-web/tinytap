@@ -326,7 +326,7 @@ if [[ -z "${LAST_ALIVE}" ]]; then
     echo "  FAIL tinytap-soak: died before first sample"
     FAILURES=$(( FAILURES + 1 ))
 elif [[ "${LAST_ALIVE_EL:-0}" -lt "${DURATION}" ]]; then
-    echo "  WARN tinytap-soak: exited at elapsed=${LAST_ALIVE_EL}s (expected ${DURATION}s)"
+    echo "  WARN tinytap-soak: last alive at elapsed=${LAST_ALIVE_EL}s, died before ${DURATION}s"
     FAILURES=$(( FAILURES + 1 ))
 else
     echo "  OK   tinytap-soak: alive throughout"
