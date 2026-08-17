@@ -1,5 +1,6 @@
 //go:build ignore
 
+// cache-bust: verify llvm-strip issue reproduces across all workflows
 #include <linux/bpf.h>
 #include <linux/errno.h>
 #include <bpf/bpf_helpers.h>
