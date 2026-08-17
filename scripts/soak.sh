@@ -154,7 +154,10 @@ proc_cpu_ticks() {
 }
 
 # ── Build ─────────────────────────────────────────────────────────────────────
-echo "==> building tinytap (requires generated BPF bindings — run 'make generate' first)"
+echo "==> make generate (regenerates BPF bindings — requires clang-17 + libbpf)"
+make generate
+
+echo "==> building tinytap"
 go build -o "${TT_BIN}" ./cmd/tinytap/
 
 echo "==> setcap ${TT_CAPS}"
