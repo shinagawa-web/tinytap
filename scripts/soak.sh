@@ -42,6 +42,7 @@ TT_CAPS="cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog"
 TT_CFG=/tmp/tinytap-soak-config.toml
 TT_OUT=/tmp/tinytap-soak.log
 PY_LOG=/tmp/tinytap-soak-py.log
+CURL_TIME_LOG=/tmp/tinytap-soak-curl-times.log
 
 TT_PID=""
 PY_PID=""
@@ -81,14 +82,14 @@ wait_for_tinytap() {
     return 1
 }
 
-# preflight_bpf_maps — resolves each expected BPF map name after tinytap has
-# loaded its programs. BPF object names are kernel-truncated to 15 chars.
-# Exits 1 and prints all real map names if any expected name is missing,
-# converting a silent "always shows 0" failure into a loud one.
 preflight_bpf_maps() {
     if ! command -v bpftool &>/dev/null; then
         echo "  WARNING: bpftool not found — BPF map columns will show N/A"
         echo "  Install: sudo apt-get install -y linux-tools-common linux-tools-\$(uname -r)"
+        return
+    fi
+    if ! command -v jq &>/dev/null; then
+        echo "  WARNING: jq not found — BPF map columns will show N/A"
         return
     fi
     # Expected names after kernel 15-char truncation:
@@ -113,8 +114,6 @@ preflight_bpf_maps() {
     echo "  BPF maps verified: ${expected[*]}"
 }
 
-# count_bpf_map <name> — counts entries in a BPF hash map by (truncated) name.
-# Returns 0 when the map is empty and "N/A" when bpftool is unavailable.
 count_bpf_map() {
     local name=$1
     command -v bpftool &>/dev/null || { echo "N/A"; return; }
@@ -131,8 +130,6 @@ count_bpf_map() {
     echo "${total}"
 }
 
-# read_drop_counters — reads the PERCPU_ARRAY drop_counters map and prints
-# "ringbuf map_full" as cumulative totals summed across all CPUs.
 read_drop_counters() {
     command -v bpftool &>/dev/null || { echo "N/A N/A"; return; }
     local id
@@ -149,7 +146,6 @@ read_drop_counters() {
     echo "${rb} ${mf}"
 }
 
-# proc_cpu_ticks <pid> — prints utime+stime from /proc/PID/stat
 proc_cpu_ticks() {
     local stat
     stat=$(cat /proc/"$1"/stat 2>/dev/null) || { echo 0; return; }
@@ -158,7 +154,6 @@ proc_cpu_ticks() {
     echo $(( f[13] + f[14] ))
 }
 
-# ── Build ─────────────────────────────────────────────────────────────────────
 echo "==> make generate (regenerates BPF bindings — requires clang-17 + libbpf)"
 make generate
 
@@ -168,51 +163,49 @@ go build -o "${TT_BIN}" ./cmd/tinytap/
 echo "==> setcap ${TT_CAPS}"
 sudo setcap "${TT_CAPS}=eip" "${TT_BIN}"
 
-# ── HTTP server ───────────────────────────────────────────────────────────────
 echo "==> python3 -m http.server ${PORT}"
 python3 -m http.server "${PORT}" >"${PY_LOG}" 2>&1 &
 PY_PID=$!
 wait_for_port localhost "${PORT}" || { echo "FAIL: http.server did not start"; exit 1; }
 
-# ── Start tinytap ──────────────────────────────────────────────────────────────
 printf 'output = "stdout"\n' >"${TT_CFG}"
 : >"${TT_OUT}"
 "${TT_BIN}" --config "${TT_CFG}" >"${TT_OUT}" 2>&1 &
+TT_PID=$!
 wait_for_tinytap || { echo "FAIL: tinytap did not become ready"; cat "${TT_OUT}"; exit 1; }
-TT_PID=$(pgrep -x tinytap-soak | head -1)
 echo "  tinytap pid=${TT_PID}"
 
-# ── BPF map preflight (after tinytap has loaded its programs) ─────────────────
 echo "==> BPF map preflight"
 preflight_bpf_maps
 
-# ── Load generator ─────────────────────────────────────────────────────────────
 echo "==> starting ${CHURN_WORKERS} curl churn workers (--no-keepalive, sleep=${SLEEP_BETWEEN_REQS}s)"
 for _ in $(seq 1 "${CHURN_WORKERS}"); do
     (while true; do
-        curl -fsS --no-keepalive "http://localhost:${PORT}/" -o /dev/null 2>/dev/null || true
+        t=$(curl -fsS --no-keepalive "http://localhost:${PORT}/" -o /dev/null \
+            -w "%{time_total}" 2>/dev/null) || true
+        echo "${t:-0}" >> "${CURL_TIME_LOG}"
         [[ "${SLEEP_BETWEEN_REQS}" != "0" ]] && sleep "${SLEEP_BETWEEN_REQS}"
     done) &
     CHURN_PIDS+=($!)
 done
 
-# ── Metrics TSV header ─────────────────────────────────────────────────────────
-printf "elapsed_s\trss_kb\tcpu_pct\tfd_count\tincoming_pendin\tdrop_ringbuf\tdrop_map_full\tpairs_out\treqs_in\n" \
+printf "elapsed_s\trss_kb\tcpu_pct\tfd_count\tincoming_pendin\tdrop_ringbuf\tdrop_map_full\tpairs_out\treqs_in\tsys_cpu_pct\tcurl_avg_ms\n" \
     | tee "${TSV_OUT}"
 
-# ── Sampling state (updated each iteration) ────────────────────────────────────
+: >"${CURL_TIME_LOG}"
 PREV_TICKS=$(proc_cpu_ticks "${TT_PID}")
 PREV_TS_MS=$(date +%s%3N)
 CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
+read -r PREV_SYS_TOTAL PREV_SYS_IDLE <<< "$(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat)"
+PREV_CURL_COUNT=0
+PREV_CURL_SUM_MS=0
 
 do_sample() {
     local elapsed=$1
 
-    # tinytap alive check
     local alive=1
     [[ -f "/proc/${TT_PID}/status" ]] || alive=0
 
-    # tinytap CPU%
     local cur_ticks cur_ts_ms elapsed_ms cpu_pct=0
     cur_ticks=$(proc_cpu_ticks "${TT_PID}")
     cur_ts_ms=$(date +%s%3N)
@@ -228,38 +221,52 @@ do_sample() {
         echo "WARN: tinytap-soak (pid ${TT_PID}) is no longer running at elapsed=${elapsed}s" >&2
     fi
 
-    # process metrics
     local rss fds
-    # /proc/PID/status is readable without ptrace; VmRSS is present for living processes.
     rss=$(awk '/VmRSS/{print $2}' /proc/"${TT_PID}"/status 2>/dev/null) || true
     rss=${rss:-0}
     # setcap sets dumpable=0, making /proc/PID/fd inaccessible to non-root even for the
     # same user. Use sudo to read the fd directory.
     fds=$(sudo ls /proc/"${TT_PID}"/fd 2>/dev/null | wc -l) || fds=0
 
-    # BPF metrics
     local incoming drop_rb drop_mf
     incoming=$(count_bpf_map "incoming_pendin")
     read -r drop_rb drop_mf <<< "$(read_drop_counters)"
 
-    # output vs input
-    # pairs: JSONL lines start with '{'; log lines (Go log format) do not.
-    # Use || true so grep's exit 1 (no matches) doesn't trip set -e.
     local pairs reqs
+    # || true so grep's exit 1 (no matches) doesn't trip set -e.
     pairs=$(grep -c '^{' "${TT_OUT}" 2>/dev/null) || true
     pairs=${pairs:-0}
-    # python http.server logs one line per request to PY_LOG.
-    reqs=$(grep -c '"GET\|"POST\|"HEAD' "${PY_LOG}" 2>/dev/null) || true
+    reqs=$(grep -cE '"GET|"POST|"HEAD' "${PY_LOG}" 2>/dev/null) || true
     reqs=${reqs:-0}
 
-    printf "%d\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%d\n" \
+    local sys_total sys_idle sys_cpu_pct=0
+    read -r sys_total sys_idle <<< "$(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat)"
+    local sys_delta_total=$(( sys_total - PREV_SYS_TOTAL ))
+    local sys_delta_idle=$(( sys_idle - PREV_SYS_IDLE ))
+    if [[ "${sys_delta_total}" -gt 0 ]]; then
+        sys_cpu_pct=$(( (sys_delta_total - sys_delta_idle) * 100 / sys_delta_total ))
+    fi
+    PREV_SYS_TOTAL=${sys_total}
+    PREV_SYS_IDLE=${sys_idle}
+
+    local curl_count curl_sum_ms curl_avg_ms=0
+    curl_count=$(wc -l < "${CURL_TIME_LOG}" 2>/dev/null) || curl_count=0
+    curl_sum_ms=$(awk '{s+=$1} END{printf "%d", s*1000+0.5}' "${CURL_TIME_LOG}" 2>/dev/null) || curl_sum_ms=0
+    local delta_curl_count=$(( curl_count - PREV_CURL_COUNT ))
+    local delta_curl_sum=$(( curl_sum_ms - PREV_CURL_SUM_MS ))
+    if [[ "${delta_curl_count}" -gt 0 ]]; then
+        curl_avg_ms=$(( delta_curl_sum / delta_curl_count ))
+    fi
+    PREV_CURL_COUNT=${curl_count}
+    PREV_CURL_SUM_MS=${curl_sum_ms}
+
+    printf "%d\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n" \
         "${elapsed}" "${rss}" "${cpu_pct}" "${fds}" \
         "${incoming}" "${drop_rb}" "${drop_mf}" \
-        "${pairs}" "${reqs}" \
+        "${pairs}" "${reqs}" "${sys_cpu_pct}" "${curl_avg_ms}" \
         | tee -a "${TSV_OUT}"
 }
 
-# ── Soak loop ──────────────────────────────────────────────────────────────────
 echo "==> sampling every ${SAMPLE_INTERVAL}s for ${DURATION}s"
 START=$(date +%s)
 NEXT_SAMPLE=0
@@ -274,7 +281,6 @@ while true; do
     sleep 1
 done
 
-# Final sample at end of run
 ELAPSED=$(( $(date +%s) - START ))
 do_sample "${ELAPSED}"
 
@@ -283,14 +289,12 @@ echo "==> soak complete — stopping"
 cleanup
 trap - EXIT
 
-# ── Report ────────────────────────────────────────────────────────────────────
 echo
 echo "=== metrics ==="
 column -t "${TSV_OUT}"
 echo
 echo "TSV saved to ${TSV_OUT}"
 
-# ── Analysis ──────────────────────────────────────────────────────────────────
 echo
 echo "=== analysis ==="
 
@@ -298,13 +302,9 @@ FIRST=$(awk 'NR==2{print}' "${TSV_OUT}")
 LAST=$(awk 'END{print}' "${TSV_OUT}")
 FAILURES=0
 
-# Last row where tinytap was alive (rss_kb > 0). After the process exits,
-# BPF maps are removed and subsequent readings return 0 — so all checks that
-# depend on live process state must use this row, not LAST.
 LAST_ALIVE=$(awk -F'\t' 'NR>1 && $2+0>0 {row=$0} END{print row}' "${TSV_OUT}")
 LAST_ALIVE_EL=$(echo "${LAST_ALIVE}" | cut -f1)
 
-# check_growth <label> <field> <threshold> [first_row] [last_row]
 check_growth() {
     local label=$1 field=$2 threshold=$3
     local first_row=${4:-${FIRST}}
@@ -313,65 +313,60 @@ check_growth() {
     first_val=$(echo "${first_row}" | cut -f"${field}")
     last_val=$(echo "${last_row}" | cut -f"${field}")
     if [[ "${first_val}" == "N/A" || "${last_val}" == "N/A" || -z "${first_val}" || -z "${last_val}" ]]; then
-        echo "  SKIP ${label}: N/A"
+        echo "  ${label}: N/A"
         return
     fi
     local growth=$(( last_val - first_val ))
     if [[ "${growth}" -gt "${threshold}" ]]; then
-        echo "  WARN ${label}: grew by ${growth} (${first_val} → ${last_val})"
+        echo "  ${label}: grew by ${growth} (${first_val} → ${last_val})"
         FAILURES=$(( FAILURES + 1 ))
     else
-        echo "  OK   ${label}: ${first_val} → ${last_val}"
+        echo "  ${label}: ${first_val} → ${last_val}"
     fi
 }
 
-# Tinytap liveness: did it survive the full run?
 if [[ -z "${LAST_ALIVE}" ]]; then
-    echo "  FAIL tinytap-soak: died before first sample"
+    echo "  tinytap-soak: died before first sample"
     FAILURES=$(( FAILURES + 1 ))
 elif [[ "${LAST_ALIVE_EL:-0}" -lt "${DURATION}" ]]; then
-    echo "  WARN tinytap-soak: last alive at elapsed=${LAST_ALIVE_EL}s, died before ${DURATION}s"
+    echo "  tinytap-soak: last alive at elapsed=${LAST_ALIVE_EL}s, died before ${DURATION}s"
     FAILURES=$(( FAILURES + 1 ))
 else
-    echo "  OK   tinytap-soak: alive throughout"
+    echo "  tinytap-soak: alive throughout"
 fi
 
-# Gauge metrics: compare first vs last-alive sample (comparing against a
-# post-death '0' would always look like a decrease, not a leak).
 if [[ -n "${LAST_ALIVE}" ]]; then
     check_growth "RSS (KB)"        2  10000 "${FIRST}" "${LAST_ALIVE}"
     check_growth "fd count"        4  20    "${FIRST}" "${LAST_ALIVE}"
     check_growth "incoming_pendin" 5  20    "${FIRST}" "${LAST_ALIVE}"
 fi
 
-# drop_counters: check the MAXIMUM observed across all samples.
-# After tinytap exits, the BPF maps are removed and reads return 0, so the
-# final-value check would silently pass even after massive drops mid-run.
+# Use max across all samples: BPF maps are removed when tinytap exits, so
+# the final-value would silently read 0 even after massive drops mid-run.
 MAX_DROP_RB=$(awk -F'\t' 'NR>1 && $6~/^[0-9]+$/ {if ($6+0>max) max=$6+0} END{print max+0}' "${TSV_OUT}")
 MAX_DROP_MF=$(awk -F'\t' 'NR>1 && $7~/^[0-9]+$/ {if ($7+0>max) max=$7+0} END{print max+0}' "${TSV_OUT}")
 if [[ "${MAX_DROP_RB:-0}" -gt 0 ]]; then
-    echo "  WARN drop_ringbuf: max ${MAX_DROP_RB} during run"
+    echo "  drop_ringbuf: max ${MAX_DROP_RB} during run"
     FAILURES=$(( FAILURES + 1 ))
 else
-    echo "  OK   drop_ringbuf: 0"
+    echo "  drop_ringbuf: 0"
 fi
 if [[ "${MAX_DROP_MF:-0}" -gt 0 ]]; then
-    echo "  WARN drop_map_full: max ${MAX_DROP_MF} during run"
+    echo "  drop_map_full: max ${MAX_DROP_MF} during run"
     FAILURES=$(( FAILURES + 1 ))
 else
-    echo "  OK   drop_map_full: 0"
+    echo "  drop_map_full: 0"
 fi
 
-# pair/request ratio: pairs should track requests closely.
 FINAL_PAIRS=$(echo "${LAST}" | cut -f8)
 FINAL_REQS=$(echo "${LAST}" | cut -f9)
 if [[ "${FINAL_REQS:-0}" -gt 0 ]]; then
     RATIO=$(( FINAL_PAIRS * 100 / FINAL_REQS ))
     if [[ "${RATIO}" -lt 90 ]]; then
-        echo "  WARN pair/req ratio: ${FINAL_PAIRS}/${FINAL_REQS} (${RATIO}%) — below 90%"
+        echo "  pair/req ratio: ${FINAL_PAIRS}/${FINAL_REQS} (${RATIO}%) — below 90%"
         FAILURES=$(( FAILURES + 1 ))
     else
-        echo "  OK   pair/req ratio: ${FINAL_PAIRS}/${FINAL_REQS} (${RATIO}%)"
+        echo "  pair/req ratio: ${FINAL_PAIRS}/${FINAL_REQS} (${RATIO}%)"
     fi
 fi
 
