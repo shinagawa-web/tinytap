@@ -139,8 +139,10 @@ read_drop_counters() {
     local dump
     dump=$(sudo bpftool map dump id "${id}" -j 2>/dev/null || echo "[]")
     local rb mf
-    rb=$(echo "${dump}" | jq '[.[0].values[].value] | add // 0' 2>/dev/null) || rb="N/A"
-    mf=$(echo "${dump}" | jq '[.[1].values[].value] | add // 0' 2>/dev/null) || mf="N/A"
+    # bpftool -j emits both raw bytes (values[].value is a byte array) and
+    # a decoded view (formatted.values[].value is an integer). Use formatted.
+    rb=$(echo "${dump}" | jq '[.[0].formatted.values[].value] | add // 0' 2>/dev/null) || rb="N/A"
+    mf=$(echo "${dump}" | jq '[.[1].formatted.values[].value] | add // 0' 2>/dev/null) || mf="N/A"
     echo "${rb} ${mf}"
 }
 
@@ -202,21 +204,34 @@ CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 do_sample() {
     local elapsed=$1
 
+    # tinytap alive check
+    local alive=1
+    [[ -f "/proc/${TT_PID}/status" ]] || alive=0
+
     # tinytap CPU%
     local cur_ticks cur_ts_ms elapsed_ms cpu_pct=0
     cur_ticks=$(proc_cpu_ticks "${TT_PID}")
     cur_ts_ms=$(date +%s%3N)
     elapsed_ms=$(( cur_ts_ms - PREV_TS_MS ))
-    if [[ "${elapsed_ms}" -gt 0 ]]; then
+    # Guard against negative result when the process exits (cur_ticks resets to 0).
+    if [[ "${elapsed_ms}" -gt 0 && "${cur_ticks}" -ge "${PREV_TICKS}" ]]; then
         cpu_pct=$(( (cur_ticks - PREV_TICKS) * 100 * 1000 / elapsed_ms / CLK_TCK ))
     fi
     PREV_TICKS=${cur_ticks}
     PREV_TS_MS=${cur_ts_ms}
 
+    if [[ "${alive}" -eq 0 ]]; then
+        echo "WARN: tinytap-soak (pid ${TT_PID}) is no longer running at elapsed=${elapsed}s" >&2
+    fi
+
     # process metrics
     local rss fds
-    rss=$(awk '/VmRSS/{print $2}' /proc/"${TT_PID}"/status 2>/dev/null) || rss=0
-    fds=$(ls /proc/"${TT_PID}"/fd 2>/dev/null | wc -l) || fds=0
+    # /proc/PID/status is readable without ptrace; VmRSS is present for living processes.
+    rss=$(awk '/VmRSS/{print $2}' /proc/"${TT_PID}"/status 2>/dev/null) || true
+    rss=${rss:-0}
+    # setcap sets dumpable=0, making /proc/PID/fd inaccessible to non-root even for the
+    # same user. Use sudo to read the fd directory.
+    fds=$(sudo ls /proc/"${TT_PID}"/fd 2>/dev/null | wc -l) || fds=0
 
     # BPF metrics
     local incoming drop_rb drop_mf
