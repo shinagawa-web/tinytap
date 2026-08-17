@@ -47,11 +47,14 @@ jobs:
           DURATION: ${{ inputs.duration }}
           SLEEP_BETWEEN_REQS: ${{ matrix.sleep_between_reqs }}
           TSV_OUT: /tmp/soak-${{ matrix.name }}.tsv
+          MD_OUT: /tmp/soak-${{ matrix.name }}.md
         run: bash scripts/soak.sh
 
-      - name: Upload TSV
+      - name: Upload report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: soak-tsv-${{ matrix.name }}
-          path: /tmp/soak-${{ matrix.name }}.tsv
+          name: soak-${{ matrix.name }}
+          path: |
+            /tmp/soak-${{ matrix.name }}.md
+            /tmp/soak-${{ matrix.name }}.tsv
