@@ -2,6 +2,7 @@
 /tinytap
 /tinytap-e2e
 /tinytap-ngx-e2e
+/tinytap-soak
 
 # GoReleaser local build output (`goreleaser release --snapshot --clean`)
 /dist/
