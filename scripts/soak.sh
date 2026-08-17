@@ -8,6 +8,7 @@ CHURN_WORKERS="${CHURN_WORKERS:-5}"
 SLEEP_BETWEEN_REQS="${SLEEP_BETWEEN_REQS:-0}"
 PORT="${PORT:-19080}"
 TSV_OUT="${TSV_OUT:-/tmp/tinytap-soak-metrics.tsv}"
+MD_OUT="${MD_OUT:-/tmp/tinytap-soak-metrics.md}"
 
 TT_BIN="${PWD}/tinytap-soak"
 TT_CAPS="cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog"
@@ -121,8 +122,12 @@ proc_cpu_ticks() {
     echo $(( f[13] + f[14] ))
 }
 
-echo "==> make generate (regenerates BPF bindings — requires clang-17 + libbpf)"
-make generate
+if ls internal/loader/bpf/tinytap_bpfel.go 2>/dev/null | grep -q .; then
+    echo "==> skipping make generate (bindings already present)"
+else
+    echo "==> make generate (regenerates BPF bindings — requires clang-17 + libbpf)"
+    make generate
+fi
 
 echo "==> building tinytap"
 go build -o "${TT_BIN}" ./cmd/tinytap/
@@ -256,7 +261,22 @@ echo
 echo "=== metrics ==="
 column -t "${TSV_OUT}"
 echo
-echo "TSV saved to ${TSV_OUT}"
+echo "TSV: ${TSV_OUT}"
+
+{
+    awk -F'\t' 'BEGIN{
+        print "## Process / system\n"
+        print "| elapsed_s | rss_kb | cpu_pct | fd_count | sys_cpu_pct |"
+        print "|--:|--:|--:|--:|--:|"
+    } NR>1 {print "| "$1" | "$2" | "$3" | "$4" | "$10" |"}' "${TSV_OUT}"
+    printf "\n"
+    awk -F'\t' 'BEGIN{
+        print "## Traffic / BPF\n"
+        print "| elapsed_s | incoming_pendin | drop_ringbuf | drop_map_full | pairs_out | reqs_in | curl_avg_ms |"
+        print "|--:|--:|--:|--:|--:|--:|--:|"
+    } NR>1 {print "| "$1" | "$5" | "$6" | "$7" | "$8" | "$9" | "$11" |"}' "${TSV_OUT}"
+} > "${MD_OUT}"
+echo "MD:  ${MD_OUT}"
 
 echo
 echo "=== analysis ==="
