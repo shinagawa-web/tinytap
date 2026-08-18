@@ -259,6 +259,7 @@ func TestSSLWatcher_OnEvent_ClosedDuringAttach(t *testing.T) {
 	release := make(chan struct{})
 	fp := &fakeProbe{dropCounts: drops.Counts{Ringbuf: 3, MapFull: 5}}
 	w := newSSLWatcher(&fakeSink{})
+	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
@@ -349,6 +350,7 @@ func TestSSLWatcher_OnEvent_Success(t *testing.T) {
 	fp := &fakeProbe{}
 	pp := &fakePayloadProbe{}
 	w := newSSLWatcher(&fakeSink{})
+	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
@@ -386,6 +388,7 @@ func TestSSLWatcher_OnEvent_Success(t *testing.T) {
 func TestSSLWatcher_OnEvent_AttachError(t *testing.T) {
 	calls := make(chan struct{}, 1)
 	w := newSSLWatcher(&fakeSink{})
+	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
@@ -416,6 +419,7 @@ func TestSSLWatcher_OnEvent_PayloadAttachErrorKeepsFdProbe(t *testing.T) {
 	calls := make(chan struct{}, 1)
 	fp := &fakeProbe{}
 	w := newSSLWatcher(&fakeSink{})
+	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
@@ -623,6 +627,140 @@ func TestPayloadProbeAdapter_Reader(t *testing.T) {
 	}
 }
 
+// TestFindWithRetry_DeadProcessSkipsRetry confirms that when isAlive reports
+// false, findWithRetry returns ErrLibSSLNotFound immediately without sleeping
+// through the remaining retry budget. Without this, each goroutine spawned for
+// a short-lived process wastes findRetries×findRetryDelay goroutine lifetime.
+func TestFindWithRetry_DeadProcessSkipsRetry(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	defer w.Close()
+	w.findRetries = 5
+	w.findRetryDelay = time.Millisecond
+	w.isAlive = func(pid uint32) bool { return false } // process already gone
+
+	var calls int
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		calls++
+		return tls.Discovery{}, tls.ErrLibSSLNotFound
+	}
+
+	_, err := w.findWithRetry(1)
+	if !errors.Is(err, tls.ErrLibSSLNotFound) {
+		t.Errorf("findWithRetry() error = %v, want ErrLibSSLNotFound", err)
+	}
+	// One initial find call, then isAlive returns false → immediate return.
+	if calls != 1 {
+		t.Errorf("find called %d times, want 1 (dead process must skip retries)", calls)
+	}
+}
+
+// TestSSLWatcher_Reaper_ClosesProbesForDeadProcess verifies that
+// reapDeadProbes removes and closes both the fd probe and the payload probe
+// when the monitored process has exited.
+func TestSSLWatcher_Reaper_ClosesProbesForDeadProcess(t *testing.T) {
+	fp := &fakeProbe{dropCounts: drops.Counts{Ringbuf: 1}}
+	pp := &fakePayloadProbe{dropCounts: drops.Counts{MapFull: 2}}
+	w := newSSLWatcher(&fakeSink{})
+	defer w.Close()
+
+	w.mu.Lock()
+	w.probes[99] = fp
+	w.payloadProbes[99] = pp
+	w.seen[99] = true
+	w.mu.Unlock()
+
+	w.isAlive = func(pid uint32) bool { return pid != 99 }
+	w.reapDeadProbes()
+
+	if !fp.closed.Load() {
+		t.Error("fd probe was not closed by reaper")
+	}
+	if !pp.closed.Load() {
+		t.Error("payload probe was not closed by reaper")
+	}
+
+	w.mu.Lock()
+	_, hasSeen := w.seen[99]
+	_, hasProbe := w.probes[99]
+	_, hasPayload := w.payloadProbes[99]
+	harvested := w.closedDrops
+	w.mu.Unlock()
+
+	if hasSeen || hasProbe || hasPayload {
+		t.Error("reaper did not remove dead pid from seen/probes/payloadProbes maps")
+	}
+	if want := (drops.Counts{Ringbuf: 1, MapFull: 2}); harvested != want {
+		t.Errorf("closedDrops = %+v, want %+v (both probes must be harvested before close)", harvested, want)
+	}
+}
+
+// TestSSLWatcher_Reaper_ClosesOnlyFdProbeForDeadProcess confirms that the
+// reaper also closes fd-only probes (those where payload attachment failed,
+// kept for fd correlation per #147) when the process exits.
+func TestSSLWatcher_Reaper_ClosesOnlyFdProbeForDeadProcess(t *testing.T) {
+	fp := &fakeProbe{}
+	w := newSSLWatcher(&fakeSink{})
+	defer w.Close()
+
+	w.mu.Lock()
+	w.probes[88] = fp
+	// No payloadProbes[88] — payload attach failed, fd probe kept for correlation.
+	w.seen[88] = true
+	w.mu.Unlock()
+
+	w.isAlive = func(pid uint32) bool { return pid != 88 }
+	w.reapDeadProbes()
+
+	if !fp.closed.Load() {
+		t.Error("fd-only probe was not closed by reaper")
+	}
+	w.mu.Lock()
+	_, hasSeen := w.seen[88]
+	_, hasProbe := w.probes[88]
+	w.mu.Unlock()
+	if hasSeen || hasProbe {
+		t.Error("reaper did not remove dead pid from seen/probes maps")
+	}
+}
+
+// TestSSLWatcher_MaybeAttach_SemaphoreSkipClearsSeenForRetry confirms that
+// when the BPF-load semaphore is saturated the goroutine clears seen[pid] so
+// a subsequent event for the same pid is not silently dropped.
+func TestSSLWatcher_MaybeAttach_SemaphoreSkipClearsSeenForRetry(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	defer w.Close()
+	w.isAlive = func(pid uint32) bool { return true }
+
+	// Fill every semaphore slot so the next goroutine takes the skip path.
+	for range maxConcurrentAttach {
+		w.attachSem <- struct{}{}
+	}
+
+	found := make(chan struct{}, 1)
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		select {
+		case found <- struct{}{}:
+		default:
+		}
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+	w.attach = func(pid uint32, path string) (sslProbe, error) {
+		t.Error("attach must not be called when semaphore is full")
+		return nil, errors.New("unexpected")
+	}
+
+	w.OnEvent(&events.Event{Pid: 31})
+	waitOnChan(t, found)         // goroutine reached find()
+	time.Sleep(50 * time.Millisecond) // let it run to the semaphore branch and exit
+
+	w.mu.Lock()
+	_, stillSeen := w.seen[31]
+	w.mu.Unlock()
+	if stillSeen {
+		t.Error("seen[pid] should be cleared after semaphore skip to allow retry on the next event")
+	}
+}
+
 // TestSSLWatcher_OnEvent_ClosedDuringPayloadAttach mirrors
 // TestSSLWatcher_OnEvent_ClosedDuringAttach but races Close() against the
 // second (payload) attach stage instead of the first: the already-stored fd
@@ -634,6 +772,7 @@ func TestSSLWatcher_OnEvent_ClosedDuringPayloadAttach(t *testing.T) {
 	fp := &fakeProbe{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
 	pp := &fakePayloadProbe{dropCounts: drops.Counts{Ringbuf: 4, MapFull: 8}}
 	w := newSSLWatcher(&fakeSink{})
+	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
