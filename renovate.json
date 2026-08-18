@@ -20,6 +20,11 @@
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch", "digest", "major", "pinDigest"],
       "automerge": true
+    },
+    {
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["digest"],
+      "automerge": true
     }
   ]
 }
