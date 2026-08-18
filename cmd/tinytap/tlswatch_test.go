@@ -349,7 +349,7 @@ func TestSSLWatcher_OnEvent_Success(t *testing.T) {
 	fp := &fakeProbe{}
 	pp := &fakePayloadProbe{}
 	w := newSSLWatcher(&fakeSink{})
-	w.gcInterval = time.Hour // prevent reaper from interfering with assertions
+	w.gcInterval = time.Millisecond // isAlive=true prevents reaper interference; short interval avoids Close() hang
 	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
@@ -368,7 +368,7 @@ func TestSSLWatcher_OnEvent_Success(t *testing.T) {
 		}
 		return pp, nil
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	w.OnEvent(&events.Event{Pid: 11})
 	waitOnChan(t, calls)
@@ -419,7 +419,7 @@ func TestSSLWatcher_OnEvent_PayloadAttachErrorKeepsFdProbe(t *testing.T) {
 	calls := make(chan struct{}, 1)
 	fp := &fakeProbe{}
 	w := newSSLWatcher(&fakeSink{})
-	w.gcInterval = time.Hour // prevent reaper from interfering with assertions
+	w.gcInterval = time.Millisecond // isAlive=true prevents reaper interference; short interval avoids Close() hang
 	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
@@ -429,7 +429,7 @@ func TestSSLWatcher_OnEvent_PayloadAttachErrorKeepsFdProbe(t *testing.T) {
 		defer close(calls)
 		return nil, errors.New("payload attach fail")
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	w.OnEvent(&events.Event{Pid: 17})
 	waitOnChan(t, calls)
@@ -713,7 +713,7 @@ func TestSSLWatcher_Reaper_ClosesProbesOnPIDExit(t *testing.T) {
 		defer close(attached)
 		return pp, nil
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	w.OnEvent(&events.Event{Pid: 55})
 	waitOnChan(t, attached)
@@ -811,7 +811,7 @@ func TestSSLWatcher_Reaper_PayloadAttachFailure(t *testing.T) {
 		defer close(payloadCalled)
 		return nil, errors.New("payload attach fail")
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	w.OnEvent(&events.Event{Pid: 59})
 	waitOnChan(t, fdAttached)
@@ -893,18 +893,15 @@ func TestSSLWatcher_Reaper_ProbeCloseErrors(t *testing.T) {
 		defer close(attached)
 		return pp, nil
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	w.OnEvent(&events.Event{Pid: 63})
 	waitOnChan(t, attached)
 
 	alive.Store(false)
 
-	waitForCondition(t, func() bool { return fp.closed.Load() })
+	waitForCondition(t, func() bool { return fp.closed.Load() && pp.closed.Load() })
 
-	if !pp.closed.Load() {
-		t.Error("payload probe Close() not called despite close error")
-	}
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, "fd probe close fail") {
 		t.Errorf("log output = %q, want mention of fd probe close error", logOutput)
