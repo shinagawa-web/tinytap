@@ -633,7 +633,11 @@ func TestPayloadProbeAdapter_Reader(t *testing.T) {
 // a short-lived process wastes findRetries×findRetryDelay goroutine lifetime.
 func TestFindWithRetry_DeadProcessSkipsRetry(t *testing.T) {
 	w := newSSLWatcher(&fakeSink{})
-	defer w.Close()
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
 	w.findRetries = 5
 	w.findRetryDelay = time.Millisecond
 	w.isAlive = func(pid uint32) bool { return false } // process already gone
@@ -661,7 +665,11 @@ func TestSSLWatcher_Reaper_ClosesProbesForDeadProcess(t *testing.T) {
 	fp := &fakeProbe{dropCounts: drops.Counts{Ringbuf: 1}}
 	pp := &fakePayloadProbe{dropCounts: drops.Counts{MapFull: 2}}
 	w := newSSLWatcher(&fakeSink{})
-	defer w.Close()
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
 
 	w.mu.Lock()
 	w.probes[99] = fp
@@ -700,7 +708,11 @@ func TestSSLWatcher_Reaper_ClosesProbesForDeadProcess(t *testing.T) {
 func TestSSLWatcher_Reaper_ClosesOnlyFdProbeForDeadProcess(t *testing.T) {
 	fp := &fakeProbe{}
 	w := newSSLWatcher(&fakeSink{})
-	defer w.Close()
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
 
 	w.mu.Lock()
 	w.probes[88] = fp
@@ -728,7 +740,11 @@ func TestSSLWatcher_Reaper_ClosesOnlyFdProbeForDeadProcess(t *testing.T) {
 // a subsequent event for the same pid is not silently dropped.
 func TestSSLWatcher_MaybeAttach_SemaphoreSkipClearsSeenForRetry(t *testing.T) {
 	w := newSSLWatcher(&fakeSink{})
-	defer w.Close()
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
 	w.isAlive = func(pid uint32) bool { return true }
 
 	// Fill every semaphore slot so the next goroutine takes the skip path.
