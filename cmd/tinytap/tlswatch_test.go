@@ -349,6 +349,8 @@ func TestSSLWatcher_OnEvent_Success(t *testing.T) {
 	fp := &fakeProbe{}
 	pp := &fakePayloadProbe{}
 	w := newSSLWatcher(&fakeSink{})
+	w.gcInterval = time.Hour // prevent reaper from interfering with assertions
+	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
@@ -366,6 +368,7 @@ func TestSSLWatcher_OnEvent_Success(t *testing.T) {
 		}
 		return pp, nil
 	}
+	defer w.Close()
 
 	w.OnEvent(&events.Event{Pid: 11})
 	waitOnChan(t, calls)
@@ -416,6 +419,8 @@ func TestSSLWatcher_OnEvent_PayloadAttachErrorKeepsFdProbe(t *testing.T) {
 	calls := make(chan struct{}, 1)
 	fp := &fakeProbe{}
 	w := newSSLWatcher(&fakeSink{})
+	w.gcInterval = time.Hour // prevent reaper from interfering with assertions
+	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
@@ -424,6 +429,7 @@ func TestSSLWatcher_OnEvent_PayloadAttachErrorKeepsFdProbe(t *testing.T) {
 		defer close(calls)
 		return nil, errors.New("payload attach fail")
 	}
+	defer w.Close()
 
 	w.OnEvent(&events.Event{Pid: 17})
 	waitOnChan(t, calls)
@@ -669,5 +675,278 @@ func TestSSLWatcher_OnEvent_ClosedDuringPayloadAttach(t *testing.T) {
 	defer w.mu.Unlock()
 	if len(w.payloadProbes) != 0 {
 		t.Errorf("payloadProbes = %v, want empty (closed watcher must not store new probes)", w.payloadProbes)
+	}
+}
+
+// waitForClosed polls fn every millisecond until it returns true or t.Fatal
+// fires after 2 seconds — used to synchronize with reaper goroutines.
+func waitForCondition(t *testing.T, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !fn() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !fn() {
+		t.Fatal("timed out waiting for condition")
+	}
+}
+
+// TestSSLWatcher_Reaper_ClosesProbesOnPIDExit verifies that when a traced
+// process exits, its probes are closed and removed from the maps without
+// waiting for sslWatcher.Close — fixing the fd accumulation under connection
+// churn (issue #325).
+func TestSSLWatcher_Reaper_ClosesProbesOnPIDExit(t *testing.T) {
+	attached := make(chan struct{}, 1)
+	fp := &fakeProbe{dropCounts: drops.Counts{Ringbuf: 2}}
+	pp := &fakePayloadProbe{dropCounts: drops.Counts{MapFull: 3}}
+	var alive atomic.Bool
+	alive.Store(true)
+
+	w := newSSLWatcher(&fakeSink{})
+	w.gcInterval = time.Millisecond
+	w.isAlive = func(uint32) bool { return alive.Load() }
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+	w.attach = func(pid uint32, path string) (sslProbe, error) { return fp, nil }
+	w.attachPayload = func(pid uint32, path string) (payloadProbe, error) {
+		defer close(attached)
+		return pp, nil
+	}
+	defer w.Close()
+
+	w.OnEvent(&events.Event{Pid: 55})
+	waitOnChan(t, attached)
+
+	alive.Store(false)
+
+	waitForCondition(t, func() bool { return fp.closed.Load() })
+
+	if !pp.closed.Load() {
+		t.Error("payload probe not closed after PID exit")
+	}
+	w.mu.Lock()
+	_, hasProbe := w.probes[55]
+	_, hasPP := w.payloadProbes[55]
+	hasSeen := w.seen[55]
+	w.mu.Unlock()
+	if hasProbe {
+		t.Error("probes[55] still present after reap")
+	}
+	if hasPP {
+		t.Error("payloadProbes[55] still present after reap")
+	}
+	if hasSeen {
+		t.Error("seen[55] not cleared — PID reuse would silently skip re-attachment")
+	}
+	if got, want := w.dropCounts(), (drops.Counts{Ringbuf: 2, MapFull: 3}); got != want {
+		t.Errorf("dropCounts() = %+v, want %+v (drop counts must be harvested before probe close)", got, want)
+	}
+}
+
+// TestSSLWatcher_Reaper_ExitsWhenWatcherClosed confirms that reaperLoop
+// returns on the next tick after Close() sets w.closed, covering the
+// closed-branch in reaperLoop and the "loop continues" path (isAlive true).
+func TestSSLWatcher_Reaper_ExitsWhenWatcherClosed(t *testing.T) {
+	attached := make(chan struct{}, 1)
+	ticked := make(chan struct{}, 5)
+	fp := &fakeProbe{}
+	pp := &fakePayloadProbe{}
+
+	w := newSSLWatcher(&fakeSink{})
+	w.gcInterval = time.Millisecond
+	w.isAlive = func(uint32) bool {
+		select {
+		case ticked <- struct{}{}:
+		default:
+		}
+		return true // always alive — reaper exits only when Close() is called
+	}
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+	w.attach = func(pid uint32, path string) (sslProbe, error) { return fp, nil }
+	w.attachPayload = func(pid uint32, path string) (payloadProbe, error) {
+		defer close(attached)
+		return pp, nil
+	}
+
+	w.OnEvent(&events.Event{Pid: 57})
+	waitOnChan(t, attached)
+	waitOnChan(t, ticked) // at least one tick with isAlive=true (covers loop-continue path)
+
+	if err := w.Close(); err != nil {
+		t.Errorf("Close() = %v, want nil", err)
+	}
+	// reapers.Wait() in Close() guarantees the reaper goroutine has exited.
+	if !fp.closed.Load() {
+		t.Error("fd probe not closed by Close()")
+	}
+	if !pp.closed.Load() {
+		t.Error("payload probe not closed by Close()")
+	}
+}
+
+// TestSSLWatcher_Reaper_PayloadAttachFailure verifies that when attachPayload
+// fails the fd probe still gets a reaper, so it is released when the process
+// exits rather than accumulating until sslWatcher.Close.
+func TestSSLWatcher_Reaper_PayloadAttachFailure(t *testing.T) {
+	fdAttached := make(chan struct{}, 1)
+	payloadCalled := make(chan struct{}, 1)
+	fp := &fakeProbe{}
+	var alive atomic.Bool
+	alive.Store(true)
+
+	w := newSSLWatcher(&fakeSink{})
+	w.gcInterval = time.Millisecond
+	w.isAlive = func(uint32) bool { return alive.Load() }
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+	w.attach = func(pid uint32, path string) (sslProbe, error) {
+		defer close(fdAttached)
+		return fp, nil
+	}
+	w.attachPayload = func(pid uint32, path string) (payloadProbe, error) {
+		defer close(payloadCalled)
+		return nil, errors.New("payload attach fail")
+	}
+	defer w.Close()
+
+	w.OnEvent(&events.Event{Pid: 59})
+	waitOnChan(t, fdAttached)
+	waitOnChan(t, payloadCalled)
+
+	alive.Store(false)
+
+	waitForCondition(t, func() bool { return fp.closed.Load() })
+
+	w.mu.Lock()
+	_, hasProbe := w.probes[59]
+	hasSeen := w.seen[59]
+	w.mu.Unlock()
+	if hasProbe {
+		t.Error("probes[59] still present after reap (payload attach failed path)")
+	}
+	if hasSeen {
+		t.Error("seen[59] not cleared after reap (payload attach failed path)")
+	}
+}
+
+// TestSSLWatcher_OnEvent_ClosedDuringPayloadAttachFailure covers the branch
+// in maybeAttach where attachPayload fails but w.closed is already true —
+// the reaper must NOT be started in that case (Close already owns cleanup).
+func TestSSLWatcher_OnEvent_ClosedDuringPayloadAttachFailure(t *testing.T) {
+	attaching := make(chan struct{})
+	release := make(chan struct{})
+	fp := &fakeProbe{}
+
+	w := newSSLWatcher(&fakeSink{})
+	w.gcInterval = time.Hour // reaper must never fire (we'll Close before it ticks)
+	w.isAlive = func(uint32) bool { return true }
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+	w.attach = func(pid uint32, path string) (sslProbe, error) { return fp, nil }
+	w.attachPayload = func(pid uint32, path string) (payloadProbe, error) {
+		close(attaching)
+		<-release
+		return nil, errors.New("payload attach fail")
+	}
+
+	w.OnEvent(&events.Event{Pid: 61})
+	<-attaching // attachPayload is in flight; Close() races it
+
+	if err := w.Close(); err != nil {
+		t.Errorf("Close() = %v, want nil", err)
+	}
+	close(release) // let attachPayload return its error after Close() returned
+
+	// fp was in w.probes when Close() ran — Close() must have closed it.
+	waitForCondition(t, func() bool { return fp.closed.Load() })
+	// reapers.Wait() inside Close() guarantees no leaked goroutines.
+}
+
+// TestSSLWatcher_Reaper_ProbeCloseErrors confirms that close errors from both
+// probe types are logged without panicking when reapPID fires — the reaper
+// must not swallow errors silently, but should continue to clean up both.
+func TestSSLWatcher_Reaper_ProbeCloseErrors(t *testing.T) {
+	logBuf := newSyncBuffer()
+	origLog := log.Writer()
+	log.SetOutput(logBuf)
+	defer log.SetOutput(origLog)
+
+	attached := make(chan struct{}, 1)
+	fp := &fakeProbe{closeErr: errors.New("fd probe close fail")}
+	pp := &fakePayloadProbe{closeErr: errors.New("payload probe close fail")}
+	var alive atomic.Bool
+	alive.Store(true)
+
+	w := newSSLWatcher(&fakeSink{})
+	w.gcInterval = time.Millisecond
+	w.isAlive = func(uint32) bool { return alive.Load() }
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+	w.attach = func(pid uint32, path string) (sslProbe, error) { return fp, nil }
+	w.attachPayload = func(pid uint32, path string) (payloadProbe, error) {
+		defer close(attached)
+		return pp, nil
+	}
+	defer w.Close()
+
+	w.OnEvent(&events.Event{Pid: 63})
+	waitOnChan(t, attached)
+
+	alive.Store(false)
+
+	waitForCondition(t, func() bool { return fp.closed.Load() })
+
+	if !pp.closed.Load() {
+		t.Error("payload probe Close() not called despite close error")
+	}
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "fd probe close fail") {
+		t.Errorf("log output = %q, want mention of fd probe close error", logOutput)
+	}
+	if !strings.Contains(logOutput, "payload probe close fail") {
+		t.Errorf("log output = %q, want mention of payload probe close error", logOutput)
+	}
+}
+
+// TestReapPID_ClosedWatcher verifies the early-return path in reapPID: when
+// the watcher is already closed, reapPID must be a no-op (Close owns all
+// probe cleanup and has already nil'd the maps).
+func TestReapPID_ClosedWatcher(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+	w.reapPID(99) // must not panic
+}
+
+// TestReapPID_NoProbesForPID covers the probe==nil and pp==nil branches in
+// reapPID — reached when reapPID is called for a pid whose probes were never
+// stored (or were already removed). seen[pid] must still be cleared.
+func TestReapPID_NoProbesForPID(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	w.mu.Lock()
+	w.seen[99] = true // seen but no probes stored
+	w.mu.Unlock()
+	w.reapPID(99)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.seen[99] {
+		t.Error("seen[99] not cleared by reapPID")
+	}
+}
+
+// TestSSLWatcher_DefaultIsAlive exercises the real isAlive closure wired up
+// by newSSLWatcher — it checks /proc/<pid> existence. Every other test
+// overrides w.isAlive before use.
+func TestSSLWatcher_DefaultIsAlive(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	if !w.isAlive(uint32(os.Getpid())) {
+		t.Error("isAlive(own PID) = false, want true")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -53,14 +54,19 @@ type sslWatcher struct {
 	find          func(pid uint32) (tls.Discovery, error)
 	attach        func(pid uint32, path string) (sslProbe, error)
 	attachPayload func(pid uint32, path string) (payloadProbe, error)
+	isAlive       func(pid uint32) bool
 
 	findRetries    int
 	findRetryDelay time.Duration
+	gcInterval     time.Duration
+
+	reapers sync.WaitGroup
 }
 
 const (
 	defaultFindRetries    = 8
 	defaultFindRetryDelay = 25 * time.Millisecond
+	defaultGCInterval     = 200 * time.Millisecond
 )
 
 var attachSSLReadWrite = loader.AttachSSLReadWrite
@@ -80,8 +86,13 @@ func newSSLWatcher(sink output.Sink) *sslWatcher {
 			}
 			return &payloadProbeAdapter{p}, nil
 		},
+		isAlive: func(pid uint32) bool {
+			_, err := os.Stat(fmt.Sprintf("/proc/%d", pid))
+			return err == nil
+		},
 		findRetries:    defaultFindRetries,
 		findRetryDelay: defaultFindRetryDelay,
+		gcInterval:     defaultGCInterval,
 	}
 }
 
@@ -161,6 +172,14 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 		pp, err := w.attachPayload(pid, disc.Path)
 		if err != nil {
 			log.Printf("tls: attach SSL_write/SSL_read/SSL_free for pid %d (%s): %v", pid, disc.Path, err)
+			w.mu.Lock()
+			if !w.closed {
+				w.reapers.Add(1)
+				w.mu.Unlock()
+				go w.reaperLoop(pid)
+			} else {
+				w.mu.Unlock()
+			}
 			return
 		}
 
@@ -172,10 +191,12 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 			return
 		}
 		w.payloadProbes[pid] = pp
+		w.reapers.Add(1)
 		w.mu.Unlock()
 		log.Printf("tls: SSL_write/SSL_read/SSL_free uprobes attached for pid %d (%s)", pid, disc.Path)
 
 		go captureTLS(pp.reader(), probe, w, http.NewParserWithResolve(resolveComm), http.NewPairer())
+		go w.reaperLoop(pid)
 	}()
 }
 
@@ -187,6 +208,61 @@ func (w *sslWatcher) findWithRetry(pid uint32) (tls.Discovery, error) {
 		}
 		time.Sleep(w.findRetryDelay)
 	}
+}
+
+// reaperLoop polls isAlive(pid) every gcInterval and calls reapPID when the
+// process exits, releasing its probe fds without waiting for sslWatcher.Close.
+func (w *sslWatcher) reaperLoop(pid uint32) {
+	defer w.reapers.Done()
+	ticker := time.NewTicker(w.gcInterval)
+	defer ticker.Stop()
+	for {
+		<-ticker.C
+		w.mu.Lock()
+		closed := w.closed
+		w.mu.Unlock()
+		if closed {
+			return
+		}
+		if !w.isAlive(pid) {
+			w.reapPID(pid)
+			return
+		}
+	}
+}
+
+// reapPID closes and removes the probes for a pid whose process has exited.
+// It is a no-op when the watcher is already closed (Close handles cleanup).
+func (w *sslWatcher) reapPID(pid uint32) {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	probe := w.probes[pid]
+	pp := w.payloadProbes[pid]
+	if probe != nil {
+		w.harvestLocked(probe)
+		delete(w.probes, pid)
+	}
+	if pp != nil {
+		w.harvestLocked(pp)
+		delete(w.payloadProbes, pid)
+	}
+	delete(w.seen, pid)
+	w.mu.Unlock()
+
+	if probe != nil {
+		if err := probe.Close(); err != nil {
+			log.Printf("tls: close SSL_set_fd probe for exited pid %d: %v", pid, err)
+		}
+	}
+	if pp != nil {
+		if err := pp.Close(); err != nil {
+			log.Printf("tls: close SSL payload probe for exited pid %d: %v", pid, err)
+		}
+	}
+	log.Printf("tls: reaped probes for exited pid %d", pid)
 }
 
 // harvestLocked folds a probe's drop counters into closedDrops before the
@@ -241,6 +317,9 @@ func (w *sslWatcher) Close() error {
 			errs = append(errs, fmt.Errorf("close SSL payload probe for pid %d: %w", pid, err))
 		}
 	}
+
+	w.reapers.Wait()
+
 	if err := w.Sink.Close(); err != nil {
 		errs = append(errs, err)
 	}
