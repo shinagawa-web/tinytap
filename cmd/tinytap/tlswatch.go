@@ -62,9 +62,10 @@ type sslWatcher struct {
 	isAlive func(pid uint32) bool
 
 	// attachSem caps the number of goroutines concurrently inside the BPF
-	// load+attach section (LoadAndAssign + Uprobe). Each load allocates ~13
-	// kernel BPF fds; without a cap, high-churn TLS workloads exhaust fds
-	// before most goroutines even reach the Uprobe call (#326).
+	// load+attach section (LoadAndAssign + Uprobe) to bound the number of
+	// in-flight kernel BPF fds under high-churn TLS workloads (#326).
+	// ELF symbol-table parsing no longer contributes to per-goroutine memory
+	// because openExecutable() caches *link.Executable by (dev, inode).
 	attachSem      chan struct{}
 	attachSkipped  atomic.Uint64
 
@@ -79,10 +80,11 @@ const (
 	defaultFindRetries    = 8
 	defaultFindRetryDelay = 25 * time.Millisecond
 
-	// maxConcurrentAttach caps goroutines that are inside the BPF load+attach
-	// critical section simultaneously, bounding in-flight kernel BPF fds to
-	// maxConcurrentAttach × ~13 regardless of event arrival rate.
-	maxConcurrentAttach = 4
+	// maxConcurrentAttach caps goroutines inside the BPF load+attach critical
+	// section simultaneously. By Little's Law (N = λ × W), cap/W gives the
+	// maximum attach rate without throttling: 512 / 0.42 s ≈ 1200 attaches/s,
+	// which covers workloads well above the 700 req/s design target (#326).
+	maxConcurrentAttach = 512
 )
 
 var reaperInterval = time.Second
