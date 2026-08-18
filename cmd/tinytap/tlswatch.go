@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shinagawa-web/tinytap/internal/drops"
@@ -64,7 +65,8 @@ type sslWatcher struct {
 	// load+attach section (LoadAndAssign + Uprobe). Each load allocates ~13
 	// kernel BPF fds; without a cap, high-churn TLS workloads exhaust fds
 	// before most goroutines even reach the Uprobe call (#326).
-	attachSem chan struct{}
+	attachSem      chan struct{}
+	attachSkipped  atomic.Uint64
 
 	findRetries    int
 	findRetryDelay time.Duration
@@ -199,6 +201,7 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 		select {
 		case w.attachSem <- struct{}{}:
 		default:
+			w.attachSkipped.Add(1)
 			w.mu.Lock()
 			delete(w.seen, pid)
 			w.mu.Unlock()
@@ -282,6 +285,7 @@ func (w *sslWatcher) dropCounts() drops.Counts {
 	for _, p := range w.payloadProbes {
 		total = total.Add(p.DropCounts())
 	}
+	total.TLSAttachSkips = w.attachSkipped.Load()
 	return total
 }
 

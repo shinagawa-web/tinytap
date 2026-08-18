@@ -777,6 +777,41 @@ func TestSSLWatcher_MaybeAttach_SemaphoreSkipClearsSeenForRetry(t *testing.T) {
 	}
 }
 
+// TestSSLWatcher_MaybeAttach_SemaphoreSkipIncrementsCounter confirms that
+// each semaphore-full skip increments attachSkipped, which flows into
+// dropCounts() so the caller can report how many TLS processes were missed.
+func TestSSLWatcher_MaybeAttach_SemaphoreSkipIncrementsCounter(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	w.isAlive = func(uint32) bool { return true }
+
+	// Fill every semaphore slot so the next goroutine takes the skip path.
+	for range maxConcurrentAttach {
+		w.attachSem <- struct{}{}
+	}
+
+	found := make(chan struct{}, 1)
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		select {
+		case found <- struct{}{}:
+		default:
+		}
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+
+	w.OnEvent(&events.Event{Pid: 32})
+	waitOnChan(t, found)
+	time.Sleep(50 * time.Millisecond) // let the goroutine reach and exit the skip branch
+
+	if got := w.dropCounts().TLSAttachSkips; got != 1 {
+		t.Errorf("dropCounts().TLSAttachSkips = %d, want 1", got)
+	}
+}
+
 // TestSSLWatcher_OnEvent_ClosedDuringPayloadAttach mirrors
 // TestSSLWatcher_OnEvent_ClosedDuringAttach but races Close() against the
 // second (payload) attach stage instead of the first: the already-stored fd
