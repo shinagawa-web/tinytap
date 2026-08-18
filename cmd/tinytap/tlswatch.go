@@ -81,9 +81,9 @@ const (
 	// critical section simultaneously, bounding in-flight kernel BPF fds to
 	// maxConcurrentAttach × ~13 regardless of event arrival rate.
 	maxConcurrentAttach = 4
-
-	reaperInterval = time.Second
 )
+
+var reaperInterval = time.Second
 
 // procFSAvailable is false on non-Linux systems where /proc does not exist.
 var procFSAvailable = func() bool {
