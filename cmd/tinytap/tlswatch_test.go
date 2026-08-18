@@ -478,6 +478,47 @@ func TestSSLWatcher_Close_NoProbes(t *testing.T) {
 	}
 }
 
+// TestSSLWatcher_Close_Idempotent checks that calling Close() more than once
+// returns the same result instead of closing an already-closed stopReaper
+// channel, which would panic.
+func TestSSLWatcher_Close_Idempotent(t *testing.T) {
+	sinkErr := errors.New("sink close fail")
+	w := newSSLWatcher(&fakeSink{closeErr: sinkErr})
+
+	first := w.Close()
+	second := w.Close()
+
+	if !errors.Is(first, sinkErr) {
+		t.Errorf("first Close() = %v, want it to wrap %v", first, sinkErr)
+	}
+	if second != first {
+		t.Errorf("second Close() = %v, want the same result as the first call (%v)", second, first)
+	}
+}
+
+// TestSSLWatcher_Close_ConcurrentIsSafe checks that concurrent Close() calls
+// don't race on closing stopReaper.
+func TestSSLWatcher_Close_ConcurrentIsSafe(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+
+	var wg sync.WaitGroup
+	errs := make([]error, 10)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = w.Close()
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("Close() call %d = %v, want nil", i, err)
+		}
+	}
+}
+
 func TestSSLWatcher_DropCounts_Empty(t *testing.T) {
 	w := newSSLWatcher(&fakeSink{})
 	if got := w.dropCounts(); got != (drops.Counts{}) {
@@ -766,7 +807,7 @@ func TestSSLWatcher_MaybeAttach_SemaphoreSkipClearsSeenForRetry(t *testing.T) {
 	}
 
 	w.OnEvent(&events.Event{Pid: 31})
-	waitOnChan(t, found)         // goroutine reached find()
+	waitOnChan(t, found)              // goroutine reached find()
 	time.Sleep(50 * time.Millisecond) // let it run to the semaphore branch and exit
 
 	w.mu.Lock()
@@ -871,6 +912,33 @@ func TestDefaultIsAlive_NonLinux(t *testing.T) {
 	defer func() { procFSAvailable = orig }()
 	if !defaultIsAlive(1) {
 		t.Error("defaultIsAlive must return true on non-Linux where /proc is absent")
+	}
+}
+
+// TestDefaultIsAlive_NotExist checks that a missing /proc/<pid> entry is
+// treated as dead.
+func TestDefaultIsAlive_NotExist(t *testing.T) {
+	origAvail, origStat := procFSAvailable, statProcEntry
+	procFSAvailable = true
+	statProcEntry = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	defer func() { procFSAvailable, statProcEntry = origAvail, origStat }()
+
+	if defaultIsAlive(1) {
+		t.Error("defaultIsAlive must return false when /proc/<pid> does not exist")
+	}
+}
+
+// TestDefaultIsAlive_OtherStatError checks that a stat error other than
+// os.ErrNotExist (e.g. permission denied under /proc hidepid) is treated as
+// alive, since we can't actually tell whether the process is dead.
+func TestDefaultIsAlive_OtherStatError(t *testing.T) {
+	origAvail, origStat := procFSAvailable, statProcEntry
+	procFSAvailable = true
+	statProcEntry = func(string) (os.FileInfo, error) { return nil, os.ErrPermission }
+	defer func() { procFSAvailable, statProcEntry = origAvail, origStat }()
+
+	if !defaultIsAlive(1) {
+		t.Error("defaultIsAlive must return true on a non-not-exist stat error")
 	}
 }
 

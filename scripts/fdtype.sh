@@ -7,9 +7,16 @@ TT_CAPS="cap_dac_read_search,cap_perfmon,cap_bpf,cap_sys_admin,cap_syslog"
 TT_CFG=/tmp/tt-fdtype.toml
 TT_OUT=/tmp/tt-fdtype.log
 
+CURL_PIDS=()
+
 cleanup() {
     pkill -x tinytap-fdtype 2>/dev/null || true
-    kill "${PY_PID:-0}" 2>/dev/null || true
+    if [[ -n "${PY_PID:-}" ]]; then
+        kill "${PY_PID}" 2>/dev/null || true
+    fi
+    if [[ ${#CURL_PIDS[@]} -gt 0 ]]; then
+        kill "${CURL_PIDS[@]}" 2>/dev/null || true
+    fi
     wait 2>/dev/null || true
     rm -f "${TT_BIN}"
 }
@@ -31,6 +38,7 @@ echo "tinytap pid=${TT_PID}"
 
 for _ in $(seq 1 5); do
     (while true; do curl -fsS --no-keepalive "http://localhost:${PORT}/" -o /dev/null 2>/dev/null || true; done) &
+    CURL_PIDS+=("$!")
 done
 
 sleep 2

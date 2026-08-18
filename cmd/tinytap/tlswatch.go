@@ -66,14 +66,17 @@ type sslWatcher struct {
 	// in-flight kernel BPF fds under high-churn TLS workloads (#326).
 	// ELF symbol-table parsing no longer contributes to per-goroutine memory
 	// because openExecutable() caches *link.Executable by (dev, inode).
-	attachSem      chan struct{}
-	attachSkipped  atomic.Uint64
+	attachSem     chan struct{}
+	attachSkipped atomic.Uint64
 
 	findRetries    int
 	findRetryDelay time.Duration
 
-	stopReaper   chan struct{}
+	stopReaper    chan struct{}
 	reaperStopped chan struct{}
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 const (
@@ -95,15 +98,24 @@ var procFSAvailable = func() bool {
 	return err == nil
 }()
 
+// statProcEntry is os.Stat, overridden by tests to inject stat errors other
+// than os.ErrNotExist without depending on real /proc permissions.
+var statProcEntry = os.Stat
+
 // defaultIsAlive checks whether pid still has a /proc entry. On non-Linux
 // systems (e.g. macOS for development), it always returns true to avoid
-// spuriously skipping attachment in tests.
+// spuriously skipping attachment in tests. Only a missing /proc/<pid> entry
+// counts as dead; any other stat error (e.g. permission denied under
+// /proc hidepid) is treated as alive, since we can't actually tell.
 func defaultIsAlive(pid uint32) bool {
 	if !procFSAvailable {
 		return true
 	}
-	_, err := os.Stat(fmt.Sprintf("/proc/%d", pid))
-	return err == nil
+	_, err := statProcEntry(fmt.Sprintf("/proc/%d", pid))
+	if err == nil {
+		return true
+	}
+	return !os.IsNotExist(err)
 }
 
 var attachSSLReadWrite = loader.AttachSSLReadWrite
@@ -352,7 +364,17 @@ func (w *sslWatcher) reapDeadProbes() {
 	}
 }
 
+// Close stops the reaper and closes all probes and the sink. It is
+// idempotent: calling it more than once, or concurrently, returns the
+// result of the first call without re-closing stopReaper.
 func (w *sslWatcher) Close() error {
+	w.closeOnce.Do(func() {
+		w.closeErr = w.close()
+	})
+	return w.closeErr
+}
+
+func (w *sslWatcher) close() error {
 	close(w.stopReaper)
 	<-w.reaperStopped
 
