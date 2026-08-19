@@ -3,12 +3,14 @@
 package loader
 
 import (
+	"errors"
 	"os"
 	"runtime"
 	"syscall"
 	"testing"
 
 	"github.com/shinagawa-web/tinytap/internal/loader/bpf"
+	"golang.org/x/sys/unix"
 )
 
 func TestLoaderDropCounts_RingbufReserveFailure(t *testing.T) {
@@ -56,10 +58,10 @@ func TestLoaderDropCounts_MapFullFailure(t *testing.T) {
 	// The map is shared with every process on the machine (stash_incoming
 	// hooks read/recvfrom/recvmsg/readv/sendfile at syscall entry for
 	// everyone except our own pid), so an unrelated in-flight syscall can
-	// occupy a slot and make the map fill up before this loop reaches
-	// maxEntries. That's still the "map full" state this test wants, so
-	// treat a Put failure here as reaching it early rather than a fatal
-	// test-infra error (#331).
+	// occupy a slot and make the map fill up (E2BIG) before this loop
+	// reaches maxEntries. That's still the "map full" state this test
+	// wants, so treat E2BIG here as reaching it early rather than a fatal
+	// test-infra error (#331); any other error is a genuine failure.
 	var val bpf.TinytapIncomingPending
 	for i := uint32(0); i < maxEntries; i++ {
 		key := keyBase + i
@@ -67,7 +69,10 @@ func TestLoaderDropCounts_MapFullFailure(t *testing.T) {
 			t.Fatalf("synthetic key %d unexpectedly collided with the real tid", key)
 		}
 		if err := tt.objs.IncomingPendingMap.Put(&key, &val); err != nil {
-			break
+			if errors.Is(err, unix.E2BIG) {
+				break
+			}
+			t.Fatalf("prefill map at key %d: %v", key, err)
 		}
 	}
 	defer func() {
