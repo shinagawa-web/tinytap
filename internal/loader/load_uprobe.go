@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
+	"syscall"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -16,6 +18,39 @@ import (
 )
 
 var ErrLibSSLNotExecutable = errors.New("libssl path has no execute permission bit set (try: sudo chmod +x <path>)")
+
+type exCacheKey struct{ dev, ino uint64 }
+
+// exCache stores *link.Executable by (device, inode) so the same libssl.so
+// is parsed once across all concurrent attach goroutines (#326). Keyed by
+// (dev, ino) rather than path to handle container-namespaced paths of the
+// form /proc/<pid>/root/usr/lib/... where the pid changes per process.
+var exCache sync.Map // exCacheKey → *link.Executable
+
+// openExecutable returns a cached *link.Executable for path, loading it on
+// the first call and reusing the same object (including its internal ELF
+// symbol table) on every subsequent call for the same underlying file.
+func openExecutable(path string) (*link.Executable, error) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		// Can't stat — delegate to link.OpenExecutable which will
+		// produce the appropriate error (file not found, etc.).
+		return link.OpenExecutable(path)
+	}
+	key := exCacheKey{dev: st.Dev, ino: st.Ino}
+	if v, ok := exCache.Load(key); ok {
+		return v.(*link.Executable), nil
+	}
+	ex, err := link.OpenExecutable(path)
+	if err != nil {
+		return nil, err
+	}
+	// LoadOrStore handles the race where two goroutines open the same file
+	// simultaneously: only one wins, the other's *Executable is discarded
+	// (no Close needed — Executable holds no file descriptors).
+	actual, _ := exCache.LoadOrStore(key, ex)
+	return actual.(*link.Executable), nil
+}
 
 func checkLibSSLExecutable(libsslPath string) error {
 	info, err := os.Stat(libsslPath)
@@ -48,7 +83,7 @@ func AttachSSLSetFd(pid uint32, libsslPath string) (*SSLFdProbe, error) {
 		return nil, fmt.Errorf("load uprobe objects: %w", err)
 	}
 
-	ex, err := link.OpenExecutable(libsslPath)
+	ex, err := openExecutable(libsslPath)
 	if err != nil {
 		_ = p.objs.Close()
 		return nil, fmt.Errorf("open executable %s: %w", libsslPath, err)
@@ -119,7 +154,7 @@ func AttachSSLReadWrite(pid uint32, libsslPath string) (*SSLPayloadProbe, error)
 		return nil, fmt.Errorf("load uprobe objects: %w", err)
 	}
 
-	ex, err := link.OpenExecutable(libsslPath)
+	ex, err := openExecutable(libsslPath)
 	if err != nil {
 		_ = p.objs.Close()
 		return nil, fmt.Errorf("open executable %s: %w", libsslPath, err)

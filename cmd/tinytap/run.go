@@ -189,13 +189,13 @@ func pollDrops(sess bpfSession, w *sslWatcher, send func(uint64), interval time.
 		defer wg.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		var last uint64
+		var last drops.Counts
 		for {
 			select {
 			case <-ticker.C:
-				if total := sess.dropCounts().Add(w.dropCounts()).Total(); total != last {
-					last = total
-					send(total)
+				if cur := sess.dropCounts().Add(w.dropCounts()); cur != last {
+					last = cur
+					send(cur.Total())
 				}
 			case <-done:
 				return
