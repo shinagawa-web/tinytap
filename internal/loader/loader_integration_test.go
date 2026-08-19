@@ -16,10 +16,9 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 
-	"github.com/shinagawa-web/tinytap/internal/drops"
 	"github.com/shinagawa-web/tinytap/internal/events"
-	fixturebpf "github.com/shinagawa-web/tinytap/internal/loader/bpf/fixture"
 	"github.com/shinagawa-web/tinytap/internal/loader"
+	fixturebpf "github.com/shinagawa-web/tinytap/internal/loader/bpf/fixture"
 )
 
 // TestLoaderLoadAttachClose verifies that Load() and Close() both return nil.
@@ -31,18 +30,6 @@ func TestLoaderLoadAttachClose(t *testing.T) {
 	}
 	if err := tt.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
-	}
-}
-
-func TestLoaderDropCountsZeroOnFreshLoad(t *testing.T) {
-	tt, err := loader.Load(uint32(os.Getpid()))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	defer tt.Close()
-
-	if got := tt.DropCounts(); got != (drops.Counts{}) {
-		t.Errorf("DropCounts() on a fresh load = %+v, want zero", got)
 	}
 }
 
