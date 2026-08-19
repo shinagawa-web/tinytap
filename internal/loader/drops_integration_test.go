@@ -53,6 +53,13 @@ func TestLoaderDropCounts_MapFullFailure(t *testing.T) {
 		maxEntries = 10240
 		keyBase    = 1_000_000_000
 	)
+	// The map is shared with every process on the machine (stash_incoming
+	// hooks read/recvfrom/recvmsg/readv/sendfile at syscall entry for
+	// everyone except our own pid), so an unrelated in-flight syscall can
+	// occupy a slot and make the map fill up before this loop reaches
+	// maxEntries. That's still the "map full" state this test wants, so
+	// treat a Put failure here as reaching it early rather than a fatal
+	// test-infra error (#331).
 	var val bpf.TinytapIncomingPending
 	for i := uint32(0); i < maxEntries; i++ {
 		key := keyBase + i
@@ -60,7 +67,7 @@ func TestLoaderDropCounts_MapFullFailure(t *testing.T) {
 			t.Fatalf("synthetic key %d unexpectedly collided with the real tid", key)
 		}
 		if err := tt.objs.IncomingPendingMap.Put(&key, &val); err != nil {
-			t.Fatalf("prefill map at key %d: %v", key, err)
+			break
 		}
 	}
 	defer func() {
