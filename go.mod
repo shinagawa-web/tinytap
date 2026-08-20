@@ -9,7 +9,7 @@ require (
 	github.com/cilium/ebpf v0.22.0
 	github.com/muesli/termenv v0.16.0
 	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.27.0
+	golang.org/x/term v0.45.0
 )
 
 require (
