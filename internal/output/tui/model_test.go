@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
@@ -225,7 +225,7 @@ func TestHeaderNumericColumnsRightAligned(t *testing.T) {
 
 // key feeds a single keystroke through Update and returns the new model.
 func key(m model, s string) model {
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)})
+	next, _ := m.Update(tea.KeyPressMsg{Text: s})
 	return next.(model)
 }
 
@@ -304,7 +304,7 @@ func TestViewportPansToSelection(t *testing.T) {
 	// 24 rows tall → 19 visible; 50 rows means the tail window starts well
 	// below row 0, so jumping to the top must scroll the viewport up.
 	m := key(withRows(50), "g")
-	out := m.View()
+	out := m.viewContent()
 	if !strings.Contains(out, markerSelected) {
 		t.Fatalf("selected row scrolled off screen: View() = \n%s", out)
 	}
@@ -371,7 +371,7 @@ func TestViewFitsHeightAtEveryScrollPosition(t *testing.T) {
 	}
 	for _, k := range []string{"G", "g", "k", "j", "G", "g"} {
 		m = key(m, k)
-		if got := len(strings.Split(m.View(), "\n")); got > h {
+		if got := len(strings.Split(m.viewContent(), "\n")); got > h {
 			t.Errorf("after %q: View() emitted %d lines, want <= %d", k, got, h)
 		}
 	}
@@ -392,8 +392,8 @@ func TestSelectionClampsAtEdges(t *testing.T) {
 }
 
 // press feeds a non-rune key (Enter, Esc, …) through Update.
-func press(m model, t tea.KeyType) model {
-	next, _ := m.Update(tea.KeyMsg{Type: t})
+func press(m model, code rune) model {
+	next, _ := m.Update(tea.KeyPressMsg{Code: code})
 	return next.(model)
 }
 
@@ -435,7 +435,7 @@ func TestDetailHeaderTracksSelectionLive(t *testing.T) {
 		m.rows[i].comm = fmt.Sprintf("proc%d", i)
 	}
 	m = press(m, tea.KeyEnter) // open on the newest row (index 4)
-	out := m.View()
+	out := m.viewContent()
 	if !strings.Contains(out, "───── Detail ─────") {
 		t.Errorf("View missing the Detail divider:\n%s", out)
 	}
@@ -447,7 +447,7 @@ func TestDetailHeaderTracksSelectionLive(t *testing.T) {
 	}
 	// Move the selection up; the divider must update live.
 	m = key(m, "k")
-	out = m.View()
+	out = m.viewContent()
 	if !strings.Contains(out, "pid=1003 (proc3)") {
 		t.Errorf("divider should follow the moved selection, got:\n%s", out)
 	}
@@ -494,7 +494,7 @@ func TestViewFitsHeightWithDetailOpen(t *testing.T) {
 	m = press(m, tea.KeyEnter)
 	for _, k := range []string{"G", "g", "k", "j", "G"} {
 		m = key(m, k)
-		if got := len(strings.Split(m.View(), "\n")); got != h {
+		if got := len(strings.Split(m.viewContent(), "\n")); got != h {
 			t.Errorf("after %q with the panel open: View() emitted %d lines, want %d", k, got, h)
 		}
 	}
@@ -614,7 +614,7 @@ func TestDetailKeepsOneTableRowAtAnyHeight(t *testing.T) {
 		if got := m.visibleRows(); got < 1 {
 			t.Errorf("height=%d: visibleRows()=%d with the panel open, want >= 1", h, got)
 		}
-		if got := len(strings.Split(m.View(), "\n")); got != h {
+		if got := len(strings.Split(m.viewContent(), "\n")); got != h {
 			t.Errorf("height=%d: View() emitted %d lines, want %d", h, got, h)
 		}
 	}
@@ -764,15 +764,15 @@ func TestBodyModeToggleKey(t *testing.T) {
 	m := newModel(120, 60)
 	m = appendRow(m, row{method: "GET", path: "/", status: 200, bytes: 2, resBody: []byte{0x41, 0x00}})
 	m.detailOpen = true
-	if strings.Contains(m.View(), "(hex,") {
+	if strings.Contains(m.viewContent(), "(hex,") {
 		t.Error("default body mode should be decoded")
 	}
 	m = key(m, "b")
-	if !strings.Contains(m.View(), "(hex,") {
-		t.Errorf("b should switch to hex:\n%s", m.View())
+	if !strings.Contains(m.viewContent(), "(hex,") {
+		t.Errorf("b should switch to hex:\n%s", m.viewContent())
 	}
 	m = key(m, "h")
-	if strings.Contains(m.View(), "(hex,") {
+	if strings.Contains(m.viewContent(), "(hex,") {
 		t.Error("h should also toggle, switching back to decoded")
 	}
 }
@@ -965,7 +965,7 @@ func TestScrollIndicators(t *testing.T) {
 // in table focus it leads with a blank gutter.
 func TestPanelFocusMarkerOnDivider(t *testing.T) {
 	m := withScrollablePanel()
-	tableDiv := detailDividerLine(m.View())
+	tableDiv := detailDividerLine(m.viewContent())
 	if strings.HasPrefix(tableDiv, markerSelected) {
 		t.Errorf("table focus: divider should not carry ▸: %q", tableDiv)
 	}
@@ -973,7 +973,7 @@ func TestPanelFocusMarkerOnDivider(t *testing.T) {
 		t.Errorf("table focus: divider should lead with a blank gutter: %q", tableDiv)
 	}
 	m = press(m, tea.KeyTab)
-	panelDiv := detailDividerLine(m.View())
+	panelDiv := detailDividerLine(m.viewContent())
 	if !strings.HasPrefix(panelDiv, markerSelected) {
 		t.Errorf("panel focus: divider should lead with ▸: %q", panelDiv)
 	}
@@ -1025,11 +1025,11 @@ func TestDetailDividerFocusStyling(t *testing.T) {
 	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 
 	m := withScrollablePanel() // open, table focus
-	if div := detailDividerLine(m.View()); strings.Contains(div, "\x1b[") {
+	if div := detailDividerLine(m.viewContent()); strings.Contains(div, "\x1b[") {
 		t.Errorf("table focus: Detail divider should be unstyled, got %q", div)
 	}
 	m = press(m, tea.KeyTab) // panel focus
-	if div := detailDividerLine(m.View()); !strings.Contains(div, "\x1b[") {
+	if div := detailDividerLine(m.viewContent()); !strings.Contains(div, "\x1b[") {
 		t.Errorf("panel focus: Detail divider should be reverse-styled, got %q", div)
 	}
 }
@@ -1111,7 +1111,7 @@ func TestWindowSizeMsgUpdatesLayout(t *testing.T) {
 		t.Error("top should have advanced after the shrink, not stayed at 0")
 	}
 	// View must fit the new height exactly.
-	if got := len(strings.Split(m.View(), "\n")); got != newH {
+	if got := len(strings.Split(m.viewContent(), "\n")); got != newH {
 		t.Errorf("View() emitted %d lines after resize to height %d, want %d", got, newH, newH)
 	}
 }
@@ -1183,7 +1183,7 @@ func TestInitReturnsNil(t *testing.T) {
 
 // Pressing q returns a non-nil tea.Quit command.
 func TestQuitKeyReturnsCmd(t *testing.T) {
-	_, cmd := newModel(120, 24).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	_, cmd := newModel(120, 24).Update(tea.KeyPressMsg{Text: "q"})
 	if cmd == nil {
 		t.Error("q should return a non-nil quit cmd")
 	}
@@ -1277,7 +1277,7 @@ func TestViewPathWidthClampedToOne(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		m = appendRow(m, row{path: "/api/v1"})
 	}
-	if out := m.View(); out == "" {
+	if out := m.viewContent(); out == "" {
 		t.Error("View with width=1 should produce output, not an empty string")
 	}
 }
@@ -1541,7 +1541,7 @@ func TestFilterViewFitsHeight(t *testing.T) {
 	}
 	m.filterTerm = "nginx"
 	m.rebuildFilter()
-	if got := len(strings.Split(m.View(), "\n")); got != h {
+	if got := len(strings.Split(m.viewContent(), "\n")); got != h {
 		t.Errorf("View() with filter emitted %d lines, want %d", got, h)
 	}
 }
@@ -1577,7 +1577,7 @@ func TestFilterModeCtrlCQuits(t *testing.T) {
 	if !m.filterMode {
 		t.Fatal("expected filterMode after /")
 	}
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Error("ctrl+c in filterMode should return a non-nil quit cmd")
 	}
@@ -1746,7 +1746,7 @@ func TestDiagPanelRendersLines(t *testing.T) {
 	next, _ := m.Update(diagMsg("tls: attach failed for pid 123"))
 	m = next.(model)
 	m = key(m, "d")
-	out := m.View()
+	out := m.viewContent()
 	if !strings.Contains(out, "tls: attach failed for pid 123") {
 		t.Errorf("diag view missing the captured line:\n%s", out)
 	}
@@ -1806,7 +1806,7 @@ func TestDiagPanelFollowsNewLinesWhileOpen(t *testing.T) {
 // q/ctrl+c quit even while the diagnostics panel is open.
 func TestDiagPanelQuitKey(t *testing.T) {
 	m := key(withRows(1), "d")
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	_, cmd := m.Update(tea.KeyPressMsg{Text: "q"})
 	if cmd == nil {
 		t.Error("q should return a non-nil quit cmd while the diagnostics panel is open")
 	}
@@ -1859,7 +1859,7 @@ func TestDiagPanelOffsetClampsOutOfRange(t *testing.T) {
 // overflowing (mirrors detailDivider's own overflow handling).
 func TestDiagViewNarrowWidthTruncatesLabel(t *testing.T) {
 	m := model{width: 5, height: 10, diagOpen: true, diagLines: []string{"x"}}
-	out := m.View()
+	out := m.viewContent()
 	label := strings.SplitN(out, "\n", 2)[0]
 	if n := utf8.RuneCountInString(label); n != 5 {
 		t.Errorf("label line = %q (%d runes), want exactly width 5", label, n)

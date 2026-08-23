@@ -1,7 +1,7 @@
 package tui
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
@@ -14,7 +14,7 @@ type Sink struct {
 
 func New(width, height int) *Sink {
 	s := &Sink{anchor: http.NewTimeAnchor()}
-	s.prog = tea.NewProgram(newModel(width, height), tea.WithAltScreen())
+	s.prog = tea.NewProgram(newModel(width, height))
 	return s
 }
 
