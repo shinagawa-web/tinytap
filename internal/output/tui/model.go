@@ -7,8 +7,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
 )
@@ -136,25 +136,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.filterMode {
-			switch msg.Type {
-			case tea.KeyCtrlC:
+			switch msg.String() {
+			case "ctrl+c":
 				return m, tea.Quit
-			case tea.KeyEsc:
+			case "esc":
 				m.filterMode = false
 				m.filterTerm = ""
 				m.rebuildFilter()
-			case tea.KeyEnter:
+			case "enter":
 				m.filterMode = false
-			case tea.KeyBackspace, tea.KeyDelete:
+			case "backspace", "delete":
 				if r := []rune(m.filterTerm); len(r) > 0 {
 					m.filterTerm = string(r[:len(r)-1])
 					m.rebuildFilter()
 				}
-			case tea.KeyRunes:
-				m.filterTerm += string(msg.Runes)
-				m.rebuildFilter()
+			default:
+				if msg.Text != "" {
+					m.filterTerm += msg.Text
+					m.rebuildFilter()
+				}
 			}
 		} else if m.diagOpen {
 			switch msg.String() {
@@ -409,7 +411,13 @@ func (m *model) clampScroll() {
 	}
 }
 
-func (m model) View() string {
+func (m model) View() tea.View {
+	v := tea.NewView(m.viewContent())
+	v.AltScreen = true
+	return v
+}
+
+func (m model) viewContent() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
