@@ -37,7 +37,7 @@ func openExecutable(path string) (*link.Executable, error) {
 		// produce the appropriate error (file not found, etc.).
 		return link.OpenExecutable(path)
 	}
-	key := exCacheKey{dev: st.Dev, ino: st.Ino}
+	key := exCacheKey{dev: uint64(st.Dev), ino: st.Ino}
 	if v, ok := exCache.Load(key); ok {
 		return v.(*link.Executable), nil
 	}
