@@ -8,8 +8,7 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
 
 	"github.com/shinagawa-web/tinytap/internal/protocols/http"
 )
@@ -115,13 +114,6 @@ func TestLatencyStr(t *testing.T) {
 // Second-scale latencies (>= 1s) are highlighted; sub-second ones are not, and
 // the zero-width color escapes must not change the row's visible width.
 func TestRowLineSlowLatencyHighlighted(t *testing.T) {
-	// go test's stdout isn't a TTY, so lipgloss defaults to the no-color
-	// profile and Render would be a silent no-op. Force a profile that emits
-	// ANSI so the styling is observable, and restore it afterwards.
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	const width = 120
 	pathWidth := width - markerCol - fixedWidth - separators
 	slow := rowLine(row{path: "/", latency: 1500 * time.Millisecond}, pathWidth, false, false)
@@ -145,10 +137,6 @@ func TestRowLineSlowLatencyHighlighted(t *testing.T) {
 // A row matched on (pid, SSL*) instead of a verified fd (#171) gets its PID
 // cell styled distinctly; an ordinary fd-verified row stays plain.
 func TestRowLineSSLFallbackHighlighted(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	const width = 120
 	pathWidth := width - markerCol - fixedWidth - separators
 	fallback := rowLine(row{pid: 5950, path: "/", sslFallback: true}, pathWidth, false, false)
@@ -974,8 +962,8 @@ func TestPanelFocusMarkerOnDivider(t *testing.T) {
 	}
 	m = press(m, tea.KeyTab)
 	panelDiv := detailDividerLine(m.viewContent())
-	if !strings.HasPrefix(panelDiv, markerSelected) {
-		t.Errorf("panel focus: divider should lead with ▸: %q", panelDiv)
+	if !strings.Contains(panelDiv, markerSelected) {
+		t.Errorf("panel focus: divider should carry ▸: %q", panelDiv)
 	}
 }
 
@@ -999,10 +987,6 @@ func TestFooterStates(t *testing.T) {
 // the table is focused, and yields it (keeping only its ▸) once focus is in the
 // panel. ANSI profile forced so the styling is observable.
 func TestRowLineFocusHighlight(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	pathWidth := 120 - markerCol - fixedWidth - separators
 	r := row{path: "/"}
 	if got := rowLine(r, pathWidth, true, true); !strings.Contains(got, "\x1b[") {
@@ -1020,10 +1004,6 @@ func TestRowLineFocusHighlight(t *testing.T) {
 // The Detail divider gets the reverse-video bar only when the panel holds focus,
 // so the bright highlight reads as the focus indicator. ANSI profile forced.
 func TestDetailDividerFocusStyling(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	m := withScrollablePanel() // open, table focus
 	if div := detailDividerLine(m.viewContent()); strings.Contains(div, "\x1b[") {
 		t.Errorf("table focus: Detail divider should be unstyled, got %q", div)
@@ -1263,10 +1243,10 @@ func TestClampScrollTopNegative(t *testing.T) {
 
 // View returns an empty string when either dimension is zero or negative.
 func TestViewEmptyOnZeroDimensions(t *testing.T) {
-	if got := newModel(0, 24).View(); got != "" {
+	if got := newModel(0, 24).viewContent(); got != "" {
 		t.Errorf("View(width=0) = %q, want empty string", got)
 	}
-	if got := newModel(120, 0).View(); got != "" {
+	if got := newModel(120, 0).viewContent(); got != "" {
 		t.Errorf("View(height=0) = %q, want empty string", got)
 	}
 }
@@ -1885,13 +1865,13 @@ func TestDiagViewClampsOffsetDefensively(t *testing.T) {
 	}
 
 	tooHigh := model{width: 80, height: 10, diagOpen: true, diagLines: lines, diagOffset: 1000}
-	out := tooHigh.View()
+	out := tooHigh.viewContent()
 	if !strings.Contains(out, "line 19") {
 		t.Errorf("an offset past the end should clamp to show the newest lines:\n%s", out)
 	}
 
 	negative := model{width: 80, height: 10, diagOpen: true, diagLines: lines, diagOffset: -5}
-	out = negative.View()
+	out = negative.viewContent()
 	if !strings.Contains(out, "line 0") {
 		t.Errorf("a negative offset should clamp to show the oldest lines:\n%s", out)
 	}

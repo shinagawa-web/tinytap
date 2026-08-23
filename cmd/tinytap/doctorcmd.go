@@ -2,12 +2,10 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
 
 	"github.com/shinagawa-web/tinytap/internal/doctor"
 )
@@ -17,17 +15,9 @@ var (
 	doctorRender = doctor.Render
 )
 
-var doctorColorRenderer = newDoctorColorRenderer()
-
-func newDoctorColorRenderer() *lipgloss.Renderer {
-	r := lipgloss.NewRenderer(io.Discard)
-	r.SetColorProfile(termenv.ANSI)
-	return r
-}
-
 var (
-	degradedLabelStyle = doctorColorRenderer.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
-	blockingLabelStyle = doctorColorRenderer.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	degradedLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+	blockingLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 )
 
 func runDoctorCmd() error {
