@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -47,28 +48,73 @@ func (s *syncBuffer) String() string {
 	return s.buf.String()
 }
 
-// fakeProbe's closed field uses atomic.Bool since
-// TestSSLWatcher_OnEvent_ClosedDuringAttach reads it from a polling loop
-// concurrently with Close() writing it from sslWatcher's background
-// goroutine — a plain bool would race under -race.
-type fakeProbe struct {
-	closeErr   error
-	closed     atomic.Bool
-	lookupFd   int32
-	lookupOK   bool
-	dropCounts drops.Counts
+// fakeCloser is an io.Closer stand-in for a per-pid uprobe link set.
+// closed uses atomic.Bool since tests that race Close() against an in-flight
+// attach read it from a polling loop concurrently with the watcher's
+// background goroutine writing it.
+type fakeCloser struct {
+	closeErr error
+	closed   atomic.Bool
 }
 
-func (f *fakeProbe) Lookup(uint32, uint64) (int32, bool) { return f.lookupFd, f.lookupOK }
-
-func (f *fakeProbe) Delete(uint32, uint64) {}
-
-func (f *fakeProbe) DropCounts() drops.Counts { return f.dropCounts }
-
-func (f *fakeProbe) Close() error {
+func (f *fakeCloser) Close() error {
 	f.closed.Store(true)
 	return f.closeErr
 }
+
+// fakeSSLObjects implements sslObjects. reader defaults to an empty
+// fakeReader (returns EOF immediately, so any spawned captureTLS goroutine
+// exits right away without needing explicit teardown in tests that don't
+// care about its behavior). AttachSetFd/AttachPayload default to succeeding
+// with a fresh *fakeCloser each call; tests override *Fn to inject errors or
+// synchronize with an in-flight attach.
+type fakeSSLObjects struct {
+	rd              ringbufReader
+	dropCounts      drops.Counts
+	lookupFd        int32
+	lookupOK        bool
+	attachSetFdFn   func(pid uint32, path string) (io.Closer, error)
+	attachPayloadFn func(pid uint32, path string) (io.Closer, error)
+	deletedPids     []map[uint32]bool
+}
+
+func (f *fakeSSLObjects) Lookup(uint32, uint64) (int32, bool) { return f.lookupFd, f.lookupOK }
+
+func (f *fakeSSLObjects) Delete(uint32, uint64) {}
+
+func (f *fakeSSLObjects) DeletePids(dead map[uint32]bool) int {
+	f.deletedPids = append(f.deletedPids, dead)
+	return len(dead)
+}
+
+func (f *fakeSSLObjects) DropCounts() drops.Counts { return f.dropCounts }
+
+func (f *fakeSSLObjects) reader() ringbufReader {
+	if f.rd != nil {
+		return f.rd
+	}
+	return &fakeReader{}
+}
+
+func (f *fakeSSLObjects) AttachSetFd(pid uint32, path string) (io.Closer, error) {
+	if f.attachSetFdFn != nil {
+		return f.attachSetFdFn(pid, path)
+	}
+	return &fakeCloser{}, nil
+}
+
+func (f *fakeSSLObjects) AttachPayload(pid uint32, path string) (io.Closer, error) {
+	if f.attachPayloadFn != nil {
+		return f.attachPayloadFn(pid, path)
+	}
+	return &fakeCloser{}, nil
+}
+
+// fakeSSLRegistry implements sslRegistryCloser for tests that need Close()
+// to fail without constructing a real (privileged) *loader.SSLRegistry.
+type fakeSSLRegistry struct{ closeErr error }
+
+func (f *fakeSSLRegistry) Close() error { return f.closeErr }
 
 // waitOnChan blocks until ch receives or fails the test after timeout —
 // used to synchronize with sslWatcher's background discovery goroutine.
@@ -81,24 +127,93 @@ func waitOnChan(t *testing.T, ch <-chan struct{}) {
 	}
 }
 
-// TestNewSSLWatcher_DefaultFindAndAttach exercises the real (non-injected)
-// find/attach/attachPayload closures newSSLWatcher wires up by default —
-// every other test in this file overrides w.find/w.attach/w.attachPayload
-// before use. All three real functions fail fast without root: tls.Find on
-// a pid unlikely to have libssl mapped, and loader.AttachSSLSetFd /
-// loader.AttachSSLReadWrite on a nonexistent path (which fail at the
+// TestNewSSLWatcher_DefaultFindAndShared exercises the real (non-injected)
+// find/shared closures newSSLWatcher wires up by default — every other test
+// in this file overrides w.find/w.shared before use. Both real functions
+// fail fast without root: tls.Find on a pid unlikely to have libssl mapped,
+// and the registry's Shared on a nonexistent path (which fails at the
 // os.Stat check before touching eBPF).
-func TestNewSSLWatcher_DefaultFindAndAttach(t *testing.T) {
+func TestNewSSLWatcher_DefaultFindAndShared(t *testing.T) {
 	w := newSSLWatcher(&fakeSink{})
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
 
 	if _, err := w.find(uint32(os.Getpid())); err == nil {
 		t.Error("find(own pid) = nil error, want an error (no libssl expected in this test binary)")
 	}
-	if _, err := w.attach(1, "/nonexistent-path-xyz"); err == nil {
-		t.Error("attach(nonexistent path) = nil error, want an error")
+	if _, _, err := w.shared("/nonexistent-path-xyz"); err == nil {
+		t.Error("shared(nonexistent path) = nil error, want an error")
 	}
-	if _, err := w.attachPayload(1, "/nonexistent-path-xyz"); err == nil {
-		t.Error("attachPayload(nonexistent path) = nil error, want an error")
+}
+
+// TestNewSSLWatcher_DefaultShared_WrapsSuccess exercises the default shared
+// closure's success path — the one line that only runs when
+// loader.SSLRegistry.Shared itself succeeds, which needs real eBPF and so
+// can't be reached through the nonexistent-path failure case
+// TestNewSSLWatcher_DefaultFindAndShared already covers. sslRegistryShared is
+// swapped for a fake that returns a real (never-loaded) zero-value
+// *loader.SSLObjects, proving the wrap into sslObjectsAdapter itself is
+// correct without touching a kernel.
+func TestNewSSLWatcher_DefaultShared_WrapsSuccess(t *testing.T) {
+	orig := sslRegistryShared
+	defer func() { sslRegistryShared = orig }()
+	want := &loader.SSLObjects{}
+	sslRegistryShared = func(*loader.SSLRegistry, string) (*loader.SSLObjects, bool, error) {
+		return want, true, nil
+	}
+
+	w := newSSLWatcher(&fakeSink{})
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+
+	obj, created, err := w.shared("/lib/libssl.so.3")
+	if err != nil {
+		t.Fatalf("shared() = %v, want nil error", err)
+	}
+	if !created {
+		t.Error("shared() created = false, want true")
+	}
+	adapter, ok := obj.(sslObjectsAdapter)
+	if !ok || adapter.SSLObjects != want {
+		t.Errorf("shared() = %#v, want sslObjectsAdapter wrapping %#v", obj, want)
+	}
+}
+
+// TestSSLObjectsAdapter_Reader confirms the adapter delegates to the wrapped
+// *loader.SSLObjects's Reader field — the one-line bridge that lets
+// sslObjects (a method-only interface) stand in for a struct field Go
+// interfaces can't require directly (mirrors bpfSession's reader() pattern
+// in bpf.go).
+func TestSSLObjectsAdapter_Reader(t *testing.T) {
+	inner := &loader.SSLObjects{}
+	a := sslObjectsAdapter{inner}
+	if got := a.reader(); got != ringbufReader(inner.Reader) {
+		t.Errorf("reader() = %v, want the wrapped object's Reader field", got)
+	}
+}
+
+// TestSSLObjectsAdapter_AttachSetFd_DelegatesToLoader and
+// TestSSLObjectsAdapter_AttachPayload_DelegatesToLoader confirm the adapter
+// calls through to loader.AttachSSLSetFd/AttachSSLReadWrite rather than some
+// other path — using a nonexistent libssl path is enough to observe an
+// error without needing root or real eBPF.
+func TestSSLObjectsAdapter_AttachSetFd_DelegatesToLoader(t *testing.T) {
+	a := sslObjectsAdapter{&loader.SSLObjects{}}
+	if _, err := a.AttachSetFd(1, "/nonexistent-path-xyz"); err == nil {
+		t.Error("AttachSetFd(nonexistent path) = nil error, want an error")
+	}
+}
+
+func TestSSLObjectsAdapter_AttachPayload_DelegatesToLoader(t *testing.T) {
+	a := sslObjectsAdapter{&loader.SSLObjects{}}
+	if _, err := a.AttachPayload(1, "/nonexistent-path-xyz"); err == nil {
+		t.Error("AttachPayload(nonexistent path) = nil error, want an error")
 	}
 }
 
@@ -214,9 +329,9 @@ func TestSSLWatcher_OnEvent_LibSSLNotFound(t *testing.T) {
 		defer close(calls)
 		return tls.Discovery{}, tls.ErrLibSSLNotFound
 	}
-	w.attach = func(pid uint32, path string) (sslProbe, error) {
-		t.Fatal("attach should not be called when find fails")
-		return nil, nil
+	w.shared = func(path string) (sslObjects, bool, error) {
+		t.Fatal("shared should not be called when find fails")
+		return nil, false, nil
 	}
 
 	w.OnEvent(&events.Event{Pid: 7})
@@ -224,8 +339,8 @@ func TestSSLWatcher_OnEvent_LibSSLNotFound(t *testing.T) {
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.probes) != 0 {
-		t.Errorf("probes = %v, want empty", w.probes)
+	if len(w.attached) != 0 {
+		t.Errorf("attached = %v, want empty", w.attached)
 	}
 }
 
@@ -249,25 +364,27 @@ func TestSSLWatcher_OnEvent_UnexpectedFindError(t *testing.T) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.probes) != 0 {
-		t.Errorf("probes = %v, want empty", w.probes)
+	if len(w.attached) != 0 {
+		t.Errorf("attached = %v, want empty", w.attached)
 	}
 }
 
 func TestSSLWatcher_OnEvent_ClosedDuringAttach(t *testing.T) {
 	attaching := make(chan struct{})
 	release := make(chan struct{})
-	fp := &fakeProbe{dropCounts: drops.Counts{Ringbuf: 3, MapFull: 5}}
+	linkCloser := &fakeCloser{}
+	obj := &fakeSSLObjects{dropCounts: drops.Counts{Ringbuf: 3, MapFull: 5}}
+	obj.attachSetFdFn = func(pid uint32, path string) (io.Closer, error) {
+		close(attaching)
+		<-release
+		return linkCloser, nil
+	}
 	w := newSSLWatcher(&fakeSink{})
 	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
-	w.attach = func(pid uint32, path string) (sslProbe, error) {
-		close(attaching)
-		<-release
-		return fp, nil
-	}
+	w.shared = func(path string) (sslObjects, bool, error) { return obj, true, nil }
 
 	w.OnEvent(&events.Event{Pid: 23})
 	<-attaching // attach is in flight; Close() races it below
@@ -278,19 +395,19 @@ func TestSSLWatcher_OnEvent_ClosedDuringAttach(t *testing.T) {
 	close(release) // let the in-flight attach complete after Close() returned
 
 	deadline := time.Now().Add(2 * time.Second)
-	for !fp.closed.Load() && time.Now().Before(deadline) {
+	for !linkCloser.closed.Load() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !fp.closed.Load() {
-		t.Error("probe attached after Close() was never closed (leaked)")
+	if !linkCloser.closed.Load() {
+		t.Error("link attached after Close() was never closed (leaked)")
 	}
 	if got, want := w.dropCounts(), (drops.Counts{Ringbuf: 3, MapFull: 5}); got != want {
-		t.Errorf("dropCounts() = %+v, want %+v (racing probe's counts must be folded into closedDrops)", got, want)
+		t.Errorf("dropCounts() = %+v, want %+v (racing object's counts must be folded into closedDrops)", got, want)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.probes) != 0 {
-		t.Errorf("probes = %v, want empty (closed watcher must not store new probes)", w.probes)
+	if len(w.attached) != 0 {
+		t.Errorf("attached = %v, want empty (closed watcher must not store new attachments)", w.attached)
 	}
 }
 
@@ -314,147 +431,251 @@ func TestSSLWatcher_OnEvent_SymbolError(t *testing.T) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.probes) != 0 {
-		t.Errorf("probes = %v, want empty", w.probes)
+	if len(w.attached) != 0 {
+		t.Errorf("attached = %v, want empty", w.attached)
 	}
 }
 
-// fakePayloadProbe implements payloadProbe. reader defaults to an empty
-// fakeReader (returns EOF immediately, so any spawned captureTLS goroutine
-// exits right away without needing explicit teardown in tests that don't
-// care about its behavior).
-type fakePayloadProbe struct {
-	closeErr   error
-	closed     atomic.Bool
-	rd         ringbufReader
-	dropCounts drops.Counts
-}
-
-func (f *fakePayloadProbe) DropCounts() drops.Counts { return f.dropCounts }
-
-func (f *fakePayloadProbe) Close() error {
-	f.closed.Store(true)
-	return f.closeErr
-}
-
-func (f *fakePayloadProbe) reader() ringbufReader {
-	if f.rd != nil {
-		return f.rd
-	}
-	return &fakeReader{}
-}
-
-func TestSSLWatcher_OnEvent_Success(t *testing.T) {
+// TestSSLWatcher_OnEvent_SharedError confirms a failure loading the shared
+// SSL uprobe objects (e.g. a symbol resolution error for this specific
+// libssl build) is logged and the goroutine exits cleanly, without ever
+// reaching AttachSetFd.
+func TestSSLWatcher_OnEvent_SharedError(t *testing.T) {
 	calls := make(chan struct{}, 1)
-	payloadCalls := make(chan struct{}, 1)
-	fp := &fakeProbe{}
-	pp := &fakePayloadProbe{}
+	sharedErr := errors.New("load SSL objects fail")
 	w := newSSLWatcher(&fakeSink{})
 	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
-	w.attach = func(pid uint32, path string) (sslProbe, error) {
+	w.shared = func(path string) (sslObjects, bool, error) {
+		defer close(calls)
+		return nil, false, sharedErr
+	}
+
+	w.OnEvent(&events.Event{Pid: 35})
+	waitOnChan(t, calls)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.attached) != 0 || len(w.caps) != 0 {
+		t.Errorf("attached=%v caps=%v, want both empty", w.attached, w.caps)
+	}
+}
+
+// TestSSLWatcher_OnEvent_ClosedWhileObjectsCreating races Close() against
+// the moment maybeAttach learns it just created a new shared object (before
+// it has stored anything in caps or spawned captureTLS) — distinct from
+// TestSSLWatcher_OnEvent_ClosedDuringAttach, which races the later
+// AttachSetFd stage instead.
+func TestSSLWatcher_OnEvent_ClosedWhileObjectsCreating(t *testing.T) {
+	reachedShared := make(chan struct{})
+	release := make(chan struct{})
+	obj := &fakeSSLObjects{}
+	obj.attachSetFdFn = func(pid uint32, path string) (io.Closer, error) {
+		t.Error("AttachSetFd must not be called when Close() won the race with object creation")
+		return nil, errors.New("unexpected")
+	}
+	w := newSSLWatcher(&fakeSink{})
+	w.isAlive = func(uint32) bool { return true }
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+	w.shared = func(path string) (sslObjects, bool, error) {
+		close(reachedShared)
+		<-release
+		return obj, true, nil
+	}
+
+	w.OnEvent(&events.Event{Pid: 37})
+	<-reachedShared
+
+	if err := w.Close(); err != nil {
+		t.Errorf("Close() = %v, want nil", err)
+	}
+	close(release)
+
+	// Give the goroutine a moment to observe w.closed and return before
+	// asserting nothing leaked into caps/attached.
+	time.Sleep(50 * time.Millisecond)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.caps) != 0 {
+		t.Errorf("caps = %v, want empty (closed watcher must not register a newly created object)", w.caps)
+	}
+	if len(w.attached) != 0 {
+		t.Errorf("attached = %v, want empty", w.attached)
+	}
+}
+
+func TestSSLWatcher_OnEvent_Success(t *testing.T) {
+	calls := make(chan struct{}, 1)
+	payloadCalls := make(chan struct{}, 1)
+	fdCloser := &fakeCloser{}
+	payloadCloser := &fakeCloser{}
+	obj := &fakeSSLObjects{}
+	obj.attachSetFdFn = func(pid uint32, path string) (io.Closer, error) {
 		defer close(calls)
 		if path != "/lib/libssl.so.3" {
-			t.Errorf("attach path = %q, want /lib/libssl.so.3", path)
+			t.Errorf("AttachSetFd path = %q, want /lib/libssl.so.3", path)
 		}
-		return fp, nil
+		return fdCloser, nil
 	}
-	w.attachPayload = func(pid uint32, path string) (payloadProbe, error) {
+	obj.attachPayloadFn = func(pid uint32, path string) (io.Closer, error) {
 		defer close(payloadCalls)
 		if path != "/lib/libssl.so.3" {
-			t.Errorf("attachPayload path = %q, want /lib/libssl.so.3", path)
+			t.Errorf("AttachPayload path = %q, want /lib/libssl.so.3", path)
 		}
-		return pp, nil
+		return payloadCloser, nil
 	}
+	w := newSSLWatcher(&fakeSink{})
+	w.isAlive = func(uint32) bool { return true }
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+	w.shared = func(path string) (sslObjects, bool, error) { return obj, true, nil }
 
 	w.OnEvent(&events.Event{Pid: 11})
 	waitOnChan(t, calls)
 	waitOnChan(t, payloadCalls)
 
 	w.mu.Lock()
-	stored, ok := w.probes[11]
-	storedPayload, okPayload := w.payloadProbes[11]
+	att, ok := w.attached[11]
+	_, hasCaps := w.caps[obj]
 	w.mu.Unlock()
-	if !ok || stored != fp {
-		t.Errorf("probes[11] = %v, %v; want %v, true", stored, ok, fp)
+	if !ok || att.fdLinks != fdCloser {
+		t.Errorf("attached[11].fdLinks = %v, %v; want %v, true", att, ok, fdCloser)
 	}
-	if !okPayload || storedPayload != pp {
-		t.Errorf("payloadProbes[11] = %v, %v; want %v, true", storedPayload, okPayload, pp)
+	if !ok || att.payload != payloadCloser {
+		t.Errorf("attached[11].payload = %v; want %v", att, payloadCloser)
+	}
+	if !hasCaps {
+		t.Error("caps missing entry for the shared object")
 	}
 }
 
 func TestSSLWatcher_OnEvent_AttachError(t *testing.T) {
 	calls := make(chan struct{}, 1)
+	obj := &fakeSSLObjects{}
+	obj.attachSetFdFn = func(pid uint32, path string) (io.Closer, error) {
+		defer close(calls)
+		return nil, errors.New("attach fail")
+	}
+	obj.attachPayloadFn = func(pid uint32, path string) (io.Closer, error) {
+		t.Fatal("AttachPayload should not be called when the fd attach fails")
+		return nil, nil
+	}
 	w := newSSLWatcher(&fakeSink{})
 	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
-	w.attach = func(pid uint32, path string) (sslProbe, error) {
-		defer close(calls)
-		return nil, errors.New("attach fail")
-	}
-	w.attachPayload = func(pid uint32, path string) (payloadProbe, error) {
-		t.Fatal("attachPayload should not be called when the fd attach fails")
-		return nil, nil
-	}
+	w.shared = func(path string) (sslObjects, bool, error) { return obj, true, nil }
 
 	w.OnEvent(&events.Event{Pid: 13})
 	waitOnChan(t, calls)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.probes) != 0 {
-		t.Errorf("probes = %v, want empty", w.probes)
+	if len(w.attached) != 0 {
+		t.Errorf("attached = %v, want empty", w.attached)
 	}
 }
 
 // TestSSLWatcher_OnEvent_PayloadAttachErrorKeepsFdProbe confirms a
 // payload-attach failure is logged and skipped without rolling back the
-// already-stored fd probe — fd correlation (#147) stays useful even when
+// already-stored fd link — fd correlation (#147) stays useful even when
 // plaintext capture (#146) can't attach.
 func TestSSLWatcher_OnEvent_PayloadAttachErrorKeepsFdProbe(t *testing.T) {
 	calls := make(chan struct{}, 1)
-	fp := &fakeProbe{}
+	fdCloser := &fakeCloser{}
+	obj := &fakeSSLObjects{}
+	obj.attachSetFdFn = func(pid uint32, path string) (io.Closer, error) { return fdCloser, nil }
+	obj.attachPayloadFn = func(pid uint32, path string) (io.Closer, error) {
+		defer close(calls)
+		return nil, errors.New("payload attach fail")
+	}
 	w := newSSLWatcher(&fakeSink{})
 	w.isAlive = func(uint32) bool { return true }
 	w.find = func(pid uint32) (tls.Discovery, error) {
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
-	w.attach = func(pid uint32, path string) (sslProbe, error) { return fp, nil }
-	w.attachPayload = func(pid uint32, path string) (payloadProbe, error) {
-		defer close(calls)
-		return nil, errors.New("payload attach fail")
-	}
+	w.shared = func(path string) (sslObjects, bool, error) { return obj, true, nil }
 
 	w.OnEvent(&events.Event{Pid: 17})
 	waitOnChan(t, calls)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if stored, ok := w.probes[17]; !ok || stored != fp {
-		t.Errorf("probes[17] = %v, %v; want %v, true (fd probe kept despite payload attach failure)", stored, ok, fp)
+	att, ok := w.attached[17]
+	if !ok || att.fdLinks != fdCloser {
+		t.Errorf("attached[17].fdLinks = %v, %v; want %v, true (fd link kept despite payload attach failure)", att, ok, fdCloser)
 	}
-	if len(w.payloadProbes) != 0 {
-		t.Errorf("payloadProbes = %v, want empty", w.payloadProbes)
+	if ok && att.payload != nil {
+		t.Errorf("attached[17].payload = %v, want nil", att.payload)
+	}
+}
+
+func TestSSLWatcher_OnEvent_ClosedDuringPayloadAttach(t *testing.T) {
+	attaching := make(chan struct{})
+	release := make(chan struct{})
+	fdCloser := &fakeCloser{}
+	payloadCloser := &fakeCloser{}
+	obj := &fakeSSLObjects{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
+	obj.attachSetFdFn = func(pid uint32, path string) (io.Closer, error) { return fdCloser, nil }
+	obj.attachPayloadFn = func(pid uint32, path string) (io.Closer, error) {
+		close(attaching)
+		<-release
+		return payloadCloser, nil
+	}
+	w := newSSLWatcher(&fakeSink{})
+	w.isAlive = func(uint32) bool { return true }
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+	}
+	w.shared = func(path string) (sslObjects, bool, error) { return obj, true, nil }
+
+	w.OnEvent(&events.Event{Pid: 29})
+	<-attaching // payload attach is in flight; Close() races it below
+
+	if err := w.Close(); err != nil {
+		t.Errorf("Close() = %v, want nil", err)
+	}
+	close(release) // let the in-flight attach complete after Close() returned
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !payloadCloser.closed.Load() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !payloadCloser.closed.Load() {
+		t.Error("payload link attached after Close() was never closed (leaked)")
+	}
+	if !fdCloser.closed.Load() {
+		t.Error("fd link (stored before Close()) must still be closed by Close()")
+	}
+	if got, want := w.dropCounts(), (drops.Counts{Ringbuf: 1, MapFull: 2}); got != want {
+		t.Errorf("dropCounts() = %+v, want %+v (the shared object's counts must be folded in exactly once)", got, want)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.attached) != 0 {
+		t.Errorf("attached = %v, want empty (closed watcher must not store new attachments)", w.attached)
 	}
 }
 
 func TestSSLWatcher_Close_JoinsProbeAndSinkErrors(t *testing.T) {
 	sinkErr := errors.New("sink close fail")
-	probeErr := errors.New("probe close fail")
-	payloadProbeErr := errors.New("payload probe close fail")
+	fdErr := errors.New("fd link close fail")
+	payloadErr := errors.New("payload link close fail")
 	w := newSSLWatcher(&fakeSink{closeErr: sinkErr})
-	fp1 := &fakeProbe{closeErr: probeErr}
-	fp2 := &fakeProbe{}
-	pp1 := &fakePayloadProbe{closeErr: payloadProbeErr}
-	pp2 := &fakePayloadProbe{}
-	w.probes[1] = fp1
-	w.probes[2] = fp2
-	w.payloadProbes[1] = pp1
-	w.payloadProbes[2] = pp2
+	fd1 := &fakeCloser{closeErr: fdErr}
+	fd2 := &fakeCloser{}
+	payload1 := &fakeCloser{closeErr: payloadErr}
+	payload2 := &fakeCloser{}
+	obj := &fakeSSLObjects{}
+	w.attached[1] = &pidAttachment{obj: obj, fdLinks: fd1, payload: payload1}
+	w.attached[2] = &pidAttachment{obj: obj, fdLinks: fd2, payload: payload2}
 
 	err := w.Close()
 	if err == nil {
@@ -463,11 +684,31 @@ func TestSSLWatcher_Close_JoinsProbeAndSinkErrors(t *testing.T) {
 	if !errors.Is(err, sinkErr) {
 		t.Errorf("Close() error does not wrap sink close error: %v", err)
 	}
-	if !fp1.closed.Load() || !fp2.closed.Load() {
-		t.Errorf("fp1.closed=%v fp2.closed=%v, want both true", fp1.closed.Load(), fp2.closed.Load())
+	if !errors.Is(err, fdErr) {
+		t.Errorf("Close() error does not wrap fd link close error: %v", err)
 	}
-	if !pp1.closed.Load() || !pp2.closed.Load() {
-		t.Errorf("pp1.closed=%v pp2.closed=%v, want both true", pp1.closed.Load(), pp2.closed.Load())
+	if !errors.Is(err, payloadErr) {
+		t.Errorf("Close() error does not wrap payload link close error: %v", err)
+	}
+	if !fd1.closed.Load() || !fd2.closed.Load() {
+		t.Errorf("fd1.closed=%v fd2.closed=%v, want both true", fd1.closed.Load(), fd2.closed.Load())
+	}
+	if !payload1.closed.Load() || !payload2.closed.Load() {
+		t.Errorf("payload1.closed=%v payload2.closed=%v, want both true", payload1.closed.Load(), payload2.closed.Load())
+	}
+}
+
+// TestSSLWatcher_Close_RegistryCloseError confirms an error closing the
+// shared SSL registry is joined into Close()'s return value rather than
+// silently dropped.
+func TestSSLWatcher_Close_RegistryCloseError(t *testing.T) {
+	regErr := errors.New("registry close fail")
+	w := newSSLWatcher(&fakeSink{})
+	w.reg = &fakeSSLRegistry{closeErr: regErr}
+
+	err := w.Close()
+	if !errors.Is(err, regErr) {
+		t.Errorf("Close() error = %v, want it to wrap %v", err, regErr)
 	}
 }
 
@@ -522,41 +763,61 @@ func TestSSLWatcher_Close_ConcurrentIsSafe(t *testing.T) {
 func TestSSLWatcher_DropCounts_Empty(t *testing.T) {
 	w := newSSLWatcher(&fakeSink{})
 	if got := w.dropCounts(); got != (drops.Counts{}) {
-		t.Errorf("dropCounts() = %+v, want zero value for a watcher with no probes", got)
+		t.Errorf("dropCounts() = %+v, want zero value for a watcher with no shared objects", got)
 	}
 }
 
-func TestSSLWatcher_DropCounts_SumsLiveProbes(t *testing.T) {
+func TestSSLWatcher_DropCounts_SumsLiveTracers(t *testing.T) {
 	w := newSSLWatcher(&fakeSink{})
-	w.probes[1] = &fakeProbe{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
-	w.probes[2] = &fakeProbe{dropCounts: drops.Counts{MapFull: 4}}
-	w.payloadProbes[1] = &fakePayloadProbe{dropCounts: drops.Counts{Ringbuf: 8}}
+	obj1 := &fakeSSLObjects{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
+	obj2 := &fakeSSLObjects{dropCounts: drops.Counts{MapFull: 4}}
+	w.caps[obj1] = newTLSStreams()
+	w.caps[obj2] = newTLSStreams()
 
 	got := w.dropCounts()
-	want := drops.Counts{Ringbuf: 9, MapFull: 6}
+	want := drops.Counts{Ringbuf: 1, MapFull: 6}
 	if got != want {
-		t.Errorf("dropCounts() = %+v, want %+v (sum across every live probe)", got, want)
+		t.Errorf("dropCounts() = %+v, want %+v (sum across every live shared object)", got, want)
+	}
+}
+
+// TestSSLWatcher_DropCounts_SharedObjectCountedOnce guards against the
+// regression sharing one BPF object across pids makes possible: summing
+// dropCounts per pid (as the old per-pid-probe design did) would count the
+// same drop_counters map twice when two pids share one libssl inode.
+func TestSSLWatcher_DropCounts_SharedObjectCountedOnce(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	obj := &fakeSSLObjects{dropCounts: drops.Counts{Ringbuf: 5}}
+	w.caps[obj] = newTLSStreams()
+	w.attached[1] = &pidAttachment{obj: obj, fdLinks: &fakeCloser{}}
+	w.attached[2] = &pidAttachment{obj: obj, fdLinks: &fakeCloser{}}
+
+	got := w.dropCounts()
+	want := drops.Counts{Ringbuf: 5}
+	if got != want {
+		t.Errorf("dropCounts() = %+v, want %+v (two pids sharing one object must count its drops once, not twice)", got, want)
 	}
 }
 
 func TestSSLWatcher_DropCounts_RetainedAfterClose(t *testing.T) {
 	w := newSSLWatcher(&fakeSink{})
-	w.probes[1] = &fakeProbe{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
-	w.probes[2] = &fakeProbe{dropCounts: drops.Counts{MapFull: 4}}
-	w.payloadProbes[1] = &fakePayloadProbe{dropCounts: drops.Counts{Ringbuf: 8}}
-	want := drops.Counts{Ringbuf: 9, MapFull: 6}
+	obj1 := &fakeSSLObjects{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
+	obj2 := &fakeSSLObjects{dropCounts: drops.Counts{MapFull: 4}}
+	w.caps[obj1] = newTLSStreams()
+	w.caps[obj2] = newTLSStreams()
+	want := drops.Counts{Ringbuf: 1, MapFull: 6}
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close() = %v, want nil", err)
 	}
 
 	if got := w.dropCounts(); got != want {
-		t.Errorf("dropCounts() after Close() = %+v, want %+v (counts must survive probe teardown)", got, want)
+		t.Errorf("dropCounts() after Close() = %+v, want %+v (counts must survive teardown)", got, want)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.probes != nil || w.payloadProbes != nil {
-		t.Errorf("probes=%v payloadProbes=%v, want both nil after Close()", w.probes, w.payloadProbes)
+	if w.attached != nil || w.caps != nil {
+		t.Errorf("attached=%v caps=%v, want both nil after Close()", w.attached, w.caps)
 	}
 }
 
@@ -628,46 +889,6 @@ func TestSSLWatcher_OnPaired_Forwarded(t *testing.T) {
 	}
 }
 
-// TestNewSSLWatcher_DefaultAttachPayload_WrapsSuccess exercises the default
-// attachPayload closure's success path — the one line that only runs when
-// loader.AttachSSLReadWrite itself succeeds, which needs real eBPF and so
-// can't be reached through the nonexistent-path failure case
-// TestNewSSLWatcher_DefaultFindAndAttach already covers. attachSSLReadWrite
-// is swapped for a fake that returns a real (never-attached) zero-value
-// *loader.SSLPayloadProbe, proving the wrap into payloadProbeAdapter itself
-// is correct without touching a kernel.
-func TestNewSSLWatcher_DefaultAttachPayload_WrapsSuccess(t *testing.T) {
-	orig := attachSSLReadWrite
-	defer func() { attachSSLReadWrite = orig }()
-	want := &loader.SSLPayloadProbe{}
-	attachSSLReadWrite = func(pid uint32, path string) (*loader.SSLPayloadProbe, error) {
-		return want, nil
-	}
-
-	w := newSSLWatcher(&fakeSink{})
-	pp, err := w.attachPayload(1, "/lib/libssl.so.3")
-	if err != nil {
-		t.Fatalf("attachPayload() = %v, want nil error", err)
-	}
-	adapter, ok := pp.(*payloadProbeAdapter)
-	if !ok || adapter.SSLPayloadProbe != want {
-		t.Errorf("attachPayload() = %#v, want *payloadProbeAdapter wrapping %#v", pp, want)
-	}
-}
-
-// TestPayloadProbeAdapter_Reader confirms the adapter delegates to the
-// wrapped *loader.SSLPayloadProbe's Reader field — the one-line bridge that
-// lets payloadProbe (a method-only interface) stand in for a struct field
-// Go interfaces can't require directly (mirrors bpfSession's reader()
-// pattern in bpf.go).
-func TestPayloadProbeAdapter_Reader(t *testing.T) {
-	inner := &loader.SSLPayloadProbe{}
-	a := &payloadProbeAdapter{inner}
-	if got := a.reader(); got != ringbufReader(inner.Reader) {
-		t.Errorf("reader() = %v, want the wrapped probe's Reader field", got)
-	}
-}
-
 // TestFindWithRetry_DeadProcessSkipsRetry confirms that when isAlive reports
 // false, findWithRetry returns ErrLibSSLNotFound immediately without sleeping
 // through the remaining retry budget. Without this, each goroutine spawned for
@@ -699,12 +920,15 @@ func TestFindWithRetry_DeadProcessSkipsRetry(t *testing.T) {
 	}
 }
 
-// TestSSLWatcher_Reaper_ClosesProbesForDeadProcess verifies that
-// reapDeadProbes removes and closes both the fd probe and the payload probe
-// when the monitored process has exited.
-func TestSSLWatcher_Reaper_ClosesProbesForDeadProcess(t *testing.T) {
-	fp := &fakeProbe{dropCounts: drops.Counts{Ringbuf: 1}}
-	pp := &fakePayloadProbe{dropCounts: drops.Counts{MapFull: 2}}
+// TestSSLWatcher_Reaper_ClosesLinksForDeadProcess verifies that
+// reapDeadProbes closes both the fd link and the payload link when the
+// monitored process has exited, reclaims its ssl_fd_map entries via
+// DeletePids, and leaves the shared object (and its drop counters) alone —
+// it outlives any individual pid.
+func TestSSLWatcher_Reaper_ClosesLinksForDeadProcess(t *testing.T) {
+	fdCloser := &fakeCloser{}
+	payloadCloser := &fakeCloser{}
+	obj := &fakeSSLObjects{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
 	w := newSSLWatcher(&fakeSink{})
 	defer func() {
 		if err := w.Close(); err != nil {
@@ -713,41 +937,48 @@ func TestSSLWatcher_Reaper_ClosesProbesForDeadProcess(t *testing.T) {
 	}()
 
 	w.mu.Lock()
-	w.probes[99] = fp
-	w.payloadProbes[99] = pp
+	w.caps[obj] = newTLSStreams()
+	w.attached[99] = &pidAttachment{obj: obj, fdLinks: fdCloser, payload: payloadCloser}
 	w.seen[99] = true
 	w.mu.Unlock()
 
 	w.isAlive = func(pid uint32) bool { return pid != 99 }
 	w.reapDeadProbes()
 
-	if !fp.closed.Load() {
-		t.Error("fd probe was not closed by reaper")
+	if !fdCloser.closed.Load() {
+		t.Error("fd link was not closed by reaper")
 	}
-	if !pp.closed.Load() {
-		t.Error("payload probe was not closed by reaper")
+	if !payloadCloser.closed.Load() {
+		t.Error("payload link was not closed by reaper")
+	}
+	if len(obj.deletedPids) != 1 || !obj.deletedPids[0][99] {
+		t.Errorf("DeletePids not called with pid 99: %v", obj.deletedPids)
 	}
 
 	w.mu.Lock()
 	_, hasSeen := w.seen[99]
-	_, hasProbe := w.probes[99]
-	_, hasPayload := w.payloadProbes[99]
+	_, hasAttached := w.attached[99]
+	_, hasCaps := w.caps[obj]
 	harvested := w.closedDrops
 	w.mu.Unlock()
 
-	if hasSeen || hasProbe || hasPayload {
-		t.Error("reaper did not remove dead pid from seen/probes/payloadProbes maps")
+	if hasSeen || hasAttached {
+		t.Error("reaper did not remove dead pid from seen/attached maps")
 	}
-	if want := (drops.Counts{Ringbuf: 1, MapFull: 2}); harvested != want {
-		t.Errorf("closedDrops = %+v, want %+v (both probes must be harvested before close)", harvested, want)
+	if !hasCaps {
+		t.Error("reaper must not remove the shared object's caps entry — it outlives individual pids")
+	}
+	if harvested != (drops.Counts{}) {
+		t.Errorf("closedDrops = %+v, want zero (reaper must not harvest a still-live shared object — that would double-count on the next dropCounts() read)", harvested)
 	}
 }
 
-// TestSSLWatcher_Reaper_ClosesOnlyFdProbeForDeadProcess confirms that the
-// reaper also closes fd-only probes (those where payload attachment failed,
-// kept for fd correlation per #147) when the process exits.
-func TestSSLWatcher_Reaper_ClosesOnlyFdProbeForDeadProcess(t *testing.T) {
-	fp := &fakeProbe{}
+// TestSSLWatcher_Reaper_ClosesOnlyFdLinkForDeadProcess confirms that the
+// reaper also closes fd-only attachments (those where payload attachment
+// failed, kept for fd correlation per #147) when the process exits.
+func TestSSLWatcher_Reaper_ClosesOnlyFdLinkForDeadProcess(t *testing.T) {
+	fdCloser := &fakeCloser{}
+	obj := &fakeSSLObjects{}
 	w := newSSLWatcher(&fakeSink{})
 	defer func() {
 		if err := w.Close(); err != nil {
@@ -756,23 +987,118 @@ func TestSSLWatcher_Reaper_ClosesOnlyFdProbeForDeadProcess(t *testing.T) {
 	}()
 
 	w.mu.Lock()
-	w.probes[88] = fp
-	// No payloadProbes[88] — payload attach failed, fd probe kept for correlation.
+	w.caps[obj] = newTLSStreams()
+	w.attached[88] = &pidAttachment{obj: obj, fdLinks: fdCloser} // payload nil: attach failed
 	w.seen[88] = true
 	w.mu.Unlock()
 
 	w.isAlive = func(pid uint32) bool { return pid != 88 }
 	w.reapDeadProbes()
 
-	if !fp.closed.Load() {
-		t.Error("fd-only probe was not closed by reaper")
+	if !fdCloser.closed.Load() {
+		t.Error("fd-only link was not closed by reaper")
 	}
 	w.mu.Lock()
 	_, hasSeen := w.seen[88]
-	_, hasProbe := w.probes[88]
+	_, hasAttached := w.attached[88]
 	w.mu.Unlock()
-	if hasSeen || hasProbe {
-		t.Error("reaper did not remove dead pid from seen/probes maps")
+	if hasSeen || hasAttached {
+		t.Error("reaper did not remove dead pid from seen/attached maps")
+	}
+}
+
+// TestSSLWatcher_Reaper_SkipsLiveAttachedProcess confirms reapDeadProbes
+// leaves a live pid's attachment untouched — both in the main sweep over
+// w.attached and in the budgeted w.seen sweep, which must skip any pid
+// still present in w.attached rather than re-checking it — while still
+// reaping a dead pid attached at the same time.
+func TestSSLWatcher_Reaper_SkipsLiveAttachedProcess(t *testing.T) {
+	liveFd := &fakeCloser{}
+	deadFd := &fakeCloser{}
+	obj := &fakeSSLObjects{}
+	w := newSSLWatcher(&fakeSink{})
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+
+	w.mu.Lock()
+	w.caps[obj] = newTLSStreams()
+	w.attached[44] = &pidAttachment{obj: obj, fdLinks: liveFd}
+	w.attached[45] = &pidAttachment{obj: obj, fdLinks: deadFd}
+	w.seen[44] = true
+	w.seen[45] = true
+	w.mu.Unlock()
+
+	w.isAlive = func(pid uint32) bool { return pid == 44 }
+	w.reapDeadProbes()
+
+	if liveFd.closed.Load() {
+		t.Error("reaper closed the live pid's link — must only reap dead processes")
+	}
+	if !deadFd.closed.Load() {
+		t.Error("reaper did not close the dead pid's link")
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.attached[44]; !ok {
+		t.Error("reaper removed the live pid's attachment")
+	}
+	if _, ok := w.seen[44]; !ok {
+		t.Error("reaper removed the live pid from seen — must skip pids still in attached")
+	}
+	if _, ok := w.attached[45]; ok {
+		t.Error("reaper did not remove the dead pid's attachment")
+	}
+	if _, ok := w.seen[45]; ok {
+		t.Error("reaper did not remove the dead pid from seen")
+	}
+}
+
+// TestSSLWatcher_Reaper_SeenSweepReclaimsOnlyDeadPids seeds a large number of
+// seen-but-never-attached pids (the state left by find/attach failures,
+// which deliberately keep seen[pid]=true to suppress retry storms) and
+// confirms the budgeted sweep reclaims exactly the dead ones over a few
+// ticks while never touching a live one.
+func TestSSLWatcher_Reaper_SeenSweepReclaimsOnlyDeadPids(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+
+	const deadCount = 500
+	const livePid = deadCount + 1
+	w.mu.Lock()
+	for pid := uint32(1); pid <= deadCount; pid++ {
+		w.seen[pid] = true
+	}
+	w.seen[livePid] = true
+	w.mu.Unlock()
+
+	w.isAlive = func(pid uint32) bool { return pid == livePid }
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		w.reapDeadProbes()
+		w.mu.Lock()
+		n := len(w.seen)
+		w.mu.Unlock()
+		if n == 1 || time.Now().After(deadline) {
+			break
+		}
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.seen[livePid]; !ok {
+		t.Error("seen sweep removed a live pid — must never do that")
+	}
+	if len(w.seen) != 1 {
+		t.Errorf("len(seen) = %d, want 1 (only the live pid left after sweeping converges)", len(w.seen))
 	}
 }
 
@@ -801,9 +1127,9 @@ func TestSSLWatcher_MaybeAttach_SemaphoreSkipClearsSeenForRetry(t *testing.T) {
 		}
 		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
 	}
-	w.attach = func(pid uint32, path string) (sslProbe, error) {
-		t.Error("attach must not be called when semaphore is full")
-		return nil, errors.New("unexpected")
+	w.shared = func(path string) (sslObjects, bool, error) {
+		t.Error("shared must not be called when semaphore is full")
+		return nil, false, errors.New("unexpected")
 	}
 
 	w.OnEvent(&events.Event{Pid: 31})
@@ -853,56 +1179,6 @@ func TestSSLWatcher_MaybeAttach_SemaphoreSkipIncrementsCounter(t *testing.T) {
 	}
 }
 
-// TestSSLWatcher_OnEvent_ClosedDuringPayloadAttach mirrors
-// TestSSLWatcher_OnEvent_ClosedDuringAttach but races Close() against the
-// second (payload) attach stage instead of the first: the already-stored fd
-// probe must survive, and the in-flight payload probe must be closed rather
-// than stored or leaked.
-func TestSSLWatcher_OnEvent_ClosedDuringPayloadAttach(t *testing.T) {
-	attaching := make(chan struct{})
-	release := make(chan struct{})
-	fp := &fakeProbe{dropCounts: drops.Counts{Ringbuf: 1, MapFull: 2}}
-	pp := &fakePayloadProbe{dropCounts: drops.Counts{Ringbuf: 4, MapFull: 8}}
-	w := newSSLWatcher(&fakeSink{})
-	w.isAlive = func(uint32) bool { return true }
-	w.find = func(pid uint32) (tls.Discovery, error) {
-		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
-	}
-	w.attach = func(pid uint32, path string) (sslProbe, error) { return fp, nil }
-	w.attachPayload = func(pid uint32, path string) (payloadProbe, error) {
-		close(attaching)
-		<-release
-		return pp, nil
-	}
-
-	w.OnEvent(&events.Event{Pid: 29})
-	<-attaching // payload attach is in flight; Close() races it below
-
-	if err := w.Close(); err != nil {
-		t.Errorf("Close() = %v, want nil", err)
-	}
-	close(release) // let the in-flight attach complete after Close() returned
-
-	deadline := time.Now().Add(2 * time.Second)
-	for !pp.closed.Load() && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !pp.closed.Load() {
-		t.Error("payload probe attached after Close() was never closed (leaked)")
-	}
-	if !fp.closed.Load() {
-		t.Error("fd probe (stored before Close()) must still be closed by Close()")
-	}
-	if got, want := w.dropCounts(), (drops.Counts{Ringbuf: 5, MapFull: 10}); got != want {
-		t.Errorf("dropCounts() = %+v, want %+v (both the Close()-drained fd probe and the racing payload probe must be folded in)", got, want)
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if len(w.payloadProbes) != 0 {
-		t.Errorf("payloadProbes = %v, want empty (closed watcher must not store new probes)", w.payloadProbes)
-	}
-}
-
 // TestDefaultIsAlive_NonLinux checks that defaultIsAlive returns true on
 // non-Linux systems where /proc does not exist — procFSAvailable is false
 // and the function must not call os.Stat.
@@ -943,7 +1219,7 @@ func TestDefaultIsAlive_OtherStatError(t *testing.T) {
 }
 
 // TestSSLWatcher_MaybeAttach_SkipsDeadProcessAfterFind verifies that the
-// goroutine returns without calling attach when isAlive reports false after
+// goroutine returns without calling shared when isAlive reports false after
 // findWithRetry succeeds — avoiding a wasted BPF load for a process that
 // died between find and attach.
 func TestSSLWatcher_MaybeAttach_SkipsDeadProcessAfterFind(t *testing.T) {
@@ -962,19 +1238,19 @@ func TestSSLWatcher_MaybeAttach_SkipsDeadProcessAfterFind(t *testing.T) {
 		once.Do(func() { close(aliveCalled) })
 		return false
 	}
-	w.attach = func(pid uint32, path string) (sslProbe, error) {
-		t.Fatal("attach must not be called for a dead process")
-		return nil, nil
+	w.shared = func(path string) (sslObjects, bool, error) {
+		t.Fatal("shared must not be called for a dead process")
+		return nil, false, nil
 	}
 
 	w.OnEvent(&events.Event{Pid: 42})
 	waitOnChan(t, aliveCalled)
 
 	w.mu.Lock()
-	_, hasProbe := w.probes[42]
+	_, hasAttached := w.attached[42]
 	w.mu.Unlock()
-	if hasProbe {
-		t.Error("probe was stored for a process that was dead after findWithRetry")
+	if hasAttached {
+		t.Error("attachment was stored for a process that was dead after findWithRetry")
 	}
 }
 
@@ -986,7 +1262,8 @@ func TestSSLWatcher_Reaper_TickerCallsReapDeadProbes(t *testing.T) {
 	reaperInterval = time.Millisecond
 	defer func() { reaperInterval = orig }()
 
-	fp := &fakeProbe{}
+	fdCloser := &fakeCloser{}
+	obj := &fakeSSLObjects{}
 	w := newSSLWatcher(&fakeSink{})
 	defer func() {
 		if err := w.Close(); err != nil {
@@ -995,18 +1272,19 @@ func TestSSLWatcher_Reaper_TickerCallsReapDeadProbes(t *testing.T) {
 	}()
 
 	w.mu.Lock()
-	w.probes[66] = fp
+	w.caps[obj] = newTLSStreams()
+	w.attached[66] = &pidAttachment{obj: obj, fdLinks: fdCloser}
 	w.seen[66] = true
 	w.mu.Unlock()
 
 	w.isAlive = func(pid uint32) bool { return pid != 66 }
 
 	deadline := time.Now().Add(2 * time.Second)
-	for !fp.closed.Load() && time.Now().Before(deadline) {
+	for !fdCloser.closed.Load() && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if !fp.closed.Load() {
-		t.Error("runReaper did not close the dead-process probe via the ticker")
+	if !fdCloser.closed.Load() {
+		t.Error("runReaper did not close the dead-process link via the ticker")
 	}
 }
 
@@ -1014,10 +1292,12 @@ func TestSSLWatcher_Reaper_TickerCallsReapDeadProbes(t *testing.T) {
 // immediately when the watcher is already closed — the guard prevents
 // redundant map access on a shut-down watcher.
 func TestSSLWatcher_Reaper_NoopWhenClosed(t *testing.T) {
-	fp := &fakeProbe{}
+	fdCloser := &fakeCloser{}
+	obj := &fakeSSLObjects{}
 	w := newSSLWatcher(&fakeSink{})
 	w.mu.Lock()
-	w.probes[55] = fp
+	w.caps[obj] = newTLSStreams()
+	w.attached[55] = &pidAttachment{obj: obj, fdLinks: fdCloser}
 	w.seen[55] = true
 	w.mu.Unlock()
 	w.isAlive = func(uint32) bool { return false }
@@ -1029,10 +1309,11 @@ func TestSSLWatcher_Reaper_NoopWhenClosed(t *testing.T) {
 }
 
 // TestSSLWatcher_Reaper_LogsCloseError confirms that a Close() error from a
-// probe does not panic the reaper — the error is logged and execution
+// link does not panic the reaper — the error is logged and execution
 // continues.
 func TestSSLWatcher_Reaper_LogsCloseError(t *testing.T) {
-	fp := &fakeProbe{closeErr: errors.New("close failed")}
+	fdCloser := &fakeCloser{closeErr: errors.New("close failed")}
+	obj := &fakeSSLObjects{}
 	w := newSSLWatcher(&fakeSink{})
 	defer func() {
 		if err := w.Close(); err != nil {
@@ -1041,7 +1322,8 @@ func TestSSLWatcher_Reaper_LogsCloseError(t *testing.T) {
 	}()
 
 	w.mu.Lock()
-	w.probes[77] = fp
+	w.caps[obj] = newTLSStreams()
+	w.attached[77] = &pidAttachment{obj: obj, fdLinks: fdCloser}
 	w.seen[77] = true
 	w.mu.Unlock()
 

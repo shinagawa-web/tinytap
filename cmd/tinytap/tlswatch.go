@@ -22,50 +22,83 @@ type dropCounter interface {
 	DropCounts() drops.Counts
 }
 
-type sslProbe interface {
+// sslRegistryCloser is the one method sslWatcher needs from
+// *loader.SSLRegistry — a narrow seam so tests can inject a registry whose
+// Close fails, without needing real eBPF privileges to construct one.
+type sslRegistryCloser interface {
 	Close() error
+}
+
+// sslRegistryShared is (*loader.SSLRegistry).Shared, indirected through a
+// package-level var so tests can simulate a successful load — which
+// otherwise needs real eBPF privileges — the same way attachSSLReadWrite
+// used to for the pre-#327 per-pid probes.
+var sslRegistryShared = (*loader.SSLRegistry).Shared
+
+// sslObjects is the subset of *loader.SSLObjects the watcher needs. One
+// sslObjects is shared by every pid that maps the same libssl inode (#327);
+// AttachSetFd/AttachPayload create the per-pid uprobe links against it.
+type sslObjects interface {
 	Lookup(pid uint32, ssl uint64) (int32, bool)
 	Delete(pid uint32, ssl uint64)
+	DeletePids(dead map[uint32]bool) int
 	DropCounts() drops.Counts
-}
-
-type payloadProbe interface {
-	Close() error
+	AttachSetFd(pid uint32, libsslPath string) (io.Closer, error)
+	AttachPayload(pid uint32, libsslPath string) (io.Closer, error)
 	reader() ringbufReader
-	DropCounts() drops.Counts
 }
 
-type payloadProbeAdapter struct {
-	*loader.SSLPayloadProbe
+// sslObjectsAdapter bridges *loader.SSLObjects (a struct with a Reader
+// field) to the sslObjects interface, and delegates attachment to the
+// loader's package-level AttachSSLSetFd/AttachSSLReadWrite.
+type sslObjectsAdapter struct{ *loader.SSLObjects }
+
+func (a sslObjectsAdapter) reader() ringbufReader { return a.Reader }
+
+func (a sslObjectsAdapter) AttachSetFd(pid uint32, libsslPath string) (io.Closer, error) {
+	return loader.AttachSSLSetFd(a.SSLObjects, pid, libsslPath)
 }
 
-func (a *payloadProbeAdapter) reader() ringbufReader { return a.Reader }
+func (a sslObjectsAdapter) AttachPayload(pid uint32, libsslPath string) (io.Closer, error) {
+	return loader.AttachSSLReadWrite(a.SSLObjects, pid, libsslPath)
+}
+
+// pidAttachment is one pid's uprobe links against a shared sslObjects.
+// payload is nil when the payload attach failed — the SSL_set_fd link is
+// kept for fd correlation regardless (#147).
+type pidAttachment struct {
+	obj     sslObjects
+	fdLinks io.Closer
+	payload io.Closer
+}
 
 type sslWatcher struct {
 	output.Sink
 
 	sinkMu sync.Mutex
 
-	mu            sync.Mutex
-	closed        bool
-	seen          map[uint32]bool
-	probes        map[uint32]sslProbe
-	payloadProbes map[uint32]payloadProbe
-	closedDrops   drops.Counts
+	mu          sync.Mutex
+	closed      bool
+	seen        map[uint32]bool
+	attached    map[uint32]*pidAttachment
+	caps        map[sslObjects]*tlsStreams // one entry per libssl inode, added when shared() reports created
+	closedDrops drops.Counts
 
-	find          func(pid uint32) (tls.Discovery, error)
-	attach        func(pid uint32, path string) (sslProbe, error)
-	attachPayload func(pid uint32, path string) (payloadProbe, error)
+	reg sslRegistryCloser
+
+	find   func(pid uint32) (tls.Discovery, error)
+	shared func(libsslPath string) (sslObjects, bool, error)
 
 	// isAlive reports whether the process with the given pid is still running.
 	// Replaced by tests to avoid /proc dependency.
 	isAlive func(pid uint32) bool
 
 	// attachSem caps the number of goroutines concurrently inside the BPF
-	// load+attach section (LoadAndAssign + Uprobe) to bound the number of
-	// in-flight kernel BPF fds under high-churn TLS workloads (#326).
-	// ELF symbol-table parsing no longer contributes to per-goroutine memory
-	// because openExecutable() caches *link.Executable by (dev, inode).
+	// load+attach section to bound the number of in-flight kernel BPF fds
+	// under high-churn TLS workloads (#326). Since BPF objects are now loaded
+	// once per libssl inode rather than once per pid (#327), the section this
+	// guards is a one-time per-inode load plus a handful of Uprobe calls, not
+	// a full load on every attach.
 	attachSem     chan struct{}
 	attachSkipped atomic.Uint64
 
@@ -88,6 +121,15 @@ const (
 	// maximum attach rate without throttling: 512 / 0.42 s ≈ 1200 attaches/s,
 	// which covers workloads well above the 700 req/s design target (#326).
 	maxConcurrentAttach = 512
+
+	// seenSweepBudget bounds how many `seen` entries the reaper stats per
+	// tick when reclaiming pids that never got an attachment (find failure,
+	// missing symbols, attach failure — all of which deliberately keep
+	// seen[pid]=true to suppress retry storms against processes with no or
+	// broken libssl). Go randomizes map iteration order, so a bounded check
+	// per tick still converges over time without ever touching every entry
+	// at once.
+	seenSweepBudget = 256
 )
 
 var reaperInterval = time.Second
@@ -118,22 +160,21 @@ func defaultIsAlive(pid uint32) bool {
 	return !os.IsNotExist(err)
 }
 
-var attachSSLReadWrite = loader.AttachSSLReadWrite
-
 func newSSLWatcher(sink output.Sink) *sslWatcher {
+	reg := loader.NewSSLRegistry()
 	w := &sslWatcher{
-		Sink:          sink,
-		seen:          make(map[uint32]bool),
-		probes:        make(map[uint32]sslProbe),
-		payloadProbes: make(map[uint32]payloadProbe),
-		find:          func(pid uint32) (tls.Discovery, error) { return tls.Find("", pid) },
-		attach:        func(pid uint32, path string) (sslProbe, error) { return loader.AttachSSLSetFd(pid, path) },
-		attachPayload: func(pid uint32, path string) (payloadProbe, error) {
-			p, err := attachSSLReadWrite(pid, path)
+		Sink:     sink,
+		seen:     make(map[uint32]bool),
+		attached: make(map[uint32]*pidAttachment),
+		caps:     make(map[sslObjects]*tlsStreams),
+		reg:      reg,
+		find:     func(pid uint32) (tls.Discovery, error) { return tls.Find("", pid) },
+		shared: func(libsslPath string) (sslObjects, bool, error) {
+			obj, created, err := sslRegistryShared(reg, libsslPath)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
-			return &payloadProbeAdapter{p}, nil
+			return sslObjectsAdapter{obj}, created, nil
 		},
 		findRetries:    defaultFindRetries,
 		findRetryDelay: defaultFindRetryDelay,
@@ -203,8 +244,6 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 		}
 
 		// Skip BPF loading for processes that died after findWithRetry.
-		// LoadAndAssign allocates ~13 kernel BPF fds per call; skipping here
-		// avoids the bulk of wasted allocations under high-churn workloads.
 		if !w.isAlive(pid) {
 			return
 		}
@@ -223,24 +262,43 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 		}
 		defer func() { <-w.attachSem }()
 
-		probe, err := w.attach(pid, disc.Path)
+		obj, created, err := w.shared(disc.Path)
+		if err != nil {
+			log.Printf("tls: load SSL uprobe objects for pid %d (%s): %v", pid, disc.Path, err)
+			return
+		}
+
+		if created {
+			w.mu.Lock()
+			if w.closed {
+				w.mu.Unlock()
+				return
+			}
+			st := newTLSStreams()
+			w.caps[obj] = st
+			w.mu.Unlock()
+			go captureTLS(obj.reader(), obj, w, st)
+			log.Printf("tls: SSL uprobe objects loaded for %s (shared by every process using it)", disc.Path)
+		}
+
+		fdLinks, err := obj.AttachSetFd(pid, disc.Path)
 		if err != nil {
 			log.Printf("tls: attach SSL_set_fd for pid %d (%s): %v", pid, disc.Path, err)
 			return
 		}
 
+		att := &pidAttachment{obj: obj, fdLinks: fdLinks}
 		w.mu.Lock()
 		if w.closed {
-			w.harvestLocked(probe)
 			w.mu.Unlock()
-			_ = probe.Close()
+			_ = fdLinks.Close()
 			return
 		}
-		w.probes[pid] = probe
+		w.attached[pid] = att
 		w.mu.Unlock()
 		log.Printf("tls: SSL_set_fd uprobe attached for pid %d (%s)", pid, disc.Path)
 
-		pp, err := w.attachPayload(pid, disc.Path)
+		payload, err := obj.AttachPayload(pid, disc.Path)
 		if err != nil {
 			log.Printf("tls: attach SSL_write/SSL_read/SSL_free for pid %d (%s): %v", pid, disc.Path, err)
 			return
@@ -248,16 +306,13 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 
 		w.mu.Lock()
 		if w.closed {
-			w.harvestLocked(pp)
 			w.mu.Unlock()
-			_ = pp.Close()
+			_ = payload.Close()
 			return
 		}
-		w.payloadProbes[pid] = pp
+		att.payload = payload
 		w.mu.Unlock()
 		log.Printf("tls: SSL_write/SSL_read/SSL_free uprobes attached for pid %d (%s)", pid, disc.Path)
-
-		go captureTLS(pp.reader(), probe, w, http.NewParserWithResolve(resolveComm), http.NewPairer())
 	}()
 }
 
@@ -276,29 +331,27 @@ func (w *sslWatcher) findWithRetry(pid uint32) (tls.Discovery, error) {
 	}
 }
 
-// harvestLocked folds a probe's drop counters into closedDrops before the
-// probe is closed — a closed probe's maps are gone, so this is the last
-// chance to read them. Caller must hold w.mu.
+// harvestLocked folds a shared object's drop counters into closedDrops
+// before the registry is closed — closing frees the underlying maps, so this
+// is the last chance to read them. Caller must hold w.mu. Only called from
+// close(): a shared object's drop_counters map outlives any individual pid,
+// so harvesting it on pid reap would double-count the same drops on every
+// later dropCounts() read.
 func (w *sslWatcher) harvestLocked(p dropCounter) {
 	w.closedDrops = w.closedDrops.Add(p.DropCounts())
 }
 
-// dropCounts totals drops across every live probe plus those already
-// harvested from closed ones. Each attached pid loads its own copy of the
-// uprobe object, so every probe carries its own drop_counters map and the
-// per-probe reads must be summed here. Holds w.mu across a map lookup
-// syscall per probe: call this at shutdown or on a coarse timer, never
-// per event.
+// dropCounts totals drops across every live shared object plus those already
+// harvested at Close. One drop_counters map is shared by every pid on the
+// same libssl inode, so each live object is read exactly once here rather
+// than once per pid.
 func (w *sslWatcher) dropCounts() drops.Counts {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	total := w.closedDrops
-	for _, p := range w.probes {
-		total = total.Add(p.DropCounts())
+	for obj := range w.caps {
+		total = total.Add(obj.DropCounts())
 	}
-	for _, p := range w.payloadProbes {
-		total = total.Add(p.DropCounts())
-	}
+	w.mu.Unlock()
 	total.TLSAttachSkips = w.attachSkipped.Load()
 	return total
 }
@@ -317,9 +370,11 @@ func (w *sslWatcher) runReaper() {
 	}
 }
 
-// reapDeadProbes closes probes for processes that are no longer running,
-// releasing the associated kernel BPF fds and allowing captureTLS goroutines
-// to exit. Probe drop counters are harvested into closedDrops before closing.
+// reapDeadProbes closes uprobe links for processes that are no longer
+// running, releasing the associated kernel fds and reclaiming their
+// ssl_fd_map entries and parser state. The shared BPF objects themselves —
+// and their drop counters and capture goroutine — outlive any individual pid
+// and are only torn down by Close.
 func (w *sslWatcher) reapDeadProbes() {
 	w.mu.Lock()
 	if w.closed {
@@ -327,31 +382,51 @@ func (w *sslWatcher) reapDeadProbes() {
 		return
 	}
 
+	deadByObj := make(map[sslObjects]map[uint32]bool)
 	var toClose []io.Closer
+	type pidStream struct {
+		pid uint32
+		st  *tlsStreams
+	}
+	var toClosePid []pidStream
 
-	// Processes with both probes attached.
-	for pid, pp := range w.payloadProbes {
-		if !w.isAlive(pid) {
-			w.harvestLocked(pp)
-			toClose = append(toClose, pp)
-			delete(w.payloadProbes, pid)
-			if p, ok := w.probes[pid]; ok {
-				w.harvestLocked(p)
-				toClose = append(toClose, p)
-				delete(w.probes, pid)
-			}
-			delete(w.seen, pid)
+	for pid, att := range w.attached {
+		if w.isAlive(pid) {
+			continue
 		}
+		if att.payload != nil {
+			toClose = append(toClose, att.payload)
+		}
+		if att.fdLinks != nil {
+			toClose = append(toClose, att.fdLinks)
+		}
+		if deadByObj[att.obj] == nil {
+			deadByObj[att.obj] = make(map[uint32]bool)
+		}
+		deadByObj[att.obj][pid] = true
+		if st, ok := w.caps[att.obj]; ok {
+			toClosePid = append(toClosePid, pidStream{pid, st})
+		}
+		delete(w.attached, pid)
+		delete(w.seen, pid)
 	}
 
-	// Processes with only the fd probe attached (payload attach failed —
-	// kept for fd correlation per #147).
-	for pid, p := range w.probes {
-		if _, hasPayload := w.payloadProbes[pid]; !hasPayload && !w.isAlive(pid) {
-			w.harvestLocked(p)
-			toClose = append(toClose, p)
-			delete(w.probes, pid)
-			delete(w.seen, pid)
+	// Budgeted sweep of seen entries that never got an attachment — the
+	// early-return paths in maybeAttach deliberately keep seen[pid]=true to
+	// suppress retries, so only pids confirmed dead are reclaimed here.
+	if n := len(w.seen); n > 0 {
+		checked := 0
+		for pid := range w.seen {
+			if _, ok := w.attached[pid]; ok {
+				continue
+			}
+			if !w.isAlive(pid) {
+				delete(w.seen, pid)
+			}
+			checked++
+			if checked >= seenSweepBudget && n > seenSweepBudget {
+				break
+			}
 		}
 	}
 
@@ -362,11 +437,21 @@ func (w *sslWatcher) reapDeadProbes() {
 			log.Printf("tls: reaper: close probe for dead process: %v", err)
 		}
 	}
+	for obj, dead := range deadByObj {
+		obj.DeletePids(dead)
+	}
+	// closePid takes tlsStreams.mu, which the capture goroutine may hold
+	// while calling back into w.mu via sink.OnEvent — call these only after
+	// releasing w.mu above, or the two goroutines can deadlock on each
+	// other's lock.
+	for _, ps := range toClosePid {
+		ps.st.closePid(ps.pid)
+	}
 }
 
-// Close stops the reaper and closes all probes and the sink. It is
-// idempotent: calling it more than once, or concurrently, returns the
-// result of the first call without re-closing stopReaper.
+// Close stops the reaper and closes all attachments, shared objects, and the
+// sink. It is idempotent: calling it more than once, or concurrently,
+// returns the result of the first call without re-closing stopReaper.
 func (w *sslWatcher) Close() error {
 	w.closeOnce.Do(func() {
 		w.closeErr = w.close()
@@ -380,28 +465,30 @@ func (w *sslWatcher) close() error {
 
 	w.mu.Lock()
 	w.closed = true
-	probes := w.probes
-	w.probes = nil
-	payloadProbes := w.payloadProbes
-	w.payloadProbes = nil
-	for _, p := range probes {
-		w.harvestLocked(p)
-	}
-	for _, p := range payloadProbes {
-		w.harvestLocked(p)
+	attached := w.attached
+	w.attached = nil
+	caps := w.caps
+	w.caps = nil
+	for obj := range caps {
+		w.harvestLocked(obj)
 	}
 	w.mu.Unlock()
 
 	var errs []error
-	for pid, p := range probes {
-		if err := p.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close SSL_set_fd probe for pid %d: %w", pid, err))
+	for pid, att := range attached {
+		if att.payload != nil {
+			if err := att.payload.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close SSL payload links for pid %d: %w", pid, err))
+			}
+		}
+		if att.fdLinks != nil {
+			if err := att.fdLinks.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close SSL_set_fd links for pid %d: %w", pid, err))
+			}
 		}
 	}
-	for pid, p := range payloadProbes {
-		if err := p.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close SSL payload probe for pid %d: %w", pid, err))
-		}
+	if err := w.reg.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("close SSL uprobe objects: %w", err))
 	}
 	if err := w.Sink.Close(); err != nil {
 		errs = append(errs, err)

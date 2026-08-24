@@ -30,10 +30,12 @@ func buildSSLWriteLoopHelper(t *testing.T, dir string) string {
 }
 
 // TestSSLPayloadProbeDropCounts_RingbufReserveFailure drives enough real
-// SSL_write(3) calls in a subprocess to overflow the 1 MiB ssl_events ring
-// (each struct ssl_event is ~4.1 KiB, so ~256 events fill it) with nothing
-// draining probe.Reader, and confirms the resulting drops are counted
-// rather than silently discarded (#290).
+// SSL_write(3) calls in a subprocess to overflow the 8 MiB ssl_events ring
+// (each struct ssl_event is ~4.1 KiB, so ~2016 events fill it) with nothing
+// draining obj.Reader, and confirms the resulting drops are counted rather
+// than silently discarded (#290). The ring is sized for every pid on this
+// libssl inode to share (#327), not just one, so this test needs
+// substantially more writes than a single 1 MiB ring did.
 func TestSSLPayloadProbeDropCounts_RingbufReserveFailure(t *testing.T) {
 	libsslPath := findLibSSL(t)
 
@@ -47,7 +49,7 @@ func TestSSLPayloadProbeDropCounts_RingbufReserveFailure(t *testing.T) {
 
 	helperPath := buildSSLWriteLoopHelper(t, t.TempDir())
 
-	const writes = 600 // ~256 fills the 1 MiB ring; comfortably over that
+	const writes = 4096 // ~2016 fills the 8 MiB ring; comfortably over that
 	cmd := exec.Command(helperPath, libsslPath, strconv.Itoa(writes))
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -72,17 +74,27 @@ func TestSSLPayloadProbeDropCounts_RingbufReserveFailure(t *testing.T) {
 	}
 
 	pid := uint32(cmd.Process.Pid)
-	probe, err := loader.AttachSSLReadWrite(pid, libsslPath)
+	reg := loader.NewSSLRegistry()
+	defer func() {
+		if err := reg.Close(); err != nil {
+			t.Errorf("reg.Close: %v", err)
+		}
+	}()
+	obj, _, err := reg.Shared(libsslPath)
+	if err != nil {
+		t.Fatalf("Shared: %v", err)
+	}
+	links, err := loader.AttachSSLReadWrite(obj, pid, libsslPath)
 	if err != nil {
 		t.Fatalf("AttachSSLReadWrite: %v", err)
 	}
 	defer func() {
-		if err := probe.Close(); err != nil {
-			t.Errorf("probe.Close: %v", err)
+		if err := links.Close(); err != nil {
+			t.Errorf("links.Close: %v", err)
 		}
 	}()
 
-	// Deliberately never read probe.Reader — draining it would prevent the
+	// Deliberately never read obj.Reader — draining it would prevent the
 	// ring from ever filling.
 	if _, err := io.WriteString(stdin, "\n"); err != nil {
 		t.Fatalf("release helper: %v", err)
@@ -93,7 +105,7 @@ func TestSSLPayloadProbeDropCounts_RingbufReserveFailure(t *testing.T) {
 
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
-		if probe.DropCounts().Ringbuf > 0 {
+		if obj.DropCounts().Ringbuf > 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
