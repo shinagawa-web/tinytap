@@ -1,4 +1,4 @@
-FROM gcr.io/oss-fuzz-base/base-builder-go@sha256:326aa2055a7a6e78812c078ddee5dfe1710b09e1c0bb6b062565aa7c9661e009
+FROM gcr.io/oss-fuzz-base/base-builder-go@sha256:95203d2b95d85f24f5e22ac3e144dc81aff49249f253dbe8eed40df70dbb1bbc
 
 COPY . $SRC/tinytap
 WORKDIR $SRC/tinytap
