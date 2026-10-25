@@ -10,28 +10,43 @@ import (
 	"github.com/shinagawa-web/tinytap/internal/drops"
 )
 
-var ErrSSLUprobeUnsupportedArch = errors.New("SSL uprobe is amd64/arm64-only (see #156)")
+var (
+	ErrSSLUprobeUnsupportedArch = errors.New("SSL uprobe is amd64/arm64-only (see #156)")
+	ErrSSLRegistryClosed        = errors.New("SSL registry is closed")
+)
 
-type SSLFdProbe struct{}
+type SSLObjectsKey struct{ dev, ino uint64 }
 
-func AttachSSLSetFd(pid uint32, libsslPath string) (*SSLFdProbe, error) {
+type SSLObjects struct{}
+
+func (o *SSLObjects) Lookup(pid uint32, ssl uint64) (int32, bool) { return 0, false }
+
+func (o *SSLObjects) Delete(pid uint32, ssl uint64) {}
+
+func (o *SSLObjects) DeletePids(dead map[uint32]bool) int { return 0 }
+
+func (o *SSLObjects) DropCounts() drops.Counts { return drops.Counts{} }
+
+func (o *SSLObjects) Close() error { return nil }
+
+type SSLLinks struct{}
+
+func (l *SSLLinks) Close() error { return nil }
+
+type SSLRegistry struct{}
+
+func NewSSLRegistry() *SSLRegistry { return &SSLRegistry{} }
+
+func (r *SSLRegistry) Shared(libsslPath string) (*SSLObjects, bool, error) {
+	return nil, false, fmt.Errorf("%s: %w (GOARCH=%s)", libsslPath, ErrSSLUprobeUnsupportedArch, runtime.GOARCH)
+}
+
+func (r *SSLRegistry) Close() error { return nil }
+
+func AttachSSLSetFd(obj *SSLObjects, pid uint32, libsslPath string) (*SSLLinks, error) {
 	return nil, fmt.Errorf("pid %d: %w (GOARCH=%s)", pid, ErrSSLUprobeUnsupportedArch, runtime.GOARCH)
 }
 
-func (p *SSLFdProbe) Lookup(pid uint32, ssl uint64) (int32, bool) { return 0, false }
-
-func (p *SSLFdProbe) Delete(pid uint32, ssl uint64) {}
-
-func (p *SSLFdProbe) DropCounts() drops.Counts { return drops.Counts{} }
-
-func (p *SSLFdProbe) Close() error { return nil }
-
-type SSLPayloadProbe struct{}
-
-func AttachSSLReadWrite(pid uint32, libsslPath string) (*SSLPayloadProbe, error) {
+func AttachSSLReadWrite(obj *SSLObjects, pid uint32, libsslPath string) (*SSLLinks, error) {
 	return nil, fmt.Errorf("pid %d: %w (GOARCH=%s)", pid, ErrSSLUprobeUnsupportedArch, runtime.GOARCH)
 }
-
-func (p *SSLPayloadProbe) DropCounts() drops.Counts { return drops.Counts{} }
-
-func (p *SSLPayloadProbe) Close() error { return nil }

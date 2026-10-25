@@ -124,13 +124,23 @@ func TestSSLFdProbeDropCounts_MapFullFailure(t *testing.T) {
 
 	pid := uint32(cmd.Process.Pid)
 
-	probe, err := AttachSSLSetFd(pid, libsslPath)
+	reg := NewSSLRegistry()
+	defer func() {
+		if err := reg.Close(); err != nil {
+			t.Errorf("reg.Close: %v", err)
+		}
+	}()
+	obj, _, err := reg.Shared(libsslPath)
+	if err != nil {
+		t.Fatalf("Shared: %v", err)
+	}
+	links, err := AttachSSLSetFd(obj, pid, libsslPath)
 	if err != nil {
 		t.Fatalf("AttachSSLSetFd: %v", err)
 	}
 	defer func() {
-		if err := probe.Close(); err != nil {
-			t.Errorf("probe.Close: %v", err)
+		if err := links.Close(); err != nil {
+			t.Errorf("links.Close: %v", err)
 		}
 	}()
 
@@ -144,14 +154,14 @@ func TestSSLFdProbeDropCounts_MapFullFailure(t *testing.T) {
 		if key.Pid == pid {
 			t.Fatalf("synthetic pid %d unexpectedly collided with the helper's real pid", key.Pid)
 		}
-		if err := probe.objs.SslFdMap.Put(&key, &val); err != nil {
+		if err := obj.objs.SslFdMap.Put(&key, &val); err != nil {
 			t.Fatalf("prefill ssl_fd_map at pid %d: %v", key.Pid, err)
 		}
 	}
 	defer func() {
 		for i := uint32(0); i < maxEntries; i++ {
 			key := bpf.TinytapUprobeSslFdKey{Pid: keyBase + i}
-			_ = probe.objs.SslFdMap.Delete(&key)
+			_ = obj.objs.SslFdMap.Delete(&key)
 		}
 	}()
 
@@ -162,7 +172,7 @@ func TestSSLFdProbeDropCounts_MapFullFailure(t *testing.T) {
 
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
-		if probe.DropCounts().MapFull > 0 {
+		if obj.DropCounts().MapFull > 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

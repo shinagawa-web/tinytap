@@ -1,9 +1,9 @@
 //go:build privileged && arm64
 
-// This test accesses SSLPayloadProbe.Reader directly, which only exists on
-// the real arm64 implementation (load_uprobe.go) — the non-arm64 stub
-// (load_uprobe_other.go) has no such field, since AttachSSLReadWrite always
-// fails there before returning a probe. TestAttachSSLReadWrite_UnsupportedArch
+// This test accesses SSLObjects.Reader directly, which only exists on the
+// real arm64 implementation (load_uprobe.go) — the non-arm64 stub
+// (load_uprobe_other.go) has no such field, since SSLRegistry.Shared always
+// fails there before returning an object. TestSSLRegistryShared_UnsupportedArch
 // in load_uprobe_other_test.go covers that stub behavior on every other arch.
 
 package loader_test
@@ -95,13 +95,23 @@ func TestAttachSSLReadWrite_RealWriteCall(t *testing.T) {
 	}
 
 	pid := uint32(cmd.Process.Pid)
-	probe, err := loader.AttachSSLReadWrite(pid, libsslPath)
+	reg := loader.NewSSLRegistry()
+	defer func() {
+		if err := reg.Close(); err != nil {
+			t.Errorf("reg.Close: %v", err)
+		}
+	}()
+	obj, _, err := reg.Shared(libsslPath)
+	if err != nil {
+		t.Fatalf("Shared: %v", err)
+	}
+	links, err := loader.AttachSSLReadWrite(obj, pid, libsslPath)
 	if err != nil {
 		t.Fatalf("AttachSSLReadWrite: %v", err)
 	}
 	defer func() {
-		if err := probe.Close(); err != nil {
-			t.Errorf("probe.Close: %v", err)
+		if err := links.Close(); err != nil {
+			t.Errorf("links.Close: %v", err)
 		}
 	}()
 
@@ -111,7 +121,7 @@ func TestAttachSSLReadWrite_RealWriteCall(t *testing.T) {
 	}
 	recordCh := make(chan result, 1)
 	go func() {
-		rec, err := probe.Reader.Read()
+		rec, err := obj.Reader.Read()
 		recordCh <- result{rec.RawSample, err}
 	}()
 
@@ -224,13 +234,23 @@ func TestAttachSSLReadWrite_RealFreeCall(t *testing.T) {
 	}
 
 	pid := uint32(cmd.Process.Pid)
-	probe, err := loader.AttachSSLReadWrite(pid, libsslPath)
+	reg := loader.NewSSLRegistry()
+	defer func() {
+		if err := reg.Close(); err != nil {
+			t.Errorf("reg.Close: %v", err)
+		}
+	}()
+	obj, _, err := reg.Shared(libsslPath)
+	if err != nil {
+		t.Fatalf("Shared: %v", err)
+	}
+	links, err := loader.AttachSSLReadWrite(obj, pid, libsslPath)
 	if err != nil {
 		t.Fatalf("AttachSSLReadWrite: %v", err)
 	}
 	defer func() {
-		if err := probe.Close(); err != nil {
-			t.Errorf("probe.Close: %v", err)
+		if err := links.Close(); err != nil {
+			t.Errorf("links.Close: %v", err)
 		}
 	}()
 
@@ -240,7 +260,7 @@ func TestAttachSSLReadWrite_RealFreeCall(t *testing.T) {
 	}
 	recordCh := make(chan result, 1)
 	go func() {
-		rec, err := probe.Reader.Read()
+		rec, err := obj.Reader.Read()
 		recordCh <- result{rec.RawSample, err}
 	}()
 

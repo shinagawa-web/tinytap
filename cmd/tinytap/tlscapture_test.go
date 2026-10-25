@@ -54,15 +54,15 @@ func (f fakeSSLFdLookup) Delete(pid uint32, ssl uint64) {
 
 func lookupKey(pid uint32, ssl uint64) [2]uint64 { return [2]uint64{uint64(pid), ssl} }
 
-func newTLSTestPipeline() (*http.Parser, *http.Pairer) {
-	return http.NewParser(), http.NewPairer()
+func newTLSTestPipeline() *tlsStreams {
+	return &tlsStreams{parser: http.NewParser(), pairer: http.NewPairer()}
 }
 
 func TestCaptureTLS_ReaderErrorImmediately(t *testing.T) {
 	rd := &fakeReader{}
 	sink := &fakeSink{}
-	parser, pairer := newTLSTestPipeline()
-	captureTLS(rd, fakeSSLFdLookup{}, sink, parser, pairer)
+	st := newTLSTestPipeline()
+	captureTLS(rd, fakeSSLFdLookup{}, sink, st)
 	if sink.eventCount != 0 {
 		t.Errorf("want 0 events, got %d", sink.eventCount)
 	}
@@ -71,8 +71,8 @@ func TestCaptureTLS_ReaderErrorImmediately(t *testing.T) {
 func TestCaptureTLS_MalformedBytes(t *testing.T) {
 	rd := &fakeReader{records: []ringbuf.Record{{RawSample: []byte{0x01, 0x02}}}}
 	sink := &fakeSink{}
-	parser, pairer := newTLSTestPipeline()
-	captureTLS(rd, fakeSSLFdLookup{}, sink, parser, pairer)
+	st := newTLSTestPipeline()
+	captureTLS(rd, fakeSSLFdLookup{}, sink, st)
 	if sink.eventCount != 0 {
 		t.Errorf("want 0 events on decode error, got %d", sink.eventCount)
 	}
@@ -91,8 +91,8 @@ func TestCaptureTLS_WriteThenReadPairsWithResolvedFd(t *testing.T) {
 	}
 	fdProbe := fakeSSLFdLookup{lookupKey(pid, ssl): fd}
 	sink := &fakeSink{}
-	parser, pairer := newTLSTestPipeline()
-	captureTLS(rd, fdProbe, sink, parser, pairer)
+	st := newTLSTestPipeline()
+	captureTLS(rd, fdProbe, sink, st)
 
 	if sink.eventCount != 2 {
 		t.Errorf("want 2 raw events, got %d", sink.eventCount)
@@ -116,8 +116,8 @@ func TestCaptureTLS_FdLessTrafficParsedAndPaired(t *testing.T) {
 		},
 	}
 	sink := &fakeSink{}
-	parser, pairer := newTLSTestPipeline()
-	captureTLS(rd, fakeSSLFdLookup{}, sink, parser, pairer)
+	st := newTLSTestPipeline()
+	captureTLS(rd, fakeSSLFdLookup{}, sink, st)
 
 	if sink.eventCount != 0 {
 		t.Errorf("want 0 raw events for the fd-less path, got %d", sink.eventCount)
@@ -143,8 +143,8 @@ func TestCaptureTLS_SSLFreeEvictsPendingRequestWhenFdResolved(t *testing.T) {
 	}
 	fdProbe := fakeSSLFdLookup{lookupKey(pid, ssl): fd}
 	sink := &abandonedSink{}
-	parser, pairer := newTLSTestPipeline()
-	captureTLS(rd, fdProbe, sink, parser, pairer)
+	st := newTLSTestPipeline()
+	captureTLS(rd, fdProbe, sink, st)
 
 	if len(sink.paired) != 1 {
 		t.Fatalf("want 1 paired (abandoned) event, got %d", len(sink.paired))
@@ -170,8 +170,8 @@ func TestCaptureTLS_SSLFreeEvictsSSLFallbackWhenFdLess(t *testing.T) {
 		},
 	}
 	sink := &abandonedSink{}
-	parser, pairer := newTLSTestPipeline()
-	captureTLS(rd, fakeSSLFdLookup{}, sink, parser, pairer)
+	st := newTLSTestPipeline()
+	captureTLS(rd, fakeSSLFdLookup{}, sink, st)
 
 	if len(sink.paired) != 1 {
 		t.Fatalf("want 1 paired (abandoned) event, got %d", len(sink.paired))
@@ -193,8 +193,8 @@ func TestCaptureTLS_SSLFreeDeletesFdMapEntry(t *testing.T) {
 	rd := &fakeReader{records: []ringbuf.Record{{RawSample: marshalSSLEvent(t, freeEvent)}}}
 	fdProbe := fakeSSLFdLookup{lookupKey(pid, ssl): fd}
 	sink := &fakeSink{}
-	parser, pairer := newTLSTestPipeline()
-	captureTLS(rd, fdProbe, sink, parser, pairer)
+	st := newTLSTestPipeline()
+	captureTLS(rd, fdProbe, sink, st)
 
 	if _, ok := fdProbe.Lookup(pid, ssl); ok {
 		t.Error("fd map entry still present after SSL_free")
@@ -212,8 +212,8 @@ func TestCaptureTLS_SweepEmitsAbandoned(t *testing.T) {
 		delay: 20 * time.Millisecond,
 	}
 	sink := &abandonedSink{}
-	parser, pairer := newTLSTestPipeline()
-	captureTLSWithOptions(rd, fakeSSLFdLookup{lookupKey(pid, ssl): fd}, sink, parser, pairer, 1*time.Millisecond, 1*time.Millisecond)
+	st := newTLSTestPipeline()
+	captureTLSWithOptions(rd, fakeSSLFdLookup{lookupKey(pid, ssl): fd}, sink, st, 1*time.Millisecond, 1*time.Millisecond)
 
 	var abandoned []http.PairedEvent
 	for _, pe := range sink.paired {
@@ -234,8 +234,8 @@ func TestCaptureTLS_TruncatedSSLOpIsDropped(t *testing.T) {
 	e := events.SSLEvent{Pid: pid, Tid: pid, SSL: ssl, Op: 99}
 	rd := &fakeReader{records: []ringbuf.Record{{RawSample: marshalSSLEvent(t, e)}}}
 	sink := &fakeSink{}
-	parser, pairer := newTLSTestPipeline()
-	captureTLS(rd, fakeSSLFdLookup{lookupKey(pid, ssl): 3}, sink, parser, pairer)
+	st := newTLSTestPipeline()
+	captureTLS(rd, fakeSSLFdLookup{lookupKey(pid, ssl): 3}, sink, st)
 
 	if sink.eventCount != 0 {
 		t.Errorf("want 0 events for an unrecognized op, got %d", sink.eventCount)
