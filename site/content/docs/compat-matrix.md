@@ -59,8 +59,7 @@ syscalls tinytap traces haven't been measured.
 No fixed Ubuntu kernel has shipped as of 2026-11-04. Until one does, you can:
 
 - Run on a kernel without the bug, such as an Ubuntu 6.8 kernel.
-- Pin the process you're capturing to CPU 0 with `taskset -c 0 <command>`. This
-  is only practical for debugging, because the whole process then shares one CPU.
+- Pin the process you're capturing to CPU 0 with `taskset -c 0 <command>`. This is only practical for debugging, because the whole process then shares one CPU.
 
 Follow the fix in [Launchpad bug 2170225](https://bugs.launchpad.net/ubuntu/+source/linux/+bug/2170225)
 and [#444](https://github.com/shinagawa-web/tinytap/issues/444).
