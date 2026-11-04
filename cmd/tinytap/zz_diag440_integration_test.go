@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"testing"
 	"time"
 	"unsafe"
 
+	"github.com/cilium/ebpf"
 	"github.com/shinagawa-web/tinytap/internal/events"
 	"github.com/shinagawa-web/tinytap/internal/loader"
 	"golang.org/x/sys/unix"
@@ -101,11 +103,98 @@ type diagRow struct {
 	id      uint32
 	fd      int32
 	sent    int
+	// runs and misses are how much the program's kernel counters moved while
+	// this thread issued the syscalls. Other processes can only add to runs,
+	// so runs < sent proves the program did not run for some of them.
+	// -1 means the program was not measured.
+	runs   int64
+	misses int64
+}
+
+// diagFindProg returns the newest loaded program with this name, which is the
+// one the current round just loaded.
+func diagFindProg(name string) (*ebpf.Program, error) {
+	var newest *ebpf.Program
+	var id ebpf.ProgramID
+	for {
+		next, err := ebpf.ProgramGetNextID(id)
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		id = next
+		p, err := ebpf.NewProgramFromID(id)
+		if err != nil {
+			continue
+		}
+		info, err := p.Info()
+		if err != nil || info.Name != name {
+			p.Close()
+			continue
+		}
+		if newest != nil {
+			newest.Close()
+		}
+		newest = p
+	}
+	if newest == nil {
+		return nil, fmt.Errorf("program %s not found", name)
+	}
+	return newest, nil
+}
+
+// diagMeasure runs f and reports how much p's run and recursion miss counters
+// moved meanwhile.
+func diagMeasure(t *testing.T, p *ebpf.Program, f func()) (runs, misses int64) {
+	t.Helper()
+	before, err := p.Stats()
+	if err != nil {
+		t.Errorf("stats: %v", err)
+		f()
+		return -1, -1
+	}
+	f()
+	after, err := p.Stats()
+	if err != nil {
+		t.Errorf("stats: %v", err)
+		return -1, -1
+	}
+	return int64(after.RunCount - before.RunCount),
+		int64(after.RecursionMisses - before.RecursionMisses)
+}
+
+// diagDumpPrograms logs every BPF program on the machine and every perf
+// attachment, to show what else shares the syscall tracepoints.
+func diagDumpPrograms(t *testing.T) {
+	t.Helper()
+	var id ebpf.ProgramID
+	for {
+		next, err := ebpf.ProgramGetNextID(id)
+		if err != nil {
+			break
+		}
+		id = next
+		p, err := ebpf.NewProgramFromID(id)
+		if err != nil {
+			continue
+		}
+		info, infoErr := p.Info()
+		st, statsErr := p.Stats()
+		if infoErr == nil && statsErr == nil {
+			t.Logf("diag440 prog id=%d type=%s name=%s runs=%d misses=%d",
+				id, info.Type, info.Name, st.RunCount, st.RecursionMisses)
+		}
+		p.Close()
+	}
+	out, err := exec.Command("bpftool", "perf", "list").CombinedOutput()
+	t.Logf("diag440 bpftool-perf err=%v\n%s", err, out)
 }
 
 // diagExercise issues diagOps of each syscall on the worker's own thread and
 // fds, so every event can be attributed exactly.
-func diagExercise(t *testing.T, w *diagWorker) []diagRow {
+func diagExercise(t *testing.T, w *diagWorker, writeProg, writevProg *ebpf.Program) []diagRow {
 	t.Helper()
 	var rows []diagRow
 	w.run(func() {
@@ -125,12 +214,16 @@ func diagExercise(t *testing.T, w *diagWorker) []diagRow {
 		defer unix.Close(sp[1])
 
 		buf := make([]byte, diagBufSize)
-		for range diagOps {
-			_, _ = unix.Write(p[1], buf)
-		}
-		for range diagOps {
-			_, _ = unix.Writev(p[1], [][]byte{buf})
-		}
+		writeRuns, writeMisses := diagMeasure(t, writeProg, func() {
+			for range diagOps {
+				_, _ = unix.Write(p[1], buf)
+			}
+		})
+		writevRuns, writevMisses := diagMeasure(t, writevProg, func() {
+			for range diagOps {
+				_, _ = unix.Writev(p[1], [][]byte{buf})
+			}
+		})
 		for range diagOps {
 			_, _, _ = unix.Syscall6(unix.SYS_SENDTO, uintptr(sp[0]),
 				uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), 0, 0, 0)
@@ -139,10 +232,10 @@ func diagExercise(t *testing.T, w *diagWorker) []diagRow {
 			_, _ = unix.Read(p[0], buf)
 		}
 		rows = []diagRow{
-			{w.name, w.tid, "write", events.SyscallWrite, int32(p[1]), diagOps},
-			{w.name, w.tid, "writev", events.SyscallWritev, int32(p[1]), diagOps},
-			{w.name, w.tid, "sendto", events.SyscallSendto, int32(sp[0]), diagOps},
-			{w.name, w.tid, "read", events.SyscallRead, int32(p[0]), diagOps},
+			{w.name, w.tid, "write", events.SyscallWrite, int32(p[1]), diagOps, writeRuns, writeMisses},
+			{w.name, w.tid, "writev", events.SyscallWritev, int32(p[1]), diagOps, writevRuns, writevMisses},
+			{w.name, w.tid, "sendto", events.SyscallSendto, int32(sp[0]), diagOps, -1, -1},
+			{w.name, w.tid, "read", events.SyscallRead, int32(p[0]), diagOps, -1, -1},
 		}
 	})
 	return rows
@@ -180,6 +273,12 @@ func TestDiag440_EventCoverage(t *testing.T) {
 	}
 	pid := uint32(os.Getpid())
 
+	stats, err := ebpf.EnableStats(uint32(unix.BPF_STATS_RUN_TIME))
+	if err != nil {
+		t.Fatalf("EnableStats: %v", err)
+	}
+	defer stats.Close()
+
 	// Threads that exist before the first attach, and stay across every
 	// attach/detach cycle below.
 	pre := []*diagWorker{startDiagWorker("pre0"), startDiagWorker("pre1")}
@@ -195,13 +294,22 @@ func TestDiag440_EventCoverage(t *testing.T) {
 			t.Fatalf("round %d: Load: %v", round, err)
 		}
 
+		writeProg, err := diagFindProg("handle_write")
+		if err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+		writevProg, err := diagFindProg("handle_writev")
+		if err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+
 		// A thread created after this round's attach.
 		post := startDiagWorker("post")
 		seenCh := diagDrain(tt, pid, 2*time.Second)
 
 		var rows []diagRow
 		for _, w := range append(append([]*diagWorker{}, pre...), post) {
-			rows = append(rows, diagExercise(t, w)...)
+			rows = append(rows, diagExercise(t, w, writeProg, writevProg)...)
 		}
 
 		// The test goroutine is unpinned, like the overflow tests' writers.
@@ -212,8 +320,8 @@ func TestDiag440_EventCoverage(t *testing.T) {
 
 		for _, row := range rows {
 			got := seen[diagKey{row.tid, row.id, row.fd}]
-			t.Logf("diag440 round=%d worker=%s tid=%d syscall=%s sent=%d seen=%d",
-				round, row.worker, row.tid, row.syscall, row.sent, got)
+			t.Logf("diag440 round=%d worker=%s tid=%d syscall=%s sent=%d seen=%d runs=%d misses=%d",
+				round, row.worker, row.tid, row.syscall, row.sent, got, row.runs, row.misses)
 		}
 
 		// Skip worker threads: burstFd can reuse the number of a pipe a worker
@@ -242,6 +350,12 @@ func TestDiag440_EventCoverage(t *testing.T) {
 		t.Logf("diag440 round=%d burst sent=%d seen=%d ringbufDrops=%d perTid=%s",
 			round, diagBurst, total, dropped, parts)
 
+		if round == 1 {
+			diagDumpPrograms(t)
+		}
+
+		writeProg.Close()
+		writevProg.Close()
 		post.stop()
 		if err := tt.Close(); err != nil {
 			t.Errorf("round %d: Close: %v", round, err)
