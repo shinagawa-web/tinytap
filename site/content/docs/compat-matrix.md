@@ -35,34 +35,10 @@ Every row in the table below is a real test run. Untested combinations are not l
 
 ## Known issue: lost write events on Ubuntu kernels
 
-A kernel bug in Ubuntu's 7.0 kernels stops BPF programs on `sys_enter_write`
-from running on any CPU except CPU 0, so tinytap misses `write` calls made on
-the other CPUs. On a 4 CPU machine, that's about three quarters of them.
-
-tinytap starts normally and reports no errors or ring buffer drops, and
-`tinytap doctor` doesn't detect this yet. The symptom is missing or incomplete
-HTTP traffic from anything that uses `write`, such as Go's `net/http`.
-
-The bug arrived in Ubuntu `7.0.0-38`. Cloud kernels number their releases
-separately, so check them against this table:
-
-| Kernel | Result |
-|---|---|
-| `7.0.0-1012-azure` | Not affected |
-| `7.0.0-1017-azure` | Affected |
-| `7.0.0-1019-azure` | Affected |
-| `7.0.0-1014-aws` | Affected |
-
-`writev`, `sendto`, and `read` were unaffected in the same tests. The other
-syscalls tinytap traces haven't been measured.
-
-No fixed Ubuntu kernel has shipped as of 2026-11-04. Until one does, you can:
-
-- Run on a kernel without the bug, such as an Ubuntu 6.8 kernel.
-- Pin the process you're capturing to CPU 0 with `taskset -c 0 <command>`. This is only practical for debugging, because the whole process then shares one CPU.
-
-Follow the fix in [Launchpad bug 2170225](https://bugs.launchpad.net/ubuntu/+source/linux/+bug/2170225)
-and [#444](https://github.com/shinagawa-web/tinytap/issues/444).
+Ubuntu `7.0.0-38` and later, and cloud kernels such as `7.0.0-1017-azure`, have
+a bug that loses `write` events on every CPU except CPU 0. tinytap shows no
+error when this happens. Use a kernel without the bug, such as an Ubuntu 6.8
+kernel, until a fix ships. See [#444](https://github.com/shinagawa-web/tinytap/issues/444).
 
 ## Kernel floor: 5.8
 
