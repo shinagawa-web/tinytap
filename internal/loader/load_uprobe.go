@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 
@@ -18,6 +19,8 @@ import (
 )
 
 var ErrLibSSLNotExecutable = errors.New("libssl path has no execute permission bit set (try: sudo chmod +x <path>)")
+
+var btfCache = btf.NewCache()
 
 type exCacheKey struct{ dev, ino uint64 }
 
@@ -79,7 +82,7 @@ func AttachSSLSetFd(pid uint32, libsslPath string) (*SSLFdProbe, error) {
 	}
 
 	p := &SSLFdProbe{}
-	if err := spec.LoadAndAssign(&p.objs, nil); err != nil {
+	if err := spec.LoadAndAssign(&p.objs, &ebpf.CollectionOptions{Cache: btfCache}); err != nil {
 		return nil, fmt.Errorf("load uprobe objects: %w", err)
 	}
 
@@ -150,7 +153,7 @@ func AttachSSLReadWrite(pid uint32, libsslPath string) (*SSLPayloadProbe, error)
 	}
 
 	p := &SSLPayloadProbe{}
-	if err := spec.LoadAndAssign(&p.objs, nil); err != nil {
+	if err := spec.LoadAndAssign(&p.objs, &ebpf.CollectionOptions{Cache: btfCache}); err != nil {
 		return nil, fmt.Errorf("load uprobe objects: %w", err)
 	}
 
