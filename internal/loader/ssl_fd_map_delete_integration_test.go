@@ -59,13 +59,23 @@ func TestSSLFdProbe_Delete_RemovesEntry(t *testing.T) {
 
 	pid := uint32(cmd.Process.Pid)
 
-	probe, err := AttachSSLSetFd(pid, libsslPath)
+	reg := NewSSLRegistry()
+	defer func() {
+		if err := reg.Close(); err != nil {
+			t.Errorf("reg.Close: %v", err)
+		}
+	}()
+	obj, _, err := reg.Shared(libsslPath)
+	if err != nil {
+		t.Fatalf("Shared: %v", err)
+	}
+	links, err := AttachSSLSetFd(obj, pid, libsslPath)
 	if err != nil {
 		t.Fatalf("AttachSSLSetFd: %v", err)
 	}
 	defer func() {
-		if err := probe.Close(); err != nil {
-			t.Errorf("probe.Close: %v", err)
+		if err := links.Close(); err != nil {
+			t.Errorf("links.Close: %v", err)
 		}
 	}()
 
@@ -76,7 +86,7 @@ func TestSSLFdProbe_Delete_RemovesEntry(t *testing.T) {
 
 	deadline := time.Now().Add(1 * time.Second)
 	for {
-		if _, ok := probe.Lookup(pid, ssl); ok {
+		if _, ok := obj.Lookup(pid, ssl); ok {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -85,9 +95,9 @@ func TestSSLFdProbe_Delete_RemovesEntry(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	probe.Delete(pid, ssl)
+	obj.Delete(pid, ssl)
 
-	if _, ok := probe.Lookup(pid, ssl); ok {
+	if _, ok := obj.Lookup(pid, ssl); ok {
 		t.Fatal("ssl_fd_map entry still present after Delete")
 	}
 }

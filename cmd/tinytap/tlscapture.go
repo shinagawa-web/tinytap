@@ -16,13 +16,37 @@ type sslFdLookup interface {
 	Delete(pid uint32, ssl uint64)
 }
 
-func captureTLS(rd ringbufReader, fdProbe sslFdLookup, sink output.Sink, parser *http.Parser, pairer *http.Pairer) {
-	captureTLSWithOptions(rd, fdProbe, sink, parser, pairer, sweepInterval, pendingTimeout)
+// tlsStreams holds the HTTP parsing state shared by every pid attached to
+// one libssl inode (#327): one ringbuf reader feeds one Parser/Pairer pair
+// for all of them, so access must be serialized under mu.
+type tlsStreams struct {
+	mu     sync.Mutex
+	parser *http.Parser
+	pairer *http.Pairer
 }
 
-func captureTLSWithOptions(rd ringbufReader, fdProbe sslFdLookup, sink output.Sink, parser *http.Parser, pairer *http.Pairer, interval, timeout time.Duration) {
-	var mu sync.Mutex
+func newTLSStreams() *tlsStreams {
+	return &tlsStreams{
+		parser: http.NewParserWithResolve(resolveComm),
+		pairer: http.NewPairer(),
+	}
+}
 
+// closePid drops pid's parser state. Callers must not hold w.mu (or any lock
+// also taken while processing an event) when calling this: the capture
+// goroutine acquires st.mu and then, via sink.OnEvent, may re-enter the
+// watcher and take w.mu — so w.mu -> st.mu is the only safe lock order.
+func (s *tlsStreams) closePid(pid uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.parser.ClosePid(pid)
+}
+
+func captureTLS(rd ringbufReader, fdProbe sslFdLookup, sink output.Sink, st *tlsStreams) {
+	captureTLSWithOptions(rd, fdProbe, sink, st, sweepInterval, pendingTimeout)
+}
+
+func captureTLSWithOptions(rd ringbufReader, fdProbe sslFdLookup, sink output.Sink, st *tlsStreams, interval, timeout time.Duration) {
 	done := make(chan struct{})
 	var sweepDone sync.WaitGroup
 	sweepDone.Add(1)
@@ -38,11 +62,11 @@ func captureTLSWithOptions(rd ringbufReader, fdProbe sslFdLookup, sink output.Si
 		for {
 			select {
 			case <-ticker.C:
-				mu.Lock()
-				for _, ab := range pairer.Sweep(timeout) {
+				st.mu.Lock()
+				for _, ab := range st.pairer.Sweep(timeout) {
 					sink.OnPaired(ab)
 				}
-				mu.Unlock()
+				st.mu.Unlock()
 			case <-done:
 				return
 			}
@@ -65,36 +89,36 @@ func captureTLSWithOptions(rd ringbufReader, fdProbe sslFdLookup, sink output.Si
 			fdProbe.Delete(e.Pid, e.SSL)
 		}
 
-		mu.Lock()
+		st.mu.Lock()
 		switch {
 		case e.Op == events.SSLOpFree && ok:
-			parser.Close(e.Pid, fd)
-			for _, ab := range pairer.Close(e.Pid, fd, e.TsNs) {
+			st.parser.Close(e.Pid, fd)
+			for _, ab := range st.pairer.Close(e.Pid, fd, e.TsNs) {
 				sink.OnPaired(ab)
 			}
 		case e.Op == events.SSLOpFree:
-			parser.CloseSSL(e.Pid, e.SSL)
-			for _, ab := range pairer.CloseSSL(e.Pid, e.SSL, e.TsNs) {
+			st.parser.CloseSSL(e.Pid, e.SSL)
+			for _, ab := range st.pairer.CloseSSL(e.Pid, e.SSL, e.TsNs) {
 				sink.OnPaired(ab)
 			}
 		case ok:
 			if ev, okConv := tls.FromSSL(&e, fd); okConv {
 				sink.OnEvent(&ev)
-				for _, m := range parser.Feed(&ev) {
+				for _, m := range st.parser.Feed(&ev) {
 					sink.OnMessage(m)
-					if pe, okPush := pairer.Push(m); okPush {
+					if pe, okPush := st.pairer.Push(m); okPush {
 						sink.OnPaired(pe)
 					}
 				}
 			}
 		default:
-			for _, m := range parser.FeedSSL(&e) {
+			for _, m := range st.parser.FeedSSL(&e) {
 				sink.OnMessage(m)
-				if pe, okPush := pairer.Push(m); okPush {
+				if pe, okPush := st.pairer.Push(m); okPush {
 					sink.OnPaired(pe)
 				}
 			}
 		}
-		mu.Unlock()
+		st.mu.Unlock()
 	}
 }
