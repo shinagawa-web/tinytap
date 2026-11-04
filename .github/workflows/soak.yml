@@ -16,7 +16,9 @@ on:
 jobs:
   soak:
     name: soak / ${{ matrix.name }}
-    runs-on: ubuntu-26.04
+    # Stay on 22.04 until Ubuntu ships a fix for #440: the 7.0 kernels on the
+    # 24.04 and 26.04 images only run sys_enter_write BPF programs on CPU 0.
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
 
     strategy:
