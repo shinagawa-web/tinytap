@@ -7,6 +7,12 @@
   "rebaseWhen": "behind-base-branch",
   "packageRules": [
     {
+      "description": "Keep the capture jobs on ubuntu-22.04 until #440 is resolved",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["ubuntu"],
+      "enabled": false
+    },
+    {
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
