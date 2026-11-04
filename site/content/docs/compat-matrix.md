@@ -25,13 +25,20 @@ Every row in the table below is a real test run. Untested combinations are not l
 
 | Distro | Kernel | Plaintext | TLS | Notes |
 |---|---|---|---|---|
-| Ubuntu 26.04 | 7.0.0 | ✓ | ✓ | sendfile body requires `cap_syslog` (`kptr_restrict=1` blocks kprobe symbol lookup without it) |
+| Ubuntu 26.04 | 7.0.0 | ✓ | ✓ | [`7.0.0-38` and later lose `write` events](#known-issue-lost-write-events-on-ubuntu-kernels); sendfile body requires `cap_syslog` (`kptr_restrict=1` blocks kprobe symbol lookup without it) |
 | Fedora 43 | 6.17.1 | ✓ | ✓ | |
 | Debian 12 | 6.1.0 | ✓ | ✓ | `cap_sys_admin` required even for plaintext (`perf_event_paranoid=3`) |
 | Ubuntu 24.04 | 6.17.0-azure | ✓ | ✓ | |
 | Ubuntu 22.04 | 6.8.0-azure | ✓ | ✓ | |
 
 "sendfile body not captured" means `GET /file.bin` returns status and size correctly but body bytes are 0. Only static file serving via `sendfile(2)` is affected. All other capture paths work normally. See [Server Compatibility]({{< relref "server-compatibility" >}}).
+
+## Known issue: lost write events on Ubuntu kernels
+
+Ubuntu `7.0.0-38` and later, and cloud kernels such as `7.0.0-1017-azure`, have
+a bug that loses `write` events on every CPU except CPU 0. tinytap shows no
+error when this happens. Use a kernel without the bug, such as an Ubuntu 6.8
+kernel, until a fix ships. See [#444](https://github.com/shinagawa-web/tinytap/issues/444).
 
 ## Kernel floor: 5.8
 
