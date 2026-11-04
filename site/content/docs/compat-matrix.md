@@ -25,13 +25,45 @@ Every row in the table below is a real test run. Untested combinations are not l
 
 | Distro | Kernel | Plaintext | TLS | Notes |
 |---|---|---|---|---|
-| Ubuntu 26.04 | 7.0.0 | ✓ | ✓ | sendfile body requires `cap_syslog` (`kptr_restrict=1` blocks kprobe symbol lookup without it) |
+| Ubuntu 26.04 | 7.0.0 | ✓ | ✓ | [`7.0.0-38` and later lose `write` events](#known-issue-lost-write-events-on-ubuntu-kernels); sendfile body requires `cap_syslog` (`kptr_restrict=1` blocks kprobe symbol lookup without it) |
 | Fedora 43 | 6.17.1 | ✓ | ✓ | |
 | Debian 12 | 6.1.0 | ✓ | ✓ | `cap_sys_admin` required even for plaintext (`perf_event_paranoid=3`) |
 | Ubuntu 24.04 | 6.17.0-azure | ✓ | ✓ | |
 | Ubuntu 22.04 | 6.8.0-azure | ✓ | ✓ | |
 
 "sendfile body not captured" means `GET /file.bin` returns status and size correctly but body bytes are 0. Only static file serving via `sendfile(2)` is affected. All other capture paths work normally. See [Server Compatibility]({{< relref "server-compatibility" >}}).
+
+## Known issue: lost write events on Ubuntu kernels
+
+A kernel bug in Ubuntu's 7.0 kernels stops BPF programs on `sys_enter_write`
+from running on any CPU except CPU 0, so tinytap misses `write` calls made on
+the other CPUs. On a 4 CPU machine, that's about three quarters of them.
+
+tinytap starts normally and reports no errors or ring buffer drops, and
+`tinytap doctor` doesn't detect this yet. The symptom is missing or incomplete
+HTTP traffic from anything that uses `write`, such as Go's `net/http`.
+
+The bug arrived in Ubuntu `7.0.0-38`. Cloud kernels number their releases
+separately, so check them against this table:
+
+| Kernel | Result |
+|---|---|
+| `7.0.0-1012-azure` | Not affected |
+| `7.0.0-1017-azure` | Affected |
+| `7.0.0-1019-azure` | Affected |
+| `7.0.0-1014-aws` | Affected |
+
+`writev`, `sendto`, and `read` were unaffected in the same tests. The other
+syscalls tinytap traces haven't been measured.
+
+No fixed Ubuntu kernel has shipped as of 2026-11-04. Until one does, you can:
+
+- Run on a kernel without the bug, such as an Ubuntu 6.8 kernel.
+- Pin the process you're capturing to CPU 0 with `taskset -c 0 <command>`. This
+  is only practical for debugging, because the whole process then shares one CPU.
+
+Follow the fix in [Launchpad bug 2170225](https://bugs.launchpad.net/ubuntu/+source/linux/+bug/2170225)
+and [#444](https://github.com/shinagawa-web/tinytap/issues/444).
 
 ## Kernel floor: 5.8
 
