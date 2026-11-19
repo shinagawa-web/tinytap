@@ -777,8 +777,8 @@ func TestSSLWatcher_Reaper_ClosesOnlyFdProbeForDeadProcess(t *testing.T) {
 }
 
 // TestSSLWatcher_MaybeAttach_SemaphoreSkipClearsSeenForRetry confirms that
-// when the BPF-load semaphore is saturated the goroutine clears seen[pid] so
-// a subsequent event for the same pid is not silently dropped.
+// when the discovery+attach semaphore is saturated, maybeAttach clears
+// seen[pid] so a subsequent event for the same pid is not silently dropped.
 func TestSSLWatcher_MaybeAttach_SemaphoreSkipClearsSeenForRetry(t *testing.T) {
 	w := newSSLWatcher(&fakeSink{})
 	defer func() {
@@ -788,27 +788,24 @@ func TestSSLWatcher_MaybeAttach_SemaphoreSkipClearsSeenForRetry(t *testing.T) {
 	}()
 	w.isAlive = func(pid uint32) bool { return true }
 
-	// Fill every semaphore slot so the next goroutine takes the skip path.
+	// Fill every semaphore slot so the next call takes the skip path.
 	for range maxConcurrentAttach {
 		w.attachSem <- struct{}{}
 	}
 
-	found := make(chan struct{}, 1)
 	w.find = func(pid uint32) (tls.Discovery, error) {
-		select {
-		case found <- struct{}{}:
-		default:
-		}
-		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+		t.Error("find must not be called when semaphore is full (#349)")
+		return tls.Discovery{}, errors.New("unexpected")
 	}
 	w.attach = func(pid uint32, path string) (sslProbe, error) {
 		t.Error("attach must not be called when semaphore is full")
 		return nil, errors.New("unexpected")
 	}
 
+	// The semaphore is now acquired synchronously in maybeAttach, before any
+	// goroutine is spawned, so the skip path is already complete once
+	// OnEvent returns.
 	w.OnEvent(&events.Event{Pid: 31})
-	waitOnChan(t, found)              // goroutine reached find()
-	time.Sleep(50 * time.Millisecond) // let it run to the semaphore branch and exit
 
 	w.mu.Lock()
 	_, stillSeen := w.seen[31]
@@ -830,27 +827,74 @@ func TestSSLWatcher_MaybeAttach_SemaphoreSkipIncrementsCounter(t *testing.T) {
 	}()
 	w.isAlive = func(uint32) bool { return true }
 
-	// Fill every semaphore slot so the next goroutine takes the skip path.
+	// Fill every semaphore slot so the next call takes the skip path.
 	for range maxConcurrentAttach {
 		w.attachSem <- struct{}{}
 	}
 
-	found := make(chan struct{}, 1)
 	w.find = func(pid uint32) (tls.Discovery, error) {
-		select {
-		case found <- struct{}{}:
-		default:
-		}
-		return tls.Discovery{Pid: pid, Path: "/lib/libssl.so.3"}, nil
+		t.Error("find must not be called when semaphore is full (#349)")
+		return tls.Discovery{}, errors.New("unexpected")
 	}
 
 	w.OnEvent(&events.Event{Pid: 32})
-	waitOnChan(t, found)
-	time.Sleep(50 * time.Millisecond) // let the goroutine reach and exit the skip branch
 
 	if got := w.dropCounts().TLSAttachSkips; got != 1 {
 		t.Errorf("dropCounts().TLSAttachSkips = %d, want 1", got)
 	}
+}
+
+// TestSSLWatcher_MaybeAttach_SemaphoreBoundsDiscoveryPhase confirms the
+// core fix for #349: the semaphore caps goroutines from discovery onward,
+// not just the BPF load+attach section, so a slow find() cannot let more
+// than maxConcurrentAttach goroutines pile up concurrently.
+func TestSSLWatcher_MaybeAttach_SemaphoreBoundsDiscoveryPhase(t *testing.T) {
+	w := newSSLWatcher(&fakeSink{})
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	w.isAlive = func(uint32) bool { return true }
+	w.findRetries = 0 // one find() call per pid — no retry storm once release closes
+
+	const inFlight = maxConcurrentAttach
+	entered := make(chan struct{}, inFlight)
+	release := make(chan struct{})
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		entered <- struct{}{}
+		<-release
+		return tls.Discovery{}, tls.ErrLibSSLNotFound
+	}
+
+	// Saturate every semaphore slot with goroutines blocked inside find().
+	for pid := uint32(0); pid < inFlight; pid++ {
+		w.OnEvent(&events.Event{Pid: pid})
+	}
+	for i := 0; i < inFlight; i++ {
+		waitOnChan(t, entered)
+	}
+
+	// One more pid must be skipped immediately rather than spawning a
+	// goroutine and blocking inside find() too.
+	extraFindCalled := make(chan struct{}, 1)
+	w.find = func(pid uint32) (tls.Discovery, error) {
+		close(extraFindCalled)
+		return tls.Discovery{}, tls.ErrLibSSLNotFound
+	}
+	w.OnEvent(&events.Event{Pid: inFlight})
+
+	select {
+	case <-extraFindCalled:
+		t.Error("find was called for a pid beyond the semaphore cap")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if got := w.dropCounts().TLSAttachSkips; got != 1 {
+		t.Errorf("dropCounts().TLSAttachSkips = %d, want 1", got)
+	}
+
+	close(release)
 }
 
 // TestSSLWatcher_OnEvent_ClosedDuringPayloadAttach mirrors

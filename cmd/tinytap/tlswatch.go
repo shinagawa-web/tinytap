@@ -61,11 +61,12 @@ type sslWatcher struct {
 	// Replaced by tests to avoid /proc dependency.
 	isAlive func(pid uint32) bool
 
-	// attachSem caps the number of goroutines concurrently inside the BPF
-	// load+attach section (LoadAndAssign + Uprobe) to bound the number of
-	// in-flight kernel BPF fds under high-churn TLS workloads (#326).
-	// ELF symbol-table parsing no longer contributes to per-goroutine memory
-	// because openExecutable() caches *link.Executable by (dev, inode).
+	// attachSem caps the number of goroutines concurrently in flight for a
+	// pid, from discovery through the BPF load+attach section (find + Load
+	// AndAssign + Uprobe). It is acquired before the goroutine is even
+	// spawned, so a saturated semaphore stops findWithRetry's /proc and ELF
+	// I/O from piling up goroutines under high-churn workloads, not just the
+	// kernel BPF fds from the load+attach half (#326, #349).
 	attachSem     chan struct{}
 	attachSkipped atomic.Uint64
 
@@ -83,10 +84,13 @@ const (
 	defaultFindRetries    = 8
 	defaultFindRetryDelay = 25 * time.Millisecond
 
-	// maxConcurrentAttach caps goroutines inside the BPF load+attach critical
-	// section simultaneously. By Little's Law (N = λ × W), cap/W gives the
-	// maximum attach rate without throttling: 512 / 0.42 s ≈ 1200 attaches/s,
-	// which covers workloads well above the 700 req/s design target (#326).
+	// maxConcurrentAttach caps goroutines concurrently in flight per pid,
+	// from discovery (findWithRetry) through the BPF load+attach section
+	// (LoadAndAssign + Uprobe). By Little's Law (N = λ × W), cap/W gives the
+	// maximum throughput without throttling: the ~0.42s attach-only W
+	// measured in #326 is now a lower bound, since W also includes discovery
+	// time (#349) — but 512 slots still covers the 700 req/s design target
+	// with headroom.
 	maxConcurrentAttach = 512
 )
 
@@ -187,7 +191,25 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 	w.seen[pid] = true
 	w.mu.Unlock()
 
+	// Bound concurrent discovery+attach goroutines end-to-end (#349).
+	// Acquired before the goroutine is spawned, so a saturated semaphore
+	// skips findWithRetry's /proc and ELF I/O entirely instead of piling up
+	// goroutines blocked on it. Non-blocking: if all slots are taken, clear
+	// seen[pid] so the next event for this pid retries rather than being
+	// silently dropped.
+	select {
+	case w.attachSem <- struct{}{}:
+	default:
+		w.attachSkipped.Add(1)
+		w.mu.Lock()
+		delete(w.seen, pid)
+		w.mu.Unlock()
+		return
+	}
+
 	go func() {
+		defer func() { <-w.attachSem }()
+
 		disc, err := w.findWithRetry(pid)
 		if err != nil {
 			if errors.Is(err, tls.ErrLibSSLNotFound) {
@@ -208,20 +230,6 @@ func (w *sslWatcher) maybeAttach(pid uint32) {
 		if !w.isAlive(pid) {
 			return
 		}
-
-		// Bound concurrent BPF loads to cap in-flight kernel fds (#326).
-		// Non-blocking: if all slots are taken, clear seen[pid] so the next
-		// event for this pid retries rather than being silently dropped.
-		select {
-		case w.attachSem <- struct{}{}:
-		default:
-			w.attachSkipped.Add(1)
-			w.mu.Lock()
-			delete(w.seen, pid)
-			w.mu.Unlock()
-			return
-		}
-		defer func() { <-w.attachSem }()
 
 		probe, err := w.attach(pid, disc.Path)
 		if err != nil {
