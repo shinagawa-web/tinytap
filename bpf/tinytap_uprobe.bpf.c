@@ -61,7 +61,7 @@ struct ssl_event {
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 1 << 20);
+    __uint(max_entries, 1 << 23);
 } ssl_events SEC(".maps");
 
 struct ssl_read_pending {

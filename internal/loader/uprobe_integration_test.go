@@ -115,13 +115,23 @@ func TestAttachSSLSetFd_RealCall(t *testing.T) {
 	}
 
 	pid := uint32(cmd.Process.Pid)
-	probe, err := loader.AttachSSLSetFd(pid, libsslPath)
+	reg := loader.NewSSLRegistry()
+	defer func() {
+		if err := reg.Close(); err != nil {
+			t.Errorf("reg.Close: %v", err)
+		}
+	}()
+	obj, _, err := reg.Shared(libsslPath)
+	if err != nil {
+		t.Fatalf("Shared: %v", err)
+	}
+	links, err := loader.AttachSSLSetFd(obj, pid, libsslPath)
 	if err != nil {
 		t.Fatalf("AttachSSLSetFd: %v", err)
 	}
 	defer func() {
-		if err := probe.Close(); err != nil {
-			t.Errorf("probe.Close: %v", err)
+		if err := links.Close(); err != nil {
+			t.Errorf("links.Close: %v", err)
 		}
 	}()
 
@@ -137,7 +147,7 @@ func TestAttachSSLSetFd_RealCall(t *testing.T) {
 	var gotFD int32
 	var ok bool
 	for time.Now().Before(deadline) {
-		gotFD, ok = probe.Lookup(pid, ssl)
+		gotFD, ok = obj.Lookup(pid, ssl)
 		if ok {
 			break
 		}

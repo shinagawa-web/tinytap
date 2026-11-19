@@ -920,6 +920,54 @@ func TestCloseAllowsReuseOfFd(t *testing.T) {
 	}
 }
 
+// ClosePid evicts every stream and pendingMethods entry for the given pid —
+// across fds, ssl handles, and both directions — while leaving other pids
+// untouched.
+func TestClosePidEvictsAllStreamsForPid(t *testing.T) {
+	p := NewParser()
+	const target, other = uint32(42), uint32(43)
+
+	partial := []byte("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, target, 9, uint32(len(partial)), partial))
+	req := []byte("POST /upload HTTP/1.1\r\nContent-Length: 50\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallRead, target, 9, uint32(len(req)), req))
+
+	get := []byte("GET /foo HTTP/1.1\r\nHost: x\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, target, 11, uint32(len(get)), get))
+
+	otherReq := []byte("GET /bar HTTP/1.1\r\nHost: x\r\n\r\n")
+	p.Feed(makeEvent(events.SyscallWrite, other, 9, uint32(len(otherReq)), otherReq))
+
+	if len(p.streams) == 0 || len(p.pendingMethods) == 0 {
+		t.Fatal("expected streams and pendingMethods to be populated before ClosePid")
+	}
+
+	p.ClosePid(target)
+
+	for k := range p.streams {
+		if k.pid == target {
+			t.Errorf("ClosePid: stream %+v for target pid not evicted", k)
+		}
+	}
+	for k := range p.pendingMethods {
+		if k.pid == target {
+			t.Errorf("ClosePid: pendingMethods %+v for target pid not evicted", k)
+		}
+	}
+	if _, ok := p.streams[connKey{pid: other, fd: 9, dir: dirOutgoing}]; !ok {
+		t.Error("ClosePid: unrelated pid's stream was evicted")
+	}
+	if _, ok := p.pendingMethods[pendingKey{pid: other, fd: 9}]; !ok {
+		t.Error("ClosePid: unrelated pid's pendingMethods was evicted")
+	}
+}
+
+// Closing a pid with no entries is a no-op (no panic).
+func TestClosePidUnknownPidIsNoop(t *testing.T) {
+	p := NewParser()
+	p.ClosePid(999) // must not panic
+}
+
 // Headers split across two events: the first event contains the start line
 // and a partial header block (no \r\n\r\n yet). The parser must buffer and
 // wait for the terminator rather than emitting a bogus message.

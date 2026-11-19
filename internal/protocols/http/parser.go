@@ -302,6 +302,24 @@ func (p *Parser) CloseSSL(pid uint32, ssl uint64) {
 	delete(p.pendingMethods, pendingKey{pid: pid, ssl: ssl, sslFallback: true})
 }
 
+// ClosePid drops every stream and pending-method entry for pid, regardless
+// of fd/ssl/direction. Parser has no TTL sweep (unlike Pairer.Sweep), so
+// callers that share one Parser across many pids — the uprobe capture path
+// shares one per libssl inode (#327) — must call this when a pid exits
+// without ever reaching SSL_free/close, or its entries leak forever.
+func (p *Parser) ClosePid(pid uint32) {
+	for k := range p.streams {
+		if k.pid == pid {
+			delete(p.streams, k)
+		}
+	}
+	for k := range p.pendingMethods {
+		if k.pid == pid {
+			delete(p.pendingMethods, k)
+		}
+	}
+}
+
 func (s *stream) appendBody(p []byte) {
 	if len(p) == 0 {
 		return
