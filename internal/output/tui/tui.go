@@ -30,7 +30,8 @@ func (s *Sink) Run() error {
 	return err
 }
 
-func (s *Sink) Quit() { s.prog.Quit() }
+// Not prog.Quit: it is a no-op before Run starts.
+func (s *Sink) Quit() { s.prog.Send(tea.Quit()) }
 
 func (s *Sink) SendDiag(line string) { s.prog.Send(diagMsg(line)) }
 
