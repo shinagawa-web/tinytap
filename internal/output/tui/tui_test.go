@@ -60,7 +60,6 @@ func TestSinkRunAndQuit(t *testing.T) {
 	}
 }
 
-// A Quit issued before Run starts must still stop the program.
 func TestSinkQuitBeforeRun(t *testing.T) {
 	s := testSink(strings.NewReader(""))
 	go s.Quit()
