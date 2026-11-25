@@ -30,7 +30,10 @@ func (s *Sink) Run() error {
 	return err
 }
 
-func (s *Sink) Quit() { s.prog.Quit() }
+// Quit stops the program, waiting for Run to start if it hasn't yet. It sends
+// the message itself because since bubbletea v2.1.2 Program.Quit drops a call
+// made before Run, and the capture goroutine can finish before Run starts.
+func (s *Sink) Quit() { s.prog.Send(tea.Quit()) }
 
 func (s *Sink) SendDiag(line string) { s.prog.Send(diagMsg(line)) }
 

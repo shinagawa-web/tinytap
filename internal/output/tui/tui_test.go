@@ -60,6 +60,23 @@ func TestSinkRunAndQuit(t *testing.T) {
 	}
 }
 
+// A Quit issued before Run starts must still stop the program.
+func TestSinkQuitBeforeRun(t *testing.T) {
+	s := testSink(strings.NewReader(""))
+	go s.Quit()
+	time.Sleep(50 * time.Millisecond)
+	done := make(chan error, 1)
+	go func() { done <- s.Run() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not exit after an earlier Quit")
+	}
+}
+
 // SendDrops posts a dropsMsg to the running program without panicking.
 func TestSinkSendDrops(t *testing.T) {
 	s := testSink(strings.NewReader(""))
