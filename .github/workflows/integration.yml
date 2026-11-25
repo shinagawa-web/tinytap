@@ -29,7 +29,7 @@ jobs:
           cache: true
 
       - name: Set up BPF toolchain and regenerate bindings
-        uses: ./.github/actions/setup-bpf-toolchain
+        uses: $/.github/actions/setup-bpf-toolchain
 
       - name: Run integration tests
         run: make test-integration
